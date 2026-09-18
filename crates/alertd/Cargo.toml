@@ -12,6 +12,7 @@ exclude.workspace = true
 workspace = true
 
 [dependencies]
+async-trait = "0.1.89"
 bestool-canopy = { version = "0.7.12", path = "../canopy" }
 bestool-postgres = { version = "1.2.3", path = "../postgres" }
 bestool-tamanu = { version = "0.19.12", path = "../tamanu", features = ["canopy-registration"] }
@@ -35,6 +36,9 @@ tokio-rustls = "0.26.4"
 tracing = { workspace = true }
 url = { version = "2.5.8", features = ["serde"] }
 x509-parser = "0.18.1"
+
+[dev-dependencies]
+tempfile = "3.21.0"
 
 [target.'cfg(unix)'.dependencies]
 # geteuid(), to tell whether we're root without reading /proc (which the

@@ -1,9 +1,9 @@
 //! Doctor healthchecks. One module per check.
 //!
-//! Each module exposes a `pub async fn run(ctx: MachineCx) -> Check` or a
-//! `pub async fn run(ctx: AppCx) -> Check`, depending on whether it reports for
-//! the machine or for an application on it. The [`all`] registry below ties
-//! names to runners so the dispatcher can filter by `--check`.
+//! Each module exposes a `pub async fn run` taking the context of the subject
+//! it reports for: [`MachineCx`], [`PgCx`], or [`TamanuCx`]. The [`all`]
+//! registry below ties names to runners so the dispatcher can filter by
+//! `--check`.
 //!
 //! spec: SUBJ
 
@@ -14,11 +14,16 @@ use futures::future::BoxFuture;
 use node_semver::Version;
 
 use bestool_canopy::CanopyClient;
-use bestool_tamanu::{ApiServerKind, config::TamanuConfig};
+use bestool_tamanu::{
+	ApiServerKind,
+	config::{Database, TamanuConfig},
+};
 
 use super::check::Check;
 use super::heal::{self, HealAction};
-use super::subject::{AppScope, ApplicationKind, ApplicationRef};
+use super::runtime::{HttpRuntime, ServiceRuntime};
+use super::store::CheckStore;
+use super::subject::{ApplicationKind, ApplicationRef, TamanuScope};
 
 pub mod util;
 
@@ -55,6 +60,7 @@ pub mod pg_tuning;
 pub mod report_errors;
 pub mod reporting_roles;
 pub mod reporting_schema;
+pub mod service_resources;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
 pub mod sync_restart_loop;
@@ -92,6 +98,15 @@ pub struct MachineCx {
 	pub canopy: Option<Arc<CanopyClient>>,
 	/// The Tamanu installed on this machine, where there is one.
 	pub tamanu: Option<MachineTamanu>,
+	/// Where this machine's checks remember readings between sweeps, already
+	/// scoped to the machine subject.
+	///
+	/// Apart from every application's, so a machine check and an application
+	/// check of the same name never meet. Nothing switches a machine's compute
+	/// off under it, so what it stores is durable.
+	///
+	/// spec: SUB#check-state
+	pub store: Arc<dyn CheckStore>,
 }
 
 /// What a machine check may know about the Tamanu installed on its subject.
@@ -116,57 +131,115 @@ pub struct MachineTamanu {
 	pub root: Option<PathBuf>,
 }
 
-/// What an application check is handed: the application it reports for, and the
-/// parameters resolved for that one application.
+/// What a Tamanu check is handed: the deployment it reports for, and the
+/// parameters resolved for that one deployment.
 ///
-/// One of these is built per application, so a check filed against two
-/// applications of one kind runs twice against two different contexts and
-/// reports each subject's own readings rather than one subject's twice.
-///
-/// Every field describes the application it was built for. A Postgres cluster
-/// carries none of the Tamanu's parameters even where the sweep found the
-/// cluster through one, so a check cannot read another subject's install,
-/// configuration or version through this.
+/// One of these is built per deployment, so a check filed against two
+/// deployments runs twice against two different contexts and reports each
+/// subject's own readings rather than one subject's twice.
 ///
 /// Each check picks the fields it needs and ignores the rest. The pool is
-/// `Option` because not every check needs the database, and `db_connect` itself
+/// `Option` because not every check needs the database, and `connect` itself
 /// runs before a connection is available.
 ///
 /// spec: SUBJ
 #[derive(Clone)]
-pub struct AppCx {
-	/// The application this check reports for: its kind, and which one of that
-	/// kind.
+pub struct TamanuCx {
+	/// The deployment this check reports for: its role, and which one of that
+	/// role.
 	pub app: ApplicationRef,
-	/// The application's product version, or `0.0.0` where the sweep cannot see
-	/// one — which a Postgres cluster never can, its server version being a
-	/// fact read from the server rather than a version of the application as
-	/// installed.
+	/// The deployment's version, or `0.0.0` where the sweep could not resolve
+	/// one — which `version_drift` reads as nothing to compare against.
 	pub version: Version,
-	/// The application's configuration. For a Tamanu, the deployment's own —
-	/// synthesised from the database URL alone where there are no install files
-	/// to have read it from, which
-	/// [`installed_config`](AppCx::installed_config) is how a check tells apart.
-	/// For a Postgres cluster, one naming its own database and nothing else.
+	/// The deployment's configuration, synthesised from the database URL alone
+	/// where there are no install files to have read it from, which
+	/// [`installed_config`](TamanuCx::installed_config) is how a check tells
+	/// apart.
 	pub config: Arc<TamanuConfig>,
-	/// Where this application's files sit on this machine, when it has any.
-	/// `None` for an application known only through its database, and for a
-	/// Postgres cluster, which has no install of its own for a check to read.
+	/// Where the deployment's files sit on this machine, when it has any.
+	/// `None` for one known only through its database.
 	pub install_root: Option<PathBuf>,
 	pub database_url: String,
-	/// The database pool this application's checks draw from, when the database
-	/// could be reached at all. Take a connection with [`AppCx::db`].
+	/// The database pool this deployment's checks draw from, when the database
+	/// could be reached at all. Take a connection with [`TamanuCx::db`].
 	pub pool: Option<PgPool>,
 	/// Shared across checks and across the daemon's other consumers so TCP/TLS
 	/// connections stay warm between ticks; HTTP checks apply per-request
 	/// timeouts via `RequestBuilder::timeout`.
 	pub http: reqwest::Client,
+	/// What is running this deployment: how a check reads its services and
+	/// their facts, whatever is running them here.
+	///
+	/// One per application rather than one per machine — a Windows machine runs
+	/// Tamanu under pm2 and Postgres as a native Windows service, so no single
+	/// machine-wide supervisor describes both.
+	///
+	/// spec: SUB
+	pub runtime: Arc<dyn ServiceRuntime>,
+	/// What reaches this deployment: how a check reads the traffic served for
+	/// it, whatever fronts it here.
+	///
+	/// A Tamanu serves HTTP, so it has this reading to take. A Postgres cluster
+	/// does not, and has no such field rather than one that would answer
+	/// unavailable for the life of the application.
+	///
+	/// spec: SUB#http-traffic-and-certificates
+	pub traffic: Arc<dyn HttpRuntime>,
+	/// Where this deployment's checks remember readings between sweeps, already
+	/// scoped to this subject.
+	///
+	/// spec: SUB#check-state
+	pub store: Arc<dyn CheckStore>,
 	/// Shared canopy client, a parameter of the sweep rather than of the
 	/// application, as [`http`](Self::http) is. It serves a check whose
 	/// judgement is canopy's to make: what the application has is read from the
 	/// application, and what it should have is canopy's answer. `None` on a
 	/// one-shot local sweep with no canopy connectivity.
 	pub canopy: Option<Arc<CanopyClient>>,
+}
+
+/// What a Postgres check is handed: the cluster it reports for, and how to
+/// reach it.
+///
+/// A cluster is an application in its own right rather than a part of whatever
+/// uses it, so this carries none of a Tamanu's parameters. There is no version
+/// field, because a cluster's server version is a fact read from the server
+/// rather than a version of the application as installed; no install root,
+/// because a cluster has no install of its own for a check to read; and no
+/// deployment configuration, because a cluster is described by the URL it is
+/// keyed and connected by.
+///
+/// Earlier these were a Tamanu's fields left empty or filled with markers on a
+/// cluster's context. Splitting the context is what stops a Postgres check
+/// reading a value that was never about its subject.
+///
+/// spec: SUBJ
+#[derive(Clone)]
+pub struct PgCx {
+	/// The cluster this check reports for, keyed by the port it answers on.
+	pub app: ApplicationRef,
+	/// The cluster's connection details, parsed from the URL it is keyed and
+	/// connected by, so what a check reports about it and what the pool opened
+	/// cannot disagree.
+	pub database: Database,
+	pub database_url: String,
+	/// The pool this cluster's checks draw from, when it could be reached at
+	/// all. Take a connection with [`PgCx::db`].
+	pub pool: Option<PgPool>,
+	/// What is running this cluster: how a check reads the service serving it
+	/// and the ceiling declared for that service.
+	///
+	/// A cluster serves no HTTP, so there is no traffic runtime beside this one
+	/// — it has no such reading to take, rather than a reading it would report
+	/// as unavailable.
+	///
+	/// spec: SUB
+	pub runtime: Arc<dyn ServiceRuntime>,
+	/// Where this cluster's checks remember readings between sweeps, already
+	/// scoped to this subject.
+	///
+	/// spec: SUB#check-state
+	pub store: Arc<dyn CheckStore>,
 }
 
 /// How the sweep's pool is sized.
@@ -213,26 +286,46 @@ pub const POOL_SIZE: bestool_postgres::pool::PoolSize = bestool_postgres::pool::
 	connect_timeout: Some(std::time::Duration::from_secs(10)),
 };
 
-impl AppCx {
-	/// Whether this application is a central or facility Tamanu, or `None` for
-	/// an application that is not a Tamanu at all.
+/// Take a connection from a pool, or `None` when there is none or it can't be
+/// reached — in which case the check skips.
+///
+/// Each check gets its own connection so their queries run in parallel rather
+/// than pipelining onto one backend, and gives it back when the connection
+/// drops at the end of the check. The pool bounds how many run at once; a check
+/// that has to wait for one simply starts later.
+///
+/// Logged at debug: a database the sweep can't reach is reported by the
+/// Postgres `connect` check, which opens its own connection, so a warning per
+/// check here would be noise on top of the real signal.
+async fn take_connection(pool: Option<&PgPool>) -> Option<PgConnection> {
+	match pool?.get().await {
+		Ok(conn) => Some(conn),
+		Err(err) => {
+			tracing::debug!(%err, "could not take a DB connection for this check");
+			None
+		}
+	}
+}
+
+impl TamanuCx {
+	/// Whether this deployment is a central or a facility.
 	///
 	/// Derived from the subject rather than stored, so it cannot describe a
-	/// different application from the one the context was built for, and a
-	/// cluster carries no role it does not have. Which role a Tamanu plays is
-	/// decided once at sweep startup from the most authoritative available
-	/// signals (DB `local_system_facts` first, then config) and reaches here
-	/// through the application it identified.
-	pub fn server_kind(&self) -> Option<ApiServerKind> {
+	/// different deployment from the one the context was built for. Which role
+	/// a Tamanu plays is decided once at sweep startup from the most
+	/// authoritative available signals (DB `local_system_facts` first, then
+	/// config) and reaches here through the application it identified.
+	pub fn server_kind(&self) -> ApiServerKind {
 		match self.app.kind {
-			ApplicationKind::TamanuCentral => Some(ApiServerKind::Central),
-			ApplicationKind::TamanuFacility => Some(ApiServerKind::Facility),
-			ApplicationKind::Postgres => None,
+			ApplicationKind::TamanuFacility => ApiServerKind::Facility,
+			// A Tamanu context is only ever built for a Tamanu subject, and the
+			// registry's arms are what say so.
+			_ => ApiServerKind::Central,
 		}
 	}
 
-	/// The application's configuration as read from its install files, or
-	/// `None` when there are none to have read it from.
+	/// The deployment's configuration as read from its install files, or `None`
+	/// when there are none to have read it from.
 	///
 	/// A check that grades what the configuration says needs to know it came
 	/// from a real config rather than being synthesised from a database URL.
@@ -240,26 +333,16 @@ impl AppCx {
 		self.install_root.is_some().then(|| self.config.as_ref())
 	}
 
-	/// Take a connection for this check, or `None` when there's no database or
-	/// it can't be reached — in which case the check skips.
-	///
-	/// Each check gets its own connection so their queries run in parallel
-	/// rather than pipelining onto one backend, and gives it back when the
-	/// connection drops at the end of the check. The pool bounds how many run
-	/// at once; a check that has to wait for one simply starts later.
-	///
-	/// Logged at debug: a database the sweep can't reach is reported by the
-	/// `db_connect` check, which opens its own connection, so a warning per
-	/// check here would be noise on top of the real signal.
+	/// Take a connection for this check. See [`take_connection`].
 	pub async fn db(&self) -> Option<PgConnection> {
-		let pool = self.pool.as_ref()?;
-		match pool.get().await {
-			Ok(conn) => Some(conn),
-			Err(err) => {
-				tracing::debug!(%err, "could not take a DB connection for this check");
-				None
-			}
-		}
+		take_connection(self.pool.as_ref()).await
+	}
+}
+
+impl PgCx {
+	/// Take a connection for this check. See [`take_connection`].
+	pub async fn db(&self) -> Option<PgConnection> {
+		take_connection(self.pool.as_ref()).await
 	}
 }
 
@@ -361,15 +444,20 @@ pub struct Runner<Cx> {
 
 /// Which subject a check reports for, and what to run for it.
 ///
-/// The scope sits inside the application arm rather than beside the runner, so
-/// a machine runner paired with an application scope is not representable. Both
-/// arms carry a heal because both have one: `canopy_registration` is a machine
-/// check and `fhir_jobs` an application check.
+/// One arm per kind of subject, each carrying the context that subject can
+/// describe. A runner paired with a subject its context does not fit is not
+/// representable, so a Postgres check cannot be handed a deployment's version
+/// or install root and a Tamanu check cannot be filed against a cluster.
+///
+/// The scope narrows only where a subject has roles to narrow to: a Tamanu is a
+/// central or a facility, while a machine and a cluster each need no further
+/// saying. Every arm carries a heal because any of them may have one.
 ///
 /// spec: SUBJ
 pub enum Run {
 	Machine(Runner<MachineCx>),
-	Application(AppScope, Runner<AppCx>),
+	Postgres(Runner<PgCx>),
+	Tamanu(TamanuScope, Runner<TamanuCx>),
 }
 
 /// One check's name + runner.
@@ -392,7 +480,8 @@ impl CheckEntry {
 	pub fn possible_slugs(&self) -> Vec<&'static str> {
 		match &self.run {
 			Run::Machine(_) => vec!["machine"],
-			Run::Application(scope, _) => scope.possible_slugs(),
+			Run::Postgres(_) => vec![ApplicationKind::Postgres.type_slug()],
+			Run::Tamanu(scope, _) => scope.possible_slugs(),
 		}
 	}
 }
@@ -405,11 +494,11 @@ impl CheckEntry {
 /// skipped, and one filed against a subject it does have is handed that
 /// subject's own parameters.
 macro_rules! entry {
-	($name:literal, $module:ident, $subject:ident $(, $opt:tt)*) => {
+	($name:literal, $run:path, $subject:ident $(, $opt:tt)*) => {
 		CheckEntry {
 			name: $name,
 			on_wire: entry!(@on_wire $($opt),*),
-			run: entry!(@run $module, $subject $(, $opt)*),
+			run: entry!(@run $run, $subject $(, $opt)*),
 		}
 	};
 
@@ -429,30 +518,33 @@ macro_rules! entry {
 		Some(HealAction { run: $heal, min_interval: $interval })
 	};
 
-	(@run $module:ident, machine $(, $opt:tt)*) => {
+	(@run $run:path, machine $(, $opt:tt)*) => {
 		Run::Machine(Runner {
-			run: |ctx| Box::pin($module::run(ctx)),
+			run: |ctx| Box::pin($run(ctx)),
 			heal: entry!(@heal $($opt),*),
 		})
 	};
-	(@run $module:ident, postgres $(, $opt:tt)*) => {
-		entry!(@app $module, AppScope::Postgres $(, $opt)*)
+	(@run $run:path, postgres $(, $opt:tt)*) => {
+		Run::Postgres(Runner {
+			run: |ctx| Box::pin($run(ctx)),
+			heal: entry!(@heal $($opt),*),
+		})
 	};
-	(@run $module:ident, tamanu_app $(, $opt:tt)*) => {
-		entry!(@app $module, AppScope::Tamanu $(, $opt)*)
+	(@run $run:path, tamanu_app $(, $opt:tt)*) => {
+		entry!(@tamanu $run, TamanuScope::Any $(, $opt)*)
 	};
-	(@run $module:ident, central $(, $opt:tt)*) => {
-		entry!(@app $module, AppScope::Central $(, $opt)*)
+	(@run $run:path, central $(, $opt:tt)*) => {
+		entry!(@tamanu $run, TamanuScope::Central $(, $opt)*)
 	};
-	(@run $module:ident, facility $(, $opt:tt)*) => {
-		entry!(@app $module, AppScope::Facility $(, $opt)*)
+	(@run $run:path, facility $(, $opt:tt)*) => {
+		entry!(@tamanu $run, TamanuScope::Facility $(, $opt)*)
 	};
 
-	(@app $module:ident, $scope:expr $(, $opt:tt)*) => {
-		Run::Application(
+	(@tamanu $run:path, $scope:expr $(, $opt:tt)*) => {
+		Run::Tamanu(
 			$scope,
 			Runner {
-				run: |ctx| Box::pin($module::run(ctx)),
+				run: |ctx| Box::pin($run(ctx)),
 				heal: entry!(@heal $($opt),*),
 			},
 		)
@@ -464,17 +556,17 @@ macro_rules! entry {
 /// Order here is the order they appear in the CLI render.
 pub fn all() -> Vec<CheckEntry> {
 	vec![
-		entry!("connect", db_connect, postgres),
+		entry!("connect", db_connect::run, postgres),
 		// Reports the postgres version, which is already the application's
 		// `pgVersion` fact — useful in the CLI render, but off the wire.
-		entry!("version", db_version, postgres, off_wire),
-		entry!("migrations", migrations, tamanu_app),
-		entry!("reporting_roles", reporting_roles, tamanu_app),
+		entry!("version", db_version::run, postgres, off_wire),
+		entry!("migrations", migrations::run, tamanu_app),
+		entry!("reporting_roles", reporting_roles::run, tamanu_app),
 		// Its heal applies the schema canopy offers, the one write any check makes
 		// to Tamanu's database.
 		entry!(
 			"reporting_schema",
-			reporting_schema,
+			reporting_schema::run,
 			tamanu_app,
 			(|ctx| Box::pin(reporting_schema::heal(ctx))),
 			(heal::DEFAULT_MIN_INTERVAL)
@@ -482,108 +574,123 @@ pub fn all() -> Vec<CheckEntry> {
 		// An application check that still reads the machine's total memory for its
 		// denominator. Interim, and not an oversight: the substrate work replaces
 		// that reading with the Postgres service's own declared ceiling.
-		entry!("tuning", pg_tuning, postgres),
-		entry!("checksums", pg_checksums, postgres),
-		entry!("disk_free", disk_free, machine),
-		entry!("inodes", inodes, machine),
-		entry!("btrfs", btrfs, machine),
+		entry!("tuning", pg_tuning::run, postgres),
+		entry!("checksums", pg_checksums::run, postgres),
+		// Telemetry for the service running the cluster, graded only where that
+		// service declares a ceiling.
+		entry!(
+			"service_resources",
+			service_resources::postgres::run,
+			postgres
+		),
+		entry!("disk_free", disk_free::run, machine),
+		entry!("inodes", inodes::run, machine),
+		entry!("btrfs", btrfs::run, machine),
 		// Filesystem-level snapshots, and what they capture is not confined to any
 		// one application's database, so they are the machine's concern.
-		entry!("held_captures", held_captures, machine),
-		entry!("memory", memory, machine),
-		entry!("load", load, machine),
+		entry!("held_captures", held_captures::run, machine),
+		entry!("memory", memory::run, machine),
+		entry!("load", load::run, machine),
 		// Uptime is already a machine fact; the soft "recently rebooted" warning is
 		// CLI-only, so keep it off the wire.
-		entry!("uptime", uptime, machine, off_wire),
-		entry!("time_sync", time_sync, machine),
+		entry!("uptime", uptime::run, machine, off_wire),
+		entry!("time_sync", time_sync::run, machine),
 		// Needs a reachable Tamanu DB / deployment but not the config files, so it
 		// runs against a `TAMANU_DATABASE_URL`-only host too.
-		entry!("tamanu_http", tamanu_http, tamanu_app),
+		entry!("tamanu_http", tamanu_http::run, tamanu_app),
 		// The front-end software itself is the machine's: these grade what is
 		// installed on the box, not what it serves. They skip gracefully when caddy
 		// isn't present.
-		entry!("caddy_version", caddy_version, machine),
-		entry!("caddy_resolvers", caddy_resolvers, machine),
+		entry!("caddy_version", caddy_version::run, machine),
+		entry!("caddy_resolvers", caddy_resolvers::run, machine),
 		// The certificates, by contrast, are the application's: they are issued for
 		// the names it answers on.
-		entry!("caddy_certs", caddy_certs, tamanu_app),
+		entry!("caddy_certs", caddy_certs::run, tamanu_app),
 		// Grades the machine's Caddyfile version marker, so it reports for the
 		// machine — reading the deployment's version off the machine's context to
 		// tell whether the marker is stale. Windows-only, and self-skips when
 		// there is no Tamanu on the host or caddy isn't present.
-		entry!("caddyfile_version", caddyfile_version, machine),
+		entry!("caddyfile_version", caddyfile_version::run, machine),
 		// The error rates are the application's traffic, however the front end in
 		// front of it happens to be reached.
-		entry!("http_errors", http_errors, tamanu_app),
-		entry!("tailscale", tailscale, machine, off_wire),
-		entry!("tailscale_config", tailscale_config, machine),
+		entry!("http_errors", http_errors::run, tamanu_app),
+		entry!("tailscale", tailscale::run, machine, off_wire),
+		entry!("tailscale_config", tailscale_config::run, machine),
 		// bestool's own Canopy enrolment is the machine's: it reports so Canopy sees
 		// an incomplete registration before it blocks backups.
 		entry!(
 			"canopy_registration",
-			canopy_registration,
+			canopy_registration::run,
 			machine,
 			(|ctx| Box::pin(canopy_registration::heal(ctx))),
 			(heal::DEFAULT_MIN_INTERVAL)
 		),
 		// Reports the machine's LAN and best-guess WAN addresses as facts (off the
 		// wire; carried in the machine's detail, like the timezone).
-		entry!("ips", ips, machine, off_wire),
+		entry!("ips", ips::run, machine, off_wire),
 		// Reports whether munin-node is installed as a machine fact (off the wire,
 		// like `ips`); not a health signal.
-		entry!("munin", munin, machine, off_wire),
+		entry!("munin", munin::run, machine, off_wire),
 		// Read against the machine, so a machine hosting several applications
 		// carries one set of tags rather than one per application.
-		entry!("billing_tags", billing_tags, machine),
+		entry!("billing_tags", billing_tags::run, machine),
 		// The config-derived FHIR expectation degrades to Unknown without config
 		// (see `services::expected`); the rest is DB/host-derived.
-		entry!("tamanu_service", tamanu_service, tamanu_app),
+		entry!("tamanu_service", tamanu_service::run, tamanu_app),
 		// Compares running container tags against the deployment's version, which is
 		// the install's env-file version when present and the DB's recorded
 		// `currentVersion` otherwise. It self-skips if neither is available.
-		entry!("version_drift", version_drift, tamanu_app),
-		entry!("external_users", external_users, machine),
-		entry!("sync_sessions", sync_sessions, tamanu_app),
+		entry!("version_drift", version_drift::run, tamanu_app),
+		// Per-service memory and processor usage, dimensioned by duty and
+		// service. Graded only against a ceiling a service declares for itself,
+		// never against the machine's total.
+		entry!(
+			"service_resources",
+			service_resources::tamanu::run,
+			tamanu_app
+		),
+		entry!("external_users", external_users::run, machine),
+		entry!("sync_sessions", sync_sessions::run, tamanu_app),
 		// Config-derived: the FHIR API and worker toggles must agree.
-		entry!("fhir_config", fhir_config, tamanu_app),
+		entry!("fhir_config", fhir_config::run, tamanu_app),
 		// Restart the FHIR workers when the backlog check fails, capped at one
 		// attempt an hour so a queue that drains slowly isn't repeatedly kicked.
 		// The heal is central-only even though the check itself is not.
 		entry!(
 			"fhir_jobs",
-			fhir_jobs,
+			fhir_jobs::run,
 			tamanu_app,
 			(|ctx| Box::pin(fhir_jobs::heal(ctx))),
 			(std::time::Duration::from_secs(60 * 60))
 		),
-		entry!("fhir_workers", fhir_workers, central),
+		entry!("fhir_workers", fhir_workers::run, central),
 		entry!(
 			"certificate_notification_errors",
-			certificate_notification_errors,
+			certificate_notification_errors::run,
 			central
 		),
-		entry!("ips_errors", ips_errors, central),
+		entry!("ips_errors", ips_errors::run, central),
 		entry!(
 			"patient_communication_errors",
-			patient_communication_errors,
+			patient_communication_errors::run,
 			central
 		),
-		entry!("report_errors", report_errors, central),
-		entry!("fhir_job_errors", fhir_job_errors, central),
-		entry!("sync_session_errors", sync_session_errors, central),
-		entry!("sync_facility_stale", sync_facility_stale, central),
-		entry!("sync_snapshot_tables", sync_snapshot_tables, central),
-		entry!("sync_lookup", sync_lookup, central),
-		entry!("sync_restart_loop", sync_restart_loop, central),
+		entry!("report_errors", report_errors::run, central),
+		entry!("fhir_job_errors", fhir_job_errors::run, central),
+		entry!("sync_session_errors", sync_session_errors::run, central),
+		entry!("sync_facility_stale", sync_facility_stale::run, central),
+		entry!("sync_snapshot_tables", sync_snapshot_tables::run, central),
+		entry!("sync_lookup", sync_lookup::run, central),
+		entry!("sync_restart_loop", sync_restart_loop::run, central),
 		entry!(
 			"fhir_service_requests_unresolved",
-			fhir_service_requests_unresolved,
+			fhir_service_requests_unresolved::run,
 			central
 		),
 		// Measures the outcome of materialisation rather than its queue: upstream
 		// records that never became FHIR resources, which every other fhir_* check
 		// reads as green.
-		entry!("fhir_materialisation", fhir_materialisation, central),
+		entry!("fhir_materialisation", fhir_materialisation::run, central),
 	]
 }
 
@@ -592,7 +699,7 @@ pub mod test_support {
 	//! Helpers for DB-backed check tests.
 	//!
 	//! Each check is central-only and DB-backed, so its tests need an
-	//! [`AppCx`] wired to one of the local `tamanu-central` /
+	//! [`TamanuCx`] wired to one of the local `tamanu-central` /
 	//! `tamanu-facility` databases. These connect lazily and return `None` when
 	//! the DB is unavailable so the suite degrades gracefully off-CI.
 
@@ -601,9 +708,11 @@ pub mod test_support {
 	use bestool_postgres::pool::PgPool;
 	use node_semver::Version;
 
-	use bestool_tamanu::config::TamanuConfig;
+	use bestool_tamanu::config::{Database, TamanuConfig};
 
-	use super::AppCx;
+	use super::{PgCx, TamanuCx};
+	use crate::runtime::fake::{FakeRuntime, FakeTraffic};
+	use crate::store::MemoryStore;
 	use crate::subject::{ApplicationKind, ApplicationRef};
 
 	fn central_config() -> TamanuConfig {
@@ -635,11 +744,11 @@ pub mod test_support {
 		.ok()
 	}
 
-	/// A central [`AppCx`] backed by `tamanu-central`, or `None` if that DB
+	/// A central [`TamanuCx`] backed by `tamanu-central`, or `None` if that DB
 	/// can't be reached.
-	pub async fn central_ctx() -> Option<AppCx> {
+	pub async fn central_ctx() -> Option<TamanuCx> {
 		let pool = connect("tamanu-central").await?;
-		Some(AppCx {
+		Some(TamanuCx {
 			app: ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
 			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(central_config()),
@@ -647,14 +756,17 @@ pub mod test_support {
 			database_url: "postgresql://localhost/tamanu-central".into(),
 			pool: Some(pool),
 			http: reqwest::Client::new(),
+			runtime: Arc::new(FakeRuntime::empty()),
+			traffic: Arc::new(FakeTraffic::absent()),
+			store: Arc::new(MemoryStore::new()),
 			canopy: None,
 		})
 	}
 
-	/// A facility [`AppCx`] with no DB; central-only checks skip on it before
+	/// A facility [`TamanuCx`] with no DB; central-only checks skip on it before
 	/// ever touching the database.
-	pub fn facility_ctx() -> AppCx {
-		AppCx {
+	pub fn facility_ctx() -> TamanuCx {
+		TamanuCx {
 			app: ApplicationRef::tamanu(ApplicationKind::TamanuFacility),
 			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(facility_config()),
@@ -662,7 +774,38 @@ pub mod test_support {
 			database_url: "postgresql://localhost/tamanu-facility".into(),
 			pool: None,
 			http: reqwest::Client::new(),
+			runtime: Arc::new(FakeRuntime::empty()),
+			traffic: Arc::new(FakeTraffic::absent()),
+			store: Arc::new(MemoryStore::new()),
 			canopy: None,
+		}
+	}
+
+	/// A [`PgCx`] for the cluster serving the local `tamanu-central` database,
+	/// or `None` if it can't be reached.
+	pub async fn cluster_ctx() -> Option<PgCx> {
+		let url = "postgresql://localhost/tamanu-central";
+		Some(PgCx {
+			app: ApplicationRef::local_postgres(5432),
+			database: Database::from_url(url).expect("a literal URL parses"),
+			database_url: url.into(),
+			pool: Some(connect("tamanu-central").await?),
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
+		})
+	}
+
+	/// A [`PgCx`] with no pool; checks needing a connection skip on it before
+	/// ever reaching the server.
+	pub fn unreachable_cluster_ctx() -> PgCx {
+		let url = "postgresql://localhost/tamanu-facility";
+		PgCx {
+			app: ApplicationRef::local_postgres(5432),
+			database: Database::from_url(url).expect("a literal URL parses"),
+			database_url: url.into(),
+			pool: None,
+			runtime: Arc::new(FakeRuntime::empty()),
+			store: Arc::new(MemoryStore::new()),
 		}
 	}
 }
@@ -674,7 +817,7 @@ mod tests {
 	use std::sync::Arc;
 
 	use super::{
-		AppCx, CheckEntry, Run, Runner, all, fmt_db_error, query_error_check,
+		CheckEntry, PgCx, Run, Runner, TamanuCx, all, fmt_db_error, query_error_check,
 		test_support::central_ctx,
 	};
 	use crate::check::CheckStatus;
@@ -722,17 +865,17 @@ mod tests {
 		all().into_iter().find(|e| e.name == name).unwrap()
 	}
 
-	/// An application context for a Tamanu known only through its database: no
+	/// A deployment context for a Tamanu known only through its database: no
 	/// install root, and a URL pointing at a closed port so connection attempts
 	/// fail fast.
-	fn db_only_ctx() -> AppCx {
+	fn db_only_ctx() -> TamanuCx {
 		use bestool_tamanu::config::{Database, TamanuConfig};
 		use node_semver::Version;
 
 		use crate::subject::{ApplicationKind, ApplicationRef};
 
 		let db = Database::from_url("postgresql://u@127.0.0.1:1/tamanu").unwrap();
-		AppCx {
+		TamanuCx {
 			app: ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
 			version: Version::parse("0.0.0").unwrap(),
 			config: Arc::new(TamanuConfig::from_database(db)),
@@ -740,25 +883,43 @@ mod tests {
 			database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
 			pool: None,
 			http: reqwest::Client::new(),
+			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
+			traffic: Arc::new(crate::runtime::fake::FakeTraffic::absent()),
+			store: Arc::new(crate::store::MemoryStore::new()),
 			canopy: None,
 		}
 	}
 
-	/// The Postgres application on the same host, reached at the same closed
-	/// port.
-	fn postgres_ctx() -> AppCx {
+	/// The Postgres cluster on the same host, reached at the same closed port.
+	fn postgres_ctx() -> PgCx {
+		use bestool_tamanu::config::Database;
+
 		use crate::subject::ApplicationRef;
 
-		AppCx {
+		PgCx {
 			app: ApplicationRef::local_postgres(1),
-			..db_only_ctx()
+			database: Database::from_url("postgresql://u@127.0.0.1:1/tamanu").unwrap(),
+			database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
+			pool: None,
+			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
+			store: Arc::new(crate::store::MemoryStore::new()),
 		}
 	}
 
-	/// The application runner for `name`, which every check named here is.
-	fn app_runner(entry: &CheckEntry) -> &Runner<AppCx> {
+	/// The Tamanu runner for `name`.
+	fn tamanu_runner(entry: &CheckEntry) -> &Runner<TamanuCx> {
 		match &entry.run {
-			Run::Application(_, runner) => runner,
+			Run::Tamanu(_, runner) => runner,
+			Run::Postgres(_) => panic!("{} is a Postgres check", entry.name),
+			Run::Machine(_) => panic!("{} is a machine check", entry.name),
+		}
+	}
+
+	/// The Postgres runner for `name`.
+	fn pg_runner(entry: &CheckEntry) -> &Runner<PgCx> {
+		match &entry.run {
+			Run::Postgres(runner) => runner,
+			Run::Tamanu(..) => panic!("{} is a Tamanu check", entry.name),
 			Run::Machine(_) => panic!("{} is a machine check", entry.name),
 		}
 	}
@@ -774,7 +935,7 @@ mod tests {
 		// that genuinely read install files. `fhir_config` is the one that does,
 		// and it is the positive control: without it this asserts nothing.
 		let entry = entry_of("fhir_config");
-		let check = (app_runner(&entry).run)(db_only_ctx()).await;
+		let check = (tamanu_runner(&entry).run)(db_only_ctx()).await;
 		assert!(
 			matches!(check.status, CheckStatus::Skip(_)),
 			"fhir_config reads the install's config, so it skips without one"
@@ -791,7 +952,7 @@ mod tests {
 			"http_errors",
 		] {
 			let entry = entry_of(name);
-			let check = (app_runner(&entry).run)(db_only_ctx()).await;
+			let check = (tamanu_runner(&entry).run)(db_only_ctx()).await;
 			assert_ne!(
 				check.summary, NO_INSTALL_SUMMARY,
 				"{name} should not be install-gated"
@@ -804,7 +965,7 @@ mod tests {
 		// `connect` only needs the URL. An unreachable one must FAIL (an alert),
 		// proving it wasn't skipped for want of an install.
 		let entry = entry_of("connect");
-		let check = (app_runner(&entry).run)(postgres_ctx()).await;
+		let check = (pg_runner(&entry).run)(postgres_ctx()).await;
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
 			"connect should run (and fail) against an application with no install, got {:?}",
@@ -820,11 +981,19 @@ mod tests {
 	/// spec: SUBJ
 	#[test]
 	fn checks_are_filed_under_the_subject_they_report_for() {
-		use crate::subject::AppScope;
+		use crate::subject::TamanuScope;
+
+		#[derive(Debug, PartialEq, Eq)]
+		enum Arm {
+			Machine,
+			Postgres,
+			Tamanu(TamanuScope),
+		}
 
 		let arm_of = |name: &str| match entry_of(name).run {
-			Run::Machine(_) => None,
-			Run::Application(scope, _) => Some(scope),
+			Run::Machine(_) => Arm::Machine,
+			Run::Postgres(_) => Arm::Postgres,
+			Run::Tamanu(scope, _) => Arm::Tamanu(scope),
 		};
 
 		// The machine's filesystems, its clock, and the front-end software
@@ -835,13 +1004,13 @@ mod tests {
 			"caddy_version",
 			"caddyfile_version",
 		] {
-			assert_eq!(arm_of(name), None, "{name} reports for the machine");
+			assert_eq!(arm_of(name), Arm::Machine, "{name} reports for the machine");
 		}
 		// The cluster itself, not whatever reads from it.
 		for name in ["connect", "version", "tuning", "checksums"] {
 			assert_eq!(
 				arm_of(name),
-				Some(AppScope::Postgres),
+				Arm::Postgres,
 				"{name} reports for the Postgres application"
 			);
 		}
@@ -849,16 +1018,19 @@ mod tests {
 		for name in ["migrations", "caddy_certs", "http_errors"] {
 			assert_eq!(
 				arm_of(name),
-				Some(AppScope::Tamanu),
+				Arm::Tamanu(TamanuScope::Any),
 				"{name} reports for a Tamanu application"
 			);
 		}
-		assert_eq!(arm_of("fhir_workers"), Some(AppScope::Central));
+		assert_eq!(arm_of("fhir_workers"), Arm::Tamanu(TamanuScope::Central));
 	}
 
-	/// A context describes the application it was built for, so the role it
+	/// A context describes the deployment it was built for, so the role it
 	/// reports comes from the subject rather than from whatever the sweep
-	/// happened to resolve alongside it. A cluster plays no Tamanu role at all.
+	/// happened to resolve alongside it.
+	///
+	/// That a cluster answers with no role is not asserted here: `PgCx` has no
+	/// `server_kind` to call, so asking one for a Tamanu role does not compile.
 	///
 	/// spec: SUBJ
 	#[test]
@@ -868,19 +1040,13 @@ mod tests {
 		use crate::subject::{ApplicationKind, ApplicationRef};
 
 		let central = db_only_ctx();
-		assert_eq!(central.server_kind(), Some(ApiServerKind::Central));
+		assert_eq!(central.server_kind(), ApiServerKind::Central);
 
-		let facility = AppCx {
+		let facility = TamanuCx {
 			app: ApplicationRef::tamanu(ApplicationKind::TamanuFacility),
 			..db_only_ctx()
 		};
-		assert_eq!(facility.server_kind(), Some(ApiServerKind::Facility));
-
-		assert_eq!(
-			postgres_ctx().server_kind(),
-			None,
-			"a cluster is not a Tamanu and must not answer with a role it has not got"
-		);
+		assert_eq!(facility.server_kind(), ApiServerKind::Facility);
 	}
 
 	/// A check is named within its subject, so the registry's names are unique
@@ -909,15 +1075,15 @@ mod tests {
 	fn heals_sit_in_their_check_s_arm() {
 		let machine_heal = match entry_of("canopy_registration").run {
 			Run::Machine(runner) => runner.heal.is_some(),
-			Run::Application(..) => panic!("canopy_registration is a machine check"),
+			_ => panic!("canopy_registration is a machine check"),
 		};
 		assert!(machine_heal, "canopy_registration declares a machine heal");
 
-		let app_heal = match entry_of("fhir_jobs").run {
-			Run::Application(_, runner) => runner.heal.is_some(),
-			Run::Machine(_) => panic!("fhir_jobs is an application check"),
+		let tamanu_heal = match entry_of("fhir_jobs").run {
+			Run::Tamanu(_, runner) => runner.heal.is_some(),
+			_ => panic!("fhir_jobs is a Tamanu check"),
 		};
-		assert!(app_heal, "fhir_jobs declares an application heal");
+		assert!(tamanu_heal, "fhir_jobs declares a Tamanu heal");
 	}
 
 	async fn query_err(sql: &str) -> Option<tokio_postgres::Error> {

@@ -4,7 +4,7 @@
 //! staleness: WARN past 2 minutes, FAIL past 5. If the tracking row is absent,
 //! treat the lookup as not tracked and pass.
 
-use super::{AppCx, query_error_check};
+use super::{TamanuCx, query_error_check};
 use crate::Stat;
 use crate::check::{Check, CheckStatus};
 
@@ -16,7 +16,7 @@ const SQL: &str = "SELECT value AS last_sync_tick, updated_at::text AS last_upda
 const WARN_SECS: i64 = 2 * 60;
 const FAIL_SECS: i64 = 5 * 60;
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};

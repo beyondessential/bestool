@@ -18,7 +18,7 @@ use bestool_canopy::CanopyClient;
 use miette::{IntoDiagnostic as _, bail};
 use node_semver::Version;
 
-use super::{AppCx, fmt_db_error};
+use super::{TamanuCx, fmt_db_error};
 use crate::{check::Check, heal::HealOutcome};
 
 const NAME: &str = "reporting_schema";
@@ -35,7 +35,7 @@ const ARTIFACT_TYPE: &str = "reporting-schema";
 const STAMP_SQL: &str = "SELECT obj_description(oid, 'pg_namespace') AS stamp \
 	FROM pg_namespace WHERE nspname = 'reporting'";
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	let Some(db) = ctx.db().await else {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
@@ -358,7 +358,7 @@ const MAX_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
 /// Applying is the one thing on this host that writes to Tamanu's database, so
 /// it lives here rather than in the check: heal runs only in the daemon, only
 /// when the check graded a failure, and behind the shared backoff.
-pub async fn heal(ctx: AppCx) -> HealOutcome {
+pub async fn heal(ctx: TamanuCx) -> HealOutcome {
 	// A heal that never returns holds the attempt slot for the life of the
 	// process, so self-heal stops for this check with nothing to say so.
 	match tokio::time::timeout(HEAL_DEADLINE, apply_offered(ctx)).await {
@@ -373,7 +373,7 @@ pub async fn heal(ctx: AppCx) -> HealOutcome {
 /// Longest one apply may take before the attempt is abandoned.
 const HEAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-async fn apply_offered(ctx: AppCx) -> HealOutcome {
+async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 	let (Some(db), Some(canopy)) = (ctx.db().await, ctx.canopy.as_ref()) else {
 		return HealOutcome::Deferred;
 	};

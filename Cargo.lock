@@ -698,6 +698,7 @@ dependencies = [
 name = "bestool-alertd"
 version = "28.0.1"
 dependencies = [
+ "async-trait",
  "bestool-canopy",
  "bestool-postgres",
  "bestool-tamanu",
@@ -716,6 +717,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sysinfo",
+ "tempfile",
  "tokio",
  "tokio-postgres",
  "tokio-rustls",

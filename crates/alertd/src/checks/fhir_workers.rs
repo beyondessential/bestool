@@ -17,7 +17,7 @@
 //! pool for a live worker to take, and their rows sit there until the deployment
 //! prunes the table, so an operator has no way to act on them.
 
-use super::{AppCx, query_error_check};
+use super::{TamanuCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 
@@ -50,7 +50,7 @@ const SQL: &str = "\
 		WHERE deleted_at IS NULL
 	) t";
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	if !ctx.config.fhir_worker_enabled() {
 		return Check::skip(
 			NAME,

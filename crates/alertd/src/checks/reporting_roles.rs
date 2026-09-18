@@ -13,7 +13,7 @@
 
 use node_semver::Version;
 
-use super::{AppCx, query_error_check};
+use super::{TamanuCx, query_error_check};
 use crate::check::Check;
 
 const NAME: &str = "reporting_roles";
@@ -34,7 +34,7 @@ const SQL: &str = "SELECT \
 		AND m.member = r.oid AND m.admin_option) AS roles_administrable \
 	FROM pg_roles r WHERE r.rolname = $1";
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	if is_unknown_version(&ctx.version) {
 		return Check::skip(
 			NAME,
@@ -173,7 +173,7 @@ mod tests {
 		.expect("test config should parse")
 	}
 
-	async fn current_role(ctx: &AppCx) -> String {
+	async fn current_role(ctx: &TamanuCx) -> String {
 		ctx.db()
 			.await
 			.unwrap()

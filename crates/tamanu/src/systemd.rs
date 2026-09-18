@@ -37,6 +37,44 @@ impl UnitState {
 	}
 }
 
+/// One entry from `ListUnitFilesByPatterns`: a unit that is installed on the
+/// host, whether or not it is currently loaded.
+///
+/// Distinct from [`UnitState`], which only covers units systemd has loaded. A
+/// unit can be installed and enabled without being loaded — the state an
+/// operator leaves behind by enabling a unit they have not started.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnitFile {
+	/// The unit name, e.g. `tamanu-central-api@1.service`. The D-Bus method
+	/// answers with the unit file's path; this is its basename.
+	pub name: String,
+	/// `enabled`, `disabled`, `static`, `masked`, …
+	pub state: String,
+}
+
+impl UnitFile {
+	/// Whether systemd will start this unit of its own accord at boot.
+	pub fn enabled(&self) -> bool {
+		self.state == "enabled" || self.state == "enabled-runtime"
+	}
+}
+
+/// The resource readings systemd holds for one service unit.
+///
+/// Every field is optional because systemd answers `u64::MAX` for a reading it
+/// does not have — an unset `MemoryMax` is infinity, and a unit with no cgroup
+/// has no `MemoryCurrent` — and infinity is not a number a caller should ever
+/// see as a quantity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UnitResources {
+	/// `MemoryCurrent`, in bytes.
+	pub memory_bytes: Option<u64>,
+	/// `MemoryMax`, in bytes: the ceiling declared for this unit specifically.
+	pub memory_max_bytes: Option<u64>,
+	/// `CPUUsageNSec`: processor time consumed since the unit started.
+	pub processor_nanos: Option<u64>,
+}
+
 /// Probe `is_enabled` for many unit names in one go and return the subset
 /// that came back `enabled` or `enabled-runtime`. Errors on individual probes
 /// are treated as "not enabled" — matches the previous best-effort semantics.
@@ -62,24 +100,51 @@ mod linux {
 	use tokio::sync::OnceCell;
 	use tracing::debug;
 	use zbus_systemd::{
-		systemd1::{JobRemovedStream, ManagerProxy},
+		systemd1::{JobRemovedStream, ManagerProxy, ServiceProxy, UnitProxy},
 		zbus::{self, Connection, zvariant::OwnedObjectPath},
 	};
 
-	use super::UnitState;
+	use super::{UnitFile, UnitResources, UnitState};
 
 	static CONNECTION: OnceCell<Connection> = OnceCell::const_new();
 
-	async fn manager() -> Result<ManagerProxy<'static>> {
-		let conn = CONNECTION
+	/// How long any one read off the bus may take.
+	///
+	/// A read that never returns is worse than one that fails: the sweep these
+	/// feed has to finish and report, and a check that hangs takes the whole
+	/// sweep with it — so nothing reaches canopy and the watchdog restarts the
+	/// daemon into the same hang. Every caller already handles a read that
+	/// could not be taken, so a bounded failure degrades into a skip.
+	///
+	/// Generous against a healthy bus, where these answer in milliseconds.
+	const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+	/// Bound a read off the bus, naming it if it runs out of time.
+	async fn bounded<T>(
+		what: &str,
+		read: impl std::future::Future<Output = Result<T>>,
+	) -> Result<T> {
+		match tokio::time::timeout(READ_TIMEOUT, read).await {
+			Ok(result) => result,
+			Err(_) => bail!("systemd {what} did not answer within {READ_TIMEOUT:?}"),
+		}
+	}
+
+	async fn connection() -> Result<&'static Connection> {
+		CONNECTION
 			.get_or_try_init(|| async {
 				Connection::system()
 					.await
 					.into_diagnostic()
 					.map_err(|e| e.wrap_err("opening system D-Bus connection"))
 			})
-			.await?;
-		ManagerProxy::new(conn).await.into_diagnostic()
+			.await
+	}
+
+	async fn manager() -> Result<ManagerProxy<'static>> {
+		ManagerProxy::new(connection().await?)
+			.await
+			.into_diagnostic()
 	}
 
 	/// `systemctl list-units ... <patterns>`. Empty `patterns` returns nothing.
@@ -90,6 +155,10 @@ mod linux {
 		if patterns.is_empty() {
 			return Ok(Vec::new());
 		}
+		bounded("list_units", list_units_inner(patterns)).await
+	}
+
+	async fn list_units_inner(patterns: &[&str]) -> Result<Vec<UnitState>> {
 		let mgr = manager().await?;
 		let raw = mgr
 			.list_units_by_patterns(
@@ -110,9 +179,104 @@ mod linux {
 			.collect())
 	}
 
+	/// `systemctl list-unit-files <patterns>`. Empty `patterns` returns nothing.
+	///
+	/// Covers units that are installed but not loaded, which
+	/// [`list_units`] cannot see. The D-Bus method answers with each unit
+	/// file's path; the name is its basename.
+	pub async fn list_unit_files(patterns: &[&str]) -> Result<Vec<UnitFile>> {
+		if patterns.is_empty() {
+			return Ok(Vec::new());
+		}
+		bounded("list_unit_files", list_unit_files_inner(patterns)).await
+	}
+
+	async fn list_unit_files_inner(patterns: &[&str]) -> Result<Vec<UnitFile>> {
+		let mgr = manager().await?;
+		let raw = mgr
+			.list_unit_files_by_patterns(
+				Vec::new(),
+				patterns.iter().map(|s| (*s).to_string()).collect(),
+			)
+			.await
+			.into_diagnostic()?;
+		Ok(raw
+			.into_iter()
+			.map(|(path, state)| UnitFile {
+				name: path.rsplit('/').next().unwrap_or(&path).to_string(),
+				state,
+			})
+			.collect())
+	}
+
+	/// Read `MemoryCurrent`, `MemoryMax` and `CPUUsageNSec` for a service unit.
+	///
+	/// `u64::MAX` is systemd's "no value" for each of these — an unset
+	/// `MemoryMax` is infinity, and a unit with no cgroup (not running, or
+	/// accounting off) has neither a current nor a usage — so it maps to
+	/// `None` rather than being passed on as a quantity.
+	pub async fn unit_resources(unit: &str) -> Result<UnitResources> {
+		bounded("unit_resources", unit_resources_inner(unit)).await
+	}
+
+	async fn unit_resources_inner(unit: &str) -> Result<UnitResources> {
+		let conn = connection().await?;
+		let mgr = ManagerProxy::new(conn).await.into_diagnostic()?;
+		let path = mgr
+			.get_unit(unit.to_string())
+			.await
+			.map_err(|e| miette!("systemd get_unit({unit}) failed: {e}"))?;
+		let service = ServiceProxy::builder(conn)
+			.path(path)
+			.into_diagnostic()?
+			.build()
+			.await
+			.into_diagnostic()?;
+
+		let finite = |v: Result<u64, zbus::Error>| v.ok().filter(|n| *n != u64::MAX);
+		Ok(UnitResources {
+			memory_bytes: finite(service.memory_current().await),
+			memory_max_bytes: finite(service.memory_max().await),
+			processor_nanos: finite(service.cpu_usage_n_sec().await),
+		})
+	}
+
+	/// The service unit a process belongs to, by pid.
+	///
+	/// `None` when the pid is in no unit systemd owns. Only meaningful for a
+	/// pid on this machine: a pid from elsewhere resolves against this host's
+	/// process table and would name whatever happens to hold that number.
+	pub async fn unit_for_pid(pid: u32) -> Result<Option<String>> {
+		bounded("unit_for_pid", unit_for_pid_inner(pid)).await
+	}
+
+	async fn unit_for_pid_inner(pid: u32) -> Result<Option<String>> {
+		let conn = connection().await?;
+		let mgr = ManagerProxy::new(conn).await.into_diagnostic()?;
+		let path = match mgr.get_unit_by_pid(pid).await {
+			Ok(path) => path,
+			Err(zbus::Error::MethodError(..)) => return Ok(None),
+			Err(e) => return Err(miette!("systemd get_unit_by_pid({pid}) failed: {e}")),
+		};
+		let unit = UnitProxy::builder(conn)
+			.path(path)
+			.into_diagnostic()?
+			.build()
+			.await
+			.into_diagnostic()?;
+		unit.id()
+			.await
+			.map(Some)
+			.map_err(|e| miette!("reading the unit id for pid {pid} failed: {e}"))
+	}
+
 	/// `systemctl is-active --quiet <unit>`. Returns true when the unit is
 	/// currently `active`. Returns false for unknown / not-loaded units.
 	pub async fn is_active(unit: &str) -> Result<bool> {
+		bounded("is_active", is_active_inner(unit)).await
+	}
+
+	async fn is_active_inner(unit: &str) -> Result<bool> {
 		let mgr = manager().await?;
 		let raw = mgr
 			.list_units_by_patterns(Vec::new(), vec![unit.to_string()])
@@ -126,6 +290,10 @@ mod linux {
 	/// existence probes where the enabled/disabled state is irrelevant — e.g.
 	/// "is the template `tamanu-patientportal@.service` installed at all?".
 	pub async fn unit_file_exists(unit: &str) -> Result<bool> {
+		bounded("unit_file_exists", unit_file_exists_inner(unit)).await
+	}
+
+	async fn unit_file_exists_inner(unit: &str) -> Result<bool> {
 		let mgr = manager().await?;
 		match mgr.get_unit_file_state(unit.to_string()).await {
 			Ok(_) => Ok(true),
@@ -147,6 +315,10 @@ mod linux {
 	/// false for `disabled`, `static`, `masked`, `alias`, `linked`, `not-found`,
 	/// and any not-loaded/not-installed errors.
 	pub async fn is_enabled(unit: &str) -> Result<bool> {
+		bounded("is_enabled", is_enabled_inner(unit)).await
+	}
+
+	async fn is_enabled_inner(unit: &str) -> Result<bool> {
 		let mgr = manager().await?;
 		match mgr.get_unit_file_state(unit.to_string()).await {
 			Ok(state) => Ok(state == "enabled" || state == "enabled-runtime"),
@@ -293,12 +465,21 @@ mod linux {
 mod stub {
 	use miette::{Result, bail};
 
-	use super::UnitState;
+	use super::{UnitFile, UnitResources, UnitState};
 
 	const UNSUPPORTED: &str = "systemd is only available on Linux";
 
 	pub async fn list_units(_: &[&str]) -> Result<Vec<UnitState>> {
 		Ok(Vec::new())
+	}
+	pub async fn list_unit_files(_: &[&str]) -> Result<Vec<UnitFile>> {
+		Ok(Vec::new())
+	}
+	pub async fn unit_resources(_: &str) -> Result<UnitResources> {
+		Ok(UnitResources::default())
+	}
+	pub async fn unit_for_pid(_: u32) -> Result<Option<String>> {
+		Ok(None)
 	}
 	pub async fn is_active(_: &str) -> Result<bool> {
 		Ok(false)

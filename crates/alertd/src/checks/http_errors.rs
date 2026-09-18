@@ -1,48 +1,40 @@
 //! HTTP error rate over a sliding 10-minute window.
 //!
-//! Caddy's admin API at `localhost:2019` exposes `/metrics` in Prometheus text
-//! format. The relevant series is `caddy_http_request_duration_seconds_count`,
-//! labelled with the HTTP status code. Prometheus counters only grow over
-//! Caddy's lifetime, so cumulative ratios become useless very quickly: a
-//! genuine spike right now barely moves the needle against months of clean
-//! traffic.
+//! The counters come from the substrate, which reads whatever fronts the
+//! application. They are cumulative and only grow over a front end's lifetime,
+//! so cumulative ratios become useless very quickly: a genuine spike right now
+//! barely moves the needle against months of clean traffic.
 //!
-//! To get a rate that reflects *recent* health we snapshot the counters to
-//! disk on every doctor run, then compare against the oldest snapshot that's
-//! still within the window. With the default 1-minute cron there are normally
-//! ~10 snapshots covering the last 10 minutes; ad-hoc manual runs piggy-back
-//! on whatever the cron just wrote. If no usable historical snapshot exists
-//! (cold start, cache wiped, Caddy restarted) we fall back to a 10-second
-//! in-run sample.
+//! To get a rate that reflects *recent* health we snapshot the counters on every
+//! sweep, then compare against the oldest snapshot that's still within the
+//! window. With the default 1-minute cron there are normally ~10 snapshots
+//! covering the last 10 minutes; ad-hoc manual runs piggy-back on whatever the
+//! cron just wrote. If no usable historical snapshot exists (cold start, cache
+//! wiped, front end restarted) we fall back to a 10-second in-run sample.
+//!
+//! History is kept per source, because the counters behind it are per front end
+//! and those roll: a source that has vanished is dropped rather than its
+//! disappearance being graded as the quantity having fallen.
 //!
 //! Only 5xx responses count as errors; 4xx responses are client mistakes
 //! (bad URLs, auth, etc.) and aren't worth alerting on.
 //!
-//! Caddy instruments its handlers only when its config switches metrics on, and
-//! serves `/metrics` with its process and admin series either way. So finding no
-//! request counters at all says nothing about how busy the server is, and the
-//! check reads the config to tell an idle server from an uninstrumented one,
-//! skipping rather than reporting health it never measured.
+//! spec: SUB#http-traffic-and-certificates
 
-use std::{
-	collections::BTreeMap,
-	path::{Path, PathBuf},
-	time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::task::spawn_blocking;
-use tracing::{debug, warn};
 
-use super::{AppCx, fmt_chain};
+use super::TamanuCx;
 use crate::Stat;
 use crate::check::Check;
+use crate::runtime::{HttpRuntime, TrafficCounters, Unavailable};
+use crate::store::{CheckStore, CheckStoreJson, Lifetime};
 
-const CADDY_METRICS_URL: &str = "http://localhost:2019/metrics";
-const CADDY_CONFIG_URL: &str = "http://localhost:2019/config/apps/http";
-const TIMEOUT: Duration = Duration::from_secs(3);
+/// What this check remembers between sweeps, within its own subject's store.
+const STATE_KEY: &str = "http_errors";
 
 const WARN_ERROR_PCT: f64 = 5.0;
 const FAIL_ERROR_PCT: f64 = 20.0;
@@ -59,162 +51,75 @@ const MIN_HISTORY_AGE: Duration = Duration::from_secs(30);
 /// Sleep between the two samples when we can't use history.
 const IN_RUN_SAMPLE: Duration = Duration::from_secs(10);
 
+/// One reading of every source's counters, as of a moment.
+///
+/// Keyed by source so a front end that rolls away takes its own counts with it
+/// rather than looking like traffic that fell.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Snapshot {
 	taken_at: Timestamp,
-	counts: BTreeMap<String, u64>,
+	#[serde(default)]
+	sources: BTreeMap<String, BTreeMap<String, u64>>,
 }
 
-pub async fn run(ctx: AppCx) -> Check {
-	let client = ctx.http.clone();
-	let current_counts = match fetch_counts(&client).await {
-		FetchResult::Counts(c) => c,
-		FetchResult::Skip(check) => return check,
-	};
-	if current_counts.is_empty()
-		&& let Some(check) = uninstrumented(&client).await
-	{
-		return check;
-	}
-	let current = Snapshot {
-		taken_at: Timestamp::now(),
-		counts: current_counts,
+pub async fn run(ctx: TamanuCx) -> Check {
+	let traffic = ctx.traffic.as_ref();
+	let current = match sample(traffic).await {
+		Ok(snapshot) => snapshot,
+		Err(unavailable) => return unreadable(&unavailable),
 	};
 
-	let state = state_path();
-	// Reading and later writing the small history cache file is blocking I/O;
-	// keep it off the executor so it can't stall other checks sharing the thread.
-	let mut history = match state.clone() {
-		Some(path) => spawn_blocking(move || load_history(&path))
-			.await
-			.unwrap_or_default(),
-		None => Vec::new(),
-	};
+	let store = ctx.store.as_ref();
+	let mut history: Vec<Snapshot> = store.get_json(STATE_KEY).await.unwrap_or_default();
 	prune_history(&mut history, current.taken_at);
 
 	let (baseline, source) = match pick_baseline(&history, &current) {
 		Some(b) => (b.clone(), BaselineSource::History),
 		None => {
 			tokio::time::sleep(IN_RUN_SAMPLE).await;
-			let second_counts = match fetch_counts(&client).await {
-				FetchResult::Counts(c) => c,
-				FetchResult::Skip(check) => return check,
-			};
-			let second = Snapshot {
-				taken_at: Timestamp::now(),
-				counts: second_counts,
+			let second = match sample(traffic).await {
+				Ok(snapshot) => snapshot,
+				Err(unavailable) => return unreadable(&unavailable),
 			};
 			// `current` was taken first; second was taken IN_RUN_SAMPLE later.
 			// Re-assign so `current` is the newer one for the delta math below.
 			let baseline = current.clone();
-			append_and_save(&state, &mut history, second.clone()).await;
+			append_and_save(store, &mut history, second.clone()).await;
 			return build_check(&baseline, &second, BaselineSource::InRunSample);
 		}
 	};
 
-	append_and_save(&state, &mut history, current.clone()).await;
+	append_and_save(store, &mut history, current.clone()).await;
 	build_check(&baseline, &current, source)
 }
 
-enum FetchResult {
-	Counts(BTreeMap<String, u64>),
-	Skip(Check),
+/// One reading of every source's counters, now.
+async fn sample(traffic: &dyn HttpRuntime) -> Result<Snapshot, Unavailable> {
+	traffic
+		.http_counters()
+		.await
+		.map(|counters| snapshot_of(counters, Timestamp::now()))
 }
 
-async fn fetch_counts(client: &reqwest::Client) -> FetchResult {
-	let body = match client.get(CADDY_METRICS_URL).timeout(TIMEOUT).send().await {
-		Ok(resp) if resp.status().is_success() => match resp.text().await {
-			Ok(t) => t,
-			Err(err) => {
-				return FetchResult::Skip(Check::skip(
-					"http_errors",
-					"caddy /metrics body read failed",
-					fmt_chain(&err),
-				));
-			}
-		},
-		Ok(resp) => {
-			let status = resp.status().as_u16();
-			return FetchResult::Skip(Check::skip(
-				"http_errors",
-				format!("caddy /metrics returned HTTP {status}"),
-				format!(
-					"caddy is reachable but its admin /metrics endpoint isn't usable (HTTP {status}) — error rate cannot be measured"
-				),
-			));
-		}
-		Err(err) => {
-			return FetchResult::Skip(Check::skip(
-				"http_errors",
-				"caddy admin unreachable",
-				format!(
-					"could not reach caddy admin at {CADDY_METRICS_URL}: {}",
-					fmt_chain(&err)
-				),
-			));
-		}
-	};
-
-	FetchResult::Counts(parse_status_counts(&body))
+/// The skip for a reading the substrate could not take, carrying its reason
+/// rather than one of this check's own.
+fn unreadable(unavailable: &Unavailable) -> Check {
+	Check::skip(
+		"http_errors",
+		"traffic could not be read",
+		unavailable.reason(),
+	)
 }
 
-/// Decide whether caddy served no requests or simply isn't counting them, for a
-/// caddy that reported no request counters at all. `Some(check)` is the skip to
-/// report when the counters are missing because nothing is producing them;
-/// `None` means caddy is instrumented and the window really was quiet.
-async fn uninstrumented(client: &reqwest::Client) -> Option<Check> {
-	let config = match client.get(CADDY_CONFIG_URL).timeout(TIMEOUT).send().await {
-		Ok(resp) if resp.status().is_success() => resp.json::<Value>().await,
-		Ok(resp) => {
-			debug!(status = %resp.status(), "caddy config endpoint refused");
-			return Some(Check::skip(
-				"http_errors",
-				"caddy metrics state unknown",
-				format!(
-					"caddy reported no requests at all, and its config at {CADDY_CONFIG_URL} answered HTTP {} — whether it counts requests could not be established",
-					resp.status().as_u16()
-				),
-			));
-		}
-		Err(err) => {
-			return Some(Check::skip(
-				"http_errors",
-				"caddy metrics state unknown",
-				format!(
-					"caddy reported no requests at all, and its config at {CADDY_CONFIG_URL} could not be read ({}) — whether it counts requests could not be established",
-					fmt_chain(&err)
-				),
-			));
-		}
-	};
-	match config {
-		Ok(config) if metrics_enabled_in(&config) => None,
-		Ok(_) => Some(Check::skip(
-			"http_errors",
-			"caddy metrics not switched on",
-			"caddy counts requests only when its config asks it to, so there is no error rate to grade. Add `metrics` to the Caddyfile's global options — within a `servers` block on caddy older than 2.9.",
-		)),
-		Err(err) => Some(Check::skip(
-			"http_errors",
-			"caddy metrics state unknown",
-			format!(
-				"caddy reported no requests at all, and its config at {CADDY_CONFIG_URL} did not parse ({}) — whether it counts requests could not be established",
-				fmt_chain(&err)
-			),
-		)),
+fn snapshot_of(counters: TrafficCounters, taken_at: Timestamp) -> Snapshot {
+	Snapshot {
+		taken_at,
+		sources: counters
+			.sources
+			.into_iter()
+			.map(|source| (source.source, source.by_status))
+			.collect(),
 	}
-}
-
-/// Whether caddy's http app config switches request metrics on. Caddy 2.9 moved
-/// the switch onto the app itself; before that each server carried its own, and
-/// one instrumented server is enough to produce counters.
-fn metrics_enabled_in(http_app: &Value) -> bool {
-	if !http_app["metrics"].is_null() {
-		return true;
-	}
-	http_app["servers"]
-		.as_object()
-		.is_some_and(|servers| servers.values().any(|server| !server["metrics"].is_null()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,36 +135,65 @@ fn pick_baseline<'a>(history: &'a [Snapshot], current: &Snapshot) -> Option<&'a 
 			let age = duration_between(s.taken_at, current.taken_at);
 			age >= MIN_HISTORY_AGE && age <= WINDOW
 		})
-		// A counter going down means Caddy restarted between the snapshots and
-		// the delta would be meaningless. Skip such baselines.
-		.filter(|s| !counters_reset(&s.counts, &current.counts))
+		// A counter going down means the source restarted between the snapshots
+		// and the delta would be meaningless. Skip such baselines.
+		.filter(|s| !counters_reset(s, current))
 		// Oldest still-usable snapshot gives the widest window.
 		.min_by_key(|s| s.taken_at)
 }
 
-fn counters_reset(before: &BTreeMap<String, u64>, after: &BTreeMap<String, u64>) -> bool {
-	before
-		.iter()
-		.any(|(code, b)| after.get(code).copied().unwrap_or(0) < *b)
+/// Whether a source's own counters went backwards, which means it restarted
+/// between the two readings and the delta would be meaningless.
+///
+/// Asked per source: a source present in both readings is compared, and one
+/// that has gone is an absence rather than a decrease, so it says nothing about
+/// whether the sources that remain restarted.
+fn counters_reset(before: &Snapshot, after: &Snapshot) -> bool {
+	before.sources.iter().any(|(source, was)| {
+		let Some(now) = after.sources.get(source) else {
+			return false;
+		};
+		was.iter()
+			.any(|(code, b)| now.get(code).copied().unwrap_or(0) < *b)
+	})
 }
 
-fn delta_counts(
-	before: &BTreeMap<String, u64>,
-	after: &BTreeMap<String, u64>,
-) -> BTreeMap<String, u64> {
+/// What each status code gained between the two readings, summed over the
+/// sources present in both.
+///
+/// A source only in the later reading contributes its whole count, because it
+/// started within the window. A source only in the earlier one is dropped: it
+/// has gone, and subtracting its last count would grade its disappearance as
+/// the quantity having fallen.
+fn delta_counts(before: &Snapshot, after: &Snapshot) -> BTreeMap<String, u64> {
 	let mut out = BTreeMap::new();
-	for (code, after_n) in after {
-		let before_n = before.get(code).copied().unwrap_or(0);
-		let d = after_n.saturating_sub(before_n);
-		if d > 0 {
-			out.insert(code.clone(), d);
+	for (source, now) in &after.sources {
+		let was = before.sources.get(source);
+		for (code, after_n) in now {
+			let before_n = was.and_then(|was| was.get(code)).copied().unwrap_or(0);
+			let d = after_n.saturating_sub(before_n);
+			if d > 0 {
+				*out.entry(code.clone()).or_insert(0) += d;
+			}
+		}
+	}
+	out
+}
+
+/// Every status code counted right now, summed across sources. What the traffic
+/// telemetry reports, as against the windowed delta the rate is graded on.
+fn total_counts(snapshot: &Snapshot) -> BTreeMap<String, u64> {
+	let mut out = BTreeMap::new();
+	for counts in snapshot.sources.values() {
+		for (code, n) in counts {
+			*out.entry(code.clone()).or_insert(0) += n;
 		}
 	}
 	out
 }
 
 fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) -> Check {
-	let deltas = delta_counts(&baseline.counts, &current.counts);
+	let deltas = delta_counts(baseline, current);
 	let total: u64 = deltas.values().sum();
 	let errored: u64 = deltas
 		.iter()
@@ -282,7 +216,7 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 			.with_detail("total_requests", 0u64)
 			.with_detail("window_seconds", window.as_secs())
 			.with_detail("baseline_source", source_label),
-			&current.counts,
+			&total_counts(current),
 		);
 	}
 
@@ -320,7 +254,7 @@ fn build_check(baseline: &Snapshot, current: &Snapshot, source: BaselineSource) 
 			.with_detail("window_seconds", window.as_secs())
 			.with_detail("baseline_source", source_label)
 			.with_detail("by_code", Value::Object(by_code)),
-		&current.counts,
+		&total_counts(current),
 	)
 	.with_stat(
 		Stat::gauge("server_error_rate_pct", pct)
@@ -385,27 +319,6 @@ fn humanise_window(d: Duration) -> String {
 	}
 }
 
-fn state_path() -> Option<PathBuf> {
-	dirs::cache_dir().map(|d| d.join("bestool").join("doctor-http-errors.json"))
-}
-
-fn load_history(path: &Path) -> Vec<Snapshot> {
-	match std::fs::read(path) {
-		Ok(bytes) => match serde_json::from_slice::<Vec<Snapshot>>(&bytes) {
-			Ok(v) => v,
-			Err(err) => {
-				debug!(%err, ?path, "ignoring unparseable doctor http_errors history");
-				Vec::new()
-			}
-		},
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-		Err(err) => {
-			debug!(%err, ?path, "could not read doctor http_errors history");
-			Vec::new()
-		}
-	}
-}
-
 fn prune_history(history: &mut Vec<Snapshot>, now: Timestamp) {
 	let cutoff = WINDOW + PRUNE_GRACE;
 	history.retain(|s| {
@@ -414,166 +327,89 @@ fn prune_history(history: &mut Vec<Snapshot>, now: Timestamp) {
 	});
 }
 
-async fn append_and_save(path: &Option<PathBuf>, history: &mut Vec<Snapshot>, snapshot: Snapshot) {
-	history.push(snapshot);
-	let Some(path) = path.clone() else { return };
-	let history = history.clone();
-	if let Err(err) = spawn_blocking(move || write_history(&path, &history)).await {
-		warn!(%err, "doctor http_errors history task did not complete");
-	}
-}
-
-/// Serialise the snapshot history to `path` via a temp file and atomic rename.
-/// Blocking I/O, so it runs under `spawn_blocking`.
-fn write_history(path: &Path, history: &[Snapshot]) {
-	if let Some(parent) = path.parent()
-		&& let Err(err) = std::fs::create_dir_all(parent)
-	{
-		warn!(%err, ?parent, "could not create doctor http_errors cache dir");
-		return;
-	}
-	let json = match serde_json::to_vec(history) {
-		Ok(b) => b,
-		Err(err) => {
-			warn!(%err, "could not serialise doctor http_errors history");
-			return;
-		}
-	};
-	let tmp = path.with_extension("json.tmp");
-	if let Err(err) = std::fs::write(&tmp, &json) {
-		warn!(%err, ?tmp, "could not write doctor http_errors history");
-		return;
-	}
-	if let Err(err) = std::fs::rename(&tmp, path) {
-		warn!(%err, ?path, "could not rename doctor http_errors history");
-	}
-}
-
-/// Parse `caddy_http_request_duration_seconds_count{code="NNN",...} <count>` lines.
+/// Keep the new snapshot, and write the pruned history back.
 ///
-/// Caddy emits this histogram-count series labelled by `code`, `handler`,
-/// `host`, `method`, `server`. The same request is observed by every handler
-/// in the chain (encode, headers, rate_limit, reverse_proxy, …), so a naive
-/// sum across labels would multiply the real request count by the depth of
-/// the handler chain. To dedupe, we group by `(host, method, server, code)`
-/// and take the **max** across handlers: the entry-point handler must have
-/// seen every request matching that label combination, so its count is the
-/// real one. Then we sum across hosts/methods/servers per code.
-fn parse_status_counts(body: &str) -> BTreeMap<String, u64> {
-	use std::collections::HashMap;
-
-	let mut per_tuple: HashMap<(String, String, String, String), u64> = HashMap::new();
-	for line in body.lines() {
-		if line.starts_with('#') {
-			continue;
-		}
-		let Some(rest) = line.strip_prefix("caddy_http_request_duration_seconds_count") else {
-			continue;
-		};
-		let Some(labels_end) = rest.find('}') else {
-			continue;
-		};
-		let labels = &rest[..labels_end];
-		let value_part = rest[labels_end + 1..].trim();
-		let value: u64 = match value_part.split_whitespace().next() {
-			Some(v) => match v.parse::<f64>() {
-				Ok(f) => f as u64,
-				Err(_) => continue,
-			},
-			None => continue,
-		};
-		let Some(code) = extract_label(labels, "code") else {
-			continue;
-		};
-		let host = extract_label(labels, "host").unwrap_or_default();
-		let method = extract_label(labels, "method").unwrap_or_default();
-		let server = extract_label(labels, "server").unwrap_or_default();
-		let key = (host, method, server, code);
-		let entry = per_tuple.entry(key).or_insert(0);
-		*entry = (*entry).max(value);
-	}
-
-	let mut totals: BTreeMap<String, u64> = BTreeMap::new();
-	for ((_, _, _, code), count) in per_tuple {
-		*totals.entry(code).or_insert(0) += count;
-	}
-	totals
-}
-
-fn extract_label(labels: &str, key: &str) -> Option<String> {
-	let needle = format!("{key}=\"");
-	let start = labels.find(&needle)? + needle.len();
-	let rest = &labels[start..];
-	let end = rest.find('"')?;
-	Some(rest[..end].to_string())
+/// Stored as lasting only until the compute restarts: these are a front end's
+/// counters, which start again from zero when it does, so a baseline retained
+/// across that would read the fresh counters as a reset or as a plausible delta.
+async fn append_and_save(store: &dyn CheckStore, history: &mut Vec<Snapshot>, snapshot: Snapshot) {
+	history.push(snapshot);
+	store
+		.put_json(STATE_KEY, &*history, Lifetime::UntilCompute)
+		.await;
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
 
-	const SAMPLE: &str = "\
-# HELP caddy_http_request_duration_seconds Histogram of round-trip request durations.
-# TYPE caddy_http_request_duration_seconds histogram
-caddy_http_request_duration_seconds_count{code=\"200\",handler=\"encode\",host=\"a\",method=\"GET\",server=\"srv0\"} 3
-caddy_http_request_duration_seconds_count{code=\"200\",handler=\"headers\",host=\"a\",method=\"GET\",server=\"srv0\"} 9
-caddy_http_request_duration_seconds_count{code=\"200\",handler=\"rate_limit\",host=\"a\",method=\"GET\",server=\"srv0\"} 3
-caddy_http_request_duration_seconds_count{code=\"200\",handler=\"reverse_proxy\",host=\"a\",method=\"GET\",server=\"srv0\"} 3
-caddy_http_request_duration_seconds_count{code=\"404\",handler=\"headers\",host=\"a\",method=\"GET\",server=\"srv0\"} 12
-caddy_http_request_duration_seconds_count{code=\"502\",handler=\"reverse_proxy\",host=\"a\",method=\"POST\",server=\"srv0\"} 3
-caddy_http_request_duration_seconds_bucket{code=\"200\",handler=\"encode\",host=\"a\",method=\"GET\",server=\"srv0\",le=\"0.005\"} 3
-other_metric{foo=\"bar\"} 7
-";
-
+	/// A reading from one source, which is what a machine's own front end
+	/// gives.
 	fn snap(secs: i64, counts: &[(&str, u64)]) -> Snapshot {
+		snap_of(secs, &[("caddy", counts)])
+	}
+
+	/// A reading from several sources, as shared infrastructure gives.
+	fn snap_of(secs: i64, sources: &[(&str, &[(&str, u64)])]) -> Snapshot {
 		Snapshot {
 			taken_at: Timestamp::from_second(secs).unwrap(),
-			counts: counts.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
+			sources: sources
+				.iter()
+				.map(|(source, counts)| {
+					(
+						(*source).to_string(),
+						counts.iter().map(|(k, v)| ((*k).to_string(), *v)).collect(),
+					)
+				})
+				.collect(),
 		}
 	}
 
+	/// A source that has gone is an absence, not a decrease: subtracting its
+	/// last count would grade a rolled-away front end as traffic that fell.
+	///
+	/// spec: SUB#http-traffic-and-certificates
 	#[test]
-	fn parses_caddy_metric_lines() {
-		let counts = parse_status_counts(SAMPLE);
+	fn a_vanished_source_is_dropped_rather_than_counted_down() {
+		let before = snap_of(
+			0,
+			&[
+				("pod-a", &[("200", 100)][..]),
+				("pod-b", &[("200", 100)][..]),
+			],
+		);
+		let after = snap_of(60, &[("pod-b", &[("200", 150)][..])]);
+
+		assert!(
+			!counters_reset(&before, &after),
+			"pod-a going away is not pod-b's counters going backwards"
+		);
 		assert_eq!(
-			counts.into_iter().collect::<Vec<_>>(),
-			vec![
-				("200".to_string(), 9),
-				("404".to_string(), 12),
-				("502".to_string(), 3),
-			]
+			delta_counts(&before, &after).get("200").copied(),
+			Some(50),
+			"only pod-b's own gain counts"
 		);
 	}
 
+	/// A source that appeared within the window contributes everything it has
+	/// counted, because it started inside the window.
 	#[test]
-	fn metrics_switch_read_from_the_app_or_its_servers() {
-		use serde_json::json;
-
-		// caddy 2.9 and later: the switch sits on the http app, and caddy
-		// serialises it as an empty object when it carries no sub-options.
-		assert!(metrics_enabled_in(&json!({ "metrics": {} })));
-		assert!(metrics_enabled_in(
-			&json!({ "metrics": { "per_host": true } })
-		));
-
-		// before 2.9: per server, and one instrumented server produces counters.
-		assert!(metrics_enabled_in(&json!({
-			"servers": { "srv0": { "metrics": {} }, "srv1": { "listen": [":80"] } }
-		})));
-
-		assert!(!metrics_enabled_in(&json!({
-			"servers": { "srv0": { "listen": [":443"], "routes": [] } }
-		})));
-		assert!(!metrics_enabled_in(&json!({ "servers": {} })));
-		assert!(!metrics_enabled_in(&json!({})));
-		// caddy answers with a bare null when it has no http app at all
-		assert!(!metrics_enabled_in(&Value::Null));
+	fn a_new_source_contributes_its_whole_count() {
+		let before = snap_of(0, &[("pod-a", &[("200", 100)][..])]);
+		let after = snap_of(
+			60,
+			&[("pod-a", &[("200", 110)][..]), ("pod-b", &[("200", 7)][..])],
+		);
+		assert_eq!(delta_counts(&before, &after).get("200").copied(), Some(17));
 	}
 
+	/// A source whose own counters went backwards restarted, so the delta
+	/// against it would be meaningless and the baseline is not usable.
 	#[test]
-	fn ignores_unrelated_metrics() {
-		let counts = parse_status_counts("foo_bar{code=\"500\"} 99");
-		assert!(counts.is_empty());
+	fn a_restarted_source_invalidates_the_baseline() {
+		let before = snap_of(0, &[("pod-a", &[("200", 100)][..])]);
+		let after = snap_of(60, &[("pod-a", &[("200", 3)][..])]);
+		assert!(counters_reset(&before, &after));
 	}
 
 	#[test]
@@ -627,23 +463,9 @@ other_metric{foo=\"bar\"} 7
 	}
 
 	#[test]
-	fn label_extract_simple() {
-		assert_eq!(
-			extract_label("{code=\"200\",server=\"srv0\"}", "code"),
-			Some("200".to_string())
-		);
-	}
-
-	#[test]
 	fn delta_only_counts_growth() {
-		let before: BTreeMap<String, u64> =
-			[("200".to_string(), 10), ("500".to_string(), 2)].into();
-		let after: BTreeMap<String, u64> = [
-			("200".to_string(), 15),
-			("500".to_string(), 4),
-			("404".to_string(), 1),
-		]
-		.into();
+		let before = snap(0, &[("200", 10), ("500", 2)]);
+		let after = snap(60, &[("200", 15), ("500", 4), ("404", 1)]);
 		let d = delta_counts(&before, &after);
 		assert_eq!(d.get("200").copied(), Some(5));
 		assert_eq!(d.get("500").copied(), Some(2));
@@ -652,20 +474,15 @@ other_metric{foo=\"bar\"} 7
 
 	#[test]
 	fn reset_detected_when_any_counter_drops() {
-		let before: BTreeMap<String, u64> = [("200".to_string(), 10)].into();
-		let after_dropped: BTreeMap<String, u64> = [("200".to_string(), 5)].into();
-		assert!(counters_reset(&before, &after_dropped));
-		let after_grown: BTreeMap<String, u64> = [("200".to_string(), 11)].into();
-		assert!(!counters_reset(&before, &after_grown));
+		let before = snap(0, &[("200", 10)]);
+		assert!(counters_reset(&before, &snap(60, &[("200", 5)])));
+		assert!(!counters_reset(&before, &snap(60, &[("200", 11)])));
 	}
 
 	#[test]
 	fn pick_baseline_prefers_oldest_within_window() {
 		let now = Timestamp::from_second(10_000).unwrap();
-		let current = Snapshot {
-			taken_at: now,
-			counts: [("200".to_string(), 100)].into(),
-		};
+		let current = snap(now.as_second(), &[("200", 100)]);
 		let history = vec![
 			snap(10_000 - 700, &[("200", 10)]), // 11m40s old — too old
 			snap(10_000 - 540, &[("200", 30)]), // 9m old — usable
@@ -679,10 +496,7 @@ other_metric{foo=\"bar\"} 7
 	#[test]
 	fn pick_baseline_skips_when_only_fresh_snapshots() {
 		let now = Timestamp::from_second(10_000).unwrap();
-		let current = Snapshot {
-			taken_at: now,
-			counts: [("200".to_string(), 100)].into(),
-		};
+		let current = snap(now.as_second(), &[("200", 100)]);
 		let history = vec![snap(10_000 - 5, &[("200", 95)])];
 		assert!(pick_baseline(&history, &current).is_none());
 	}
@@ -690,10 +504,7 @@ other_metric{foo=\"bar\"} 7
 	#[test]
 	fn pick_baseline_skips_resets() {
 		let now = Timestamp::from_second(10_000).unwrap();
-		let current = Snapshot {
-			taken_at: now,
-			counts: [("200".to_string(), 5)].into(),
-		};
+		let current = snap(now.as_second(), &[("200", 5)]);
 		let history = vec![snap(10_000 - 300, &[("200", 100)])];
 		assert!(pick_baseline(&history, &current).is_none());
 	}
@@ -711,7 +522,7 @@ other_metric{foo=\"bar\"} 7
 		];
 		prune_history(&mut history, now);
 		assert_eq!(history.len(), 2);
-		assert_eq!(history[0].counts.get("200").copied(), Some(2));
+		assert_eq!(history[0].sources["caddy"].get("200").copied(), Some(2));
 	}
 
 	#[test]

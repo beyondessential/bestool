@@ -31,7 +31,7 @@
 //! Where logind can't answer, utmp's own dead records (`who --dead`) stand in:
 //! an entry whose tty has a dead record newer than its login time is dropped.
 
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{collections::HashMap, time::Duration};
 // HashSet only backs the live-tty lookups, which are unix- (or test-) only.
 #[cfg(any(test, unix))]
 use std::collections::HashSet;
@@ -45,6 +45,10 @@ use tracing::{debug, trace, warn};
 use super::MachineCx;
 use crate::Stat;
 use crate::check::Check;
+use crate::store::{CheckStoreJson, Lifetime};
+
+/// What this check remembers between sweeps, within the machine's own store.
+const STATE_KEY: &str = "external_users";
 
 /// Sessions older than this trigger a check warning (degrades doctor's
 /// `external_users` line but does not flip the top-level result).
@@ -70,7 +74,7 @@ struct ExternalUser {
 	connected_since: Timestamp,
 }
 
-pub async fn run(_ctx: MachineCx) -> Check {
+pub async fn run(ctx: MachineCx) -> Check {
 	let mut users = match collect_users().await {
 		Ok(CollectOutcome::Users(u)) => u,
 		Ok(CollectOutcome::Unsupported(reason)) => {
@@ -103,22 +107,14 @@ pub async fn run(_ctx: MachineCx) -> Check {
 	}
 
 	let now = Timestamp::now();
-	let state_path = state_file_path();
-	// Reading and writing the small presence-state file is blocking I/O; keep it
-	// off the executor so it can't stall other checks sharing the thread.
-	let prior = match state_path.clone() {
-		Some(path) => spawn_blocking(move || load_state(&path))
-			.await
-			.unwrap_or_default(),
-		None => PresenceState::default(),
-	};
+	let store = ctx.store.as_ref();
+	let prior: PresenceState = store.get_json(STATE_KEY).await.unwrap_or_default();
 	apply_presence_state(&mut users, &prior, now);
-	if let Some(path) = state_path.clone() {
-		let state = snapshot_state(&users);
-		if let Err(err) = spawn_blocking(move || save_state(&path, &state)).await {
-			warn!(%err, "doctor external_users state task did not complete");
-		}
-	}
+	// Durable: who is logged in is the machine's own state, and nothing switches
+	// a machine's compute off under this check.
+	store
+		.put_json(STATE_KEY, &snapshot_state(&users), Lifetime::Durable)
+		.await;
 
 	if users.is_empty() {
 		return Check::pass("external_users", "no interactive users connected")
@@ -233,51 +229,6 @@ fn snapshot_state(users: &[ExternalUser]) -> PresenceState {
 		entries.insert(presence_key(user), user.connected_since);
 	}
 	PresenceState { entries }
-}
-
-fn state_file_path() -> Option<PathBuf> {
-	dirs::cache_dir().map(|d| d.join("bestool").join("doctor-external-users.json"))
-}
-
-fn load_state(path: &std::path::Path) -> PresenceState {
-	match std::fs::read(path) {
-		Ok(bytes) => match serde_json::from_slice::<PresenceState>(&bytes) {
-			Ok(v) => v,
-			Err(err) => {
-				debug!(%err, ?path, "ignoring unparseable external_users state");
-				PresenceState::default()
-			}
-		},
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => PresenceState::default(),
-		Err(err) => {
-			debug!(%err, ?path, "could not read external_users state");
-			PresenceState::default()
-		}
-	}
-}
-
-fn save_state(path: &std::path::Path, state: &PresenceState) {
-	if let Some(parent) = path.parent()
-		&& let Err(err) = std::fs::create_dir_all(parent)
-	{
-		warn!(%err, ?parent, "could not create external_users state dir");
-		return;
-	}
-	let json = match serde_json::to_vec(state) {
-		Ok(b) => b,
-		Err(err) => {
-			warn!(%err, "could not serialise external_users state");
-			return;
-		}
-	};
-	let tmp = path.with_extension("json.tmp");
-	if let Err(err) = std::fs::write(&tmp, &json) {
-		warn!(%err, ?tmp, "could not write external_users state");
-		return;
-	}
-	if let Err(err) = std::fs::rename(&tmp, path) {
-		warn!(%err, ?path, "could not rename external_users state");
-	}
 }
 
 fn session_age(now: Timestamp, login: Timestamp) -> Duration {
