@@ -205,7 +205,7 @@ two a re-baseline.
 ## What still reads its runtime directly, and why
 
 A sweep of the checks for direct supervisor, container-runtime and admin-API
-access leaves three, none of them a gap in this card:
+access leaves four, none of them a gap in this card:
 
 - **Machine checks** (`munin`, `tailscale_config`) ask systemd whether a
   machine-level unit is installed or enabled. Machine checks read the host
@@ -216,6 +216,13 @@ access leaves three, none of them a gap in this card:
   covers readings; restarting is an action, and neither `SUB` nor this card's
   "done when" asks for one. A relay driving applications it does not host would
   need it, and that is the card to write when something needs it.
+- **`version_drift`** asks `Supervisor::current()` which expected-versions
+  registry to read, because where a deployment writes its expected versions
+  differs by shape: an env file beside a container deployment, the install root
+  under a process supervisor. A platform constant choosing a registry, not a
+  reading of the workload — which the substrate now supplies. It does mean the
+  check skips outright where that constant is none, so a test driving `run` to
+  any later path is gated to Linux and Windows.
 
 ## Neighbouring cards
 
