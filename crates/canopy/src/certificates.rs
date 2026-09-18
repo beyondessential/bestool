@@ -310,6 +310,12 @@ pub async fn store_chain(dir: &Path, name: &str, chain: &str) -> Result<()> {
 		.await
 		.into_diagnostic()
 		.wrap_err_with(|| format!("creating {}", chains.display()))?;
+	// The chains sit one level below the config directory, so the group has to
+	// be carried down to them: a file inherits the group of the directory it is
+	// in, and without this that is whatever group created this one.
+	#[cfg(unix)]
+	crate::machine_store::inherit_parent_group(&chains).await;
+
 	let body = format!("{NAME_HEADER}{name}\n{chain}");
 	write_atomic(&chain_file(dir, name), body.as_bytes()).await
 }
@@ -539,6 +545,50 @@ mod tests {
 				.unwrap()
 				.is_none()
 		);
+	}
+
+	/// The config directory is shared with unprivileged bestool invocations, so
+	/// what the root daemon writes there has to carry the directory's group. The
+	/// chains sit a level down, which is where that inheritance would otherwise
+	/// stop.
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn a_collected_chain_carries_the_config_directorys_group() {
+		use std::os::unix::fs::MetadataExt as _;
+
+		let dir = tempfile::tempdir().unwrap();
+		let dir_gid = std::fs::metadata(dir.path()).unwrap().gid();
+
+		// A group this process may chown to, other than the directory's own;
+		// without a second group there is no mismatch to set up.
+		let Some(shared) = std::process::Command::new("id")
+			.arg("-G")
+			.output()
+			.ok()
+			.and_then(|out| String::from_utf8(out.stdout).ok())
+			.and_then(|groups| {
+				groups
+					.split_whitespace()
+					.filter_map(|gid| gid.parse::<u32>().ok())
+					.find(|gid| *gid != dir_gid)
+			})
+		else {
+			return;
+		};
+		std::os::unix::fs::chown(dir.path(), None, Some(shared)).unwrap();
+
+		store_chain(
+			dir.path(),
+			"app.example.com",
+			"-----BEGIN CERTIFICATE-----\n",
+		)
+		.await
+		.unwrap();
+
+		let gid = std::fs::metadata(chain_file(dir.path(), "app.example.com"))
+			.unwrap()
+			.gid();
+		assert_eq!(gid, shared, "expected group {shared}, got {gid}");
 	}
 
 	#[test]

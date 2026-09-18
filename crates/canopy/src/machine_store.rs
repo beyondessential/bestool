@@ -196,6 +196,20 @@ pub async fn repair_mode(path: &Path) {
 	inherit_dir_group(path).await;
 }
 
+/// Give a directory the group of the one above it, for state kept in a
+/// subdirectory of the config directory rather than directly in it.
+///
+/// Without this the chain of inheritance stops at the subdirectory: a setgid
+/// parent propagates both its group and the bit, but a parent that is only
+/// group-owned gives the new directory the creating process's group, and every
+/// file under it then inherits that instead of the group meant to read them.
+///
+/// Best-effort, for the same reason as [`inherit_dir_group`].
+#[cfg(unix)]
+pub async fn inherit_parent_group(dir: &Path) {
+	inherit_dir_group(dir).await;
+}
+
 /// Give `path` the group of the directory it sits in, so [`FILE_MODE`]'s group
 /// read reaches the group owning the config directory. A setgid directory
 /// confers it already; one without the bit does not. Best-effort, since chowning
