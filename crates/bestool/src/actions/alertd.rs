@@ -56,6 +56,15 @@ struct DaemonArgs {
 	/// the watchdog timeout. This flag disables that behaviour.
 	#[arg(long)]
 	no_watchdog: bool,
+
+	/// User permitted to fetch a canopy-issued certificate, beyond root
+	///
+	/// The certificate endpoint hands out a private key, so it identifies its
+	/// caller. The superuser may always fetch one; this names one further user,
+	/// which is the user the front end runs as (commonly `caddy`). Takes a name
+	/// or a numeric uid.
+	#[arg(long, value_name = "USER", env = "BESTOOL_PERMIT_CERT_USER")]
+	permit_cert_user: Option<String>,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -201,7 +210,35 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 fn with_daemon_tasks(
 	config: crate::alertd::DaemonConfig,
 	doctor: DoctorTask,
+	permit_cert_user: Option<String>,
 ) -> crate::alertd::DaemonConfig {
+	// The certificate state is shared: the collection loop fills it, and the
+	// certificate endpoint Caddy asks during a handshake reads it.
+	let config = {
+		use crate::alertd::certificates::{CanopyNames, CertificateState, peer};
+
+		let permitted = match permit_cert_user.as_deref() {
+			None => None,
+			Some(user) => match peer::resolve_user(user) {
+				Ok(uid) => Some(uid),
+				Err(err) => {
+					// Only root may fetch a certificate until this is corrected,
+					// which refuses the front end rather than serving a key to
+					// whoever asks.
+					warn!("could not resolve --permit-cert-user {user:?}: {err}");
+					None
+				}
+			},
+		};
+		let state = Arc::new(CertificateState::new(
+			bestool_canopy::certificates::default_dir(),
+			peer::Permitted::new(permitted),
+		));
+		config
+			.with_certificates(state.clone())
+			.with_task(Arc::new(CanopyNames::new(state)))
+	};
+
 	#[cfg(feature = "canopy-backup")]
 	let (config, doctor) = {
 		let registry = crate::alertd::BackupRegistry::new(backup_runner());
@@ -638,6 +675,7 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd
 		server_addr,
 		watchdog_timeout,
 		no_watchdog,
+		permit_cert_user,
 	} = daemon;
 	if !glob.is_empty() {
 		warn!("--glob is deprecated and does nothing; alert definitions are no longer loaded");
@@ -687,7 +725,7 @@ async fn build_config(ctx: &Context, daemon: DaemonArgs) -> Result<crate::alertd
 		.with_watchdog_timeout(watchdog);
 	let doctor = DoctorTask::new(crate::alertd::BINARY_VERSION.to_string(), targets)
 		.with_tamanu_discovery(root);
-	let mut daemon_config = with_daemon_tasks(base, doctor);
+	let mut daemon_config = with_daemon_tasks(base, doctor, permit_cert_user);
 
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);
@@ -707,6 +745,7 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<crate::alert
 		server_addr,
 		watchdog_timeout,
 		no_watchdog,
+		permit_cert_user,
 	} = daemon;
 	if !glob.is_empty() {
 		warn!("--glob is deprecated and does nothing; alert definitions are no longer loaded");
@@ -732,7 +771,7 @@ async fn build_config(_ctx: &Context, daemon: DaemonArgs) -> Result<crate::alert
 		.with_server_addrs(server_addr)
 		.with_watchdog_timeout(watchdog);
 	let doctor = DoctorTask::new(crate::alertd::BINARY_VERSION.to_string(), None);
-	let mut daemon_config = with_daemon_tasks(base, doctor);
+	let mut daemon_config = with_daemon_tasks(base, doctor, permit_cert_user);
 	if let Some(pem) = device_key_pem {
 		daemon_config = daemon_config.with_device_key_pem(pem);
 	}

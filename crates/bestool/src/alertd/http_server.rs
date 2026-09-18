@@ -39,6 +39,7 @@ pub async fn start_server(
 	control: DaemonControl,
 	backups: Option<Arc<crate::alertd::BackupRegistry>>,
 	metrics: Option<crate::alertd::doctor::DoctorMetricsHandle>,
+	certificates: Option<Arc<crate::alertd::certificates::CertificateState>>,
 	binary_version: String,
 ) {
 	let started_at = Timestamp::now();
@@ -56,6 +57,7 @@ pub async fn start_server(
 		control,
 		backups,
 		metrics,
+		certificates,
 	};
 
 	let app = Router::new()
@@ -67,6 +69,12 @@ pub async fn start_server(
 		.route("/reload", post(handle_reload))
 		.route("/restart", post(handle_restart))
 		.route("/tasks/{task}/{endpoint}", get(handle_task_endpoint))
+		// Caddy asks this during a TLS handshake, so it sits at the root rather
+		// than under /tasks: the path goes in a Caddyfile an operator writes.
+		.route(
+			"/certificate",
+			get(crate::alertd::certificates::delivery::handle_certificate),
+		)
 		.layer(
 			TraceLayer::new_for_http()
 				.make_span_with(
@@ -136,7 +144,13 @@ pub async fn start_server(
 	// Serve every bound listener concurrently; each runs until the process ends.
 	let mut servers = tokio::task::JoinSet::new();
 	for listener in listeners {
-		let app = app.clone();
+		// With connect info, because the certificate endpoint hands out a
+		// private key and has to identify its caller: the two ends of the
+		// accepted connection are what name the caller's socket to the kernel.
+		let app = app
+			.clone()
+			.into_make_service_with_connect_info::<crate::alertd::certificates::delivery::Endpoints>(
+			);
 		servers.spawn(async move {
 			if let Err(e) = axum::serve(listener, app).await {
 				error!("HTTP server error: {}", e);

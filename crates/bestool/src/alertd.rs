@@ -11,6 +11,7 @@ use std::{fmt, sync::Arc, time::Duration};
 use bestool_alertd::Redacted;
 
 pub mod backup;
+pub mod certificates;
 mod child_confinement;
 pub mod commands;
 mod context;
@@ -64,6 +65,13 @@ pub struct DaemonConfig {
 	/// registered. Feeds the `/metrics` endpoint the per-check declared stats
 	/// and the status census.
 	pub metrics: Option<doctor::DoctorMetricsHandle>,
+
+	/// The chains collected from canopy and the key store behind them, set when
+	/// the canopy names task is registered. Feeds the certificate endpoint Caddy
+	/// asks during a handshake.
+	///
+	/// spec: TLSD
+	pub certificates: Option<Arc<certificates::CertificateState>>,
 }
 
 impl fmt::Debug for DaemonConfig {
@@ -95,6 +103,7 @@ impl DaemonConfig {
 			background_tasks: Vec::new(),
 			backups: None,
 			metrics: None,
+			certificates: None,
 		}
 	}
 
@@ -106,6 +115,13 @@ impl DaemonConfig {
 	/// Attach the backup registry, so the daemon's status can list in-flight runs.
 	pub fn with_backups(mut self, registry: Arc<BackupRegistry>) -> Self {
 		self.backups = Some(registry);
+		self
+	}
+
+	/// Attach the canopy certificate state, so the certificate endpoint can
+	/// answer Caddy from what the collection loop holds.
+	pub fn with_certificates(mut self, state: Arc<certificates::CertificateState>) -> Self {
+		self.certificates = Some(state);
 		self
 	}
 

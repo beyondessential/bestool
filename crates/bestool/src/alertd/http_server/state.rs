@@ -25,4 +25,7 @@ pub struct ServerState {
 	/// Handle to the doctor task's latest sweep, when a doctor task is
 	/// registered; feeds per-check stats and the status census to `/metrics`.
 	pub metrics: Option<crate::alertd::doctor::DoctorMetricsHandle>,
+	/// What the canopy collection loop holds, when it is registered; feeds the
+	/// certificate endpoint Caddy asks during a handshake.
+	pub certificates: Option<Arc<crate::alertd::certificates::CertificateState>>,
 }

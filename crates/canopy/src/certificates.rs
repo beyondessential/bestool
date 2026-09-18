@@ -27,7 +27,7 @@ use std::{
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use miette::{IntoDiagnostic as _, Result, WrapErr as _, miette};
-use rcgen::{CertificateParams, CertificateSigningRequest, DistinguishedName, KeyPair};
+use rcgen::{CertificateParams, CertificateSigningRequest, DistinguishedName};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tracing::debug;
@@ -35,6 +35,12 @@ use tracing::debug;
 use crate::machine_store::{
 	decrypt_bytes, encrypt_bytes, machine_passphrase, remove_if_present, write_atomic,
 };
+
+/// The key type this module generates and hands back.
+///
+/// Re-exported so a consumer holding a key does not have to depend on rcgen
+/// itself just to name it.
+pub use rcgen::KeyPair;
 
 const VERSION: &str = "certificate-keys-1";
 
