@@ -11,12 +11,12 @@
 //! holds DB connections and server memory; wasteful but not harmful, so it only
 //! warns. Both on or both off is consistent and passes.
 
-use super::AppCx;
+use super::TamanuCx;
 use crate::check::Check;
 
 const NAME: &str = "fhir_config";
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	let Some(config) = ctx.installed_config() else {
 		return Check::skip(
 			NAME,

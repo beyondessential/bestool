@@ -1,7 +1,7 @@
-use super::{AppCx, query_error_check};
+use super::{TamanuCx, query_error_check};
 use crate::check::Check;
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	let Some(client) = ctx.db().await else {
 		return Check::fail(
 			"migrations",

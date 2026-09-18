@@ -20,7 +20,7 @@ use bestool_tamanu::{
 use tracing::{info, warn};
 
 use super::util::humanise_age;
-use super::{AppCx, query_error_check};
+use super::{TamanuCx, query_error_check};
 use crate::Stat;
 use crate::check::Check;
 use crate::heal::HealOutcome;
@@ -30,7 +30,7 @@ const FAIL_DEPTH: i64 = 2_000;
 const WARN_OLDEST_SECS: i64 = 10 * 60; // 10m
 const FAIL_OLDEST_SECS: i64 = 60 * 60; // 1h
 
-pub async fn run(ctx: AppCx) -> Check {
+pub async fn run(ctx: TamanuCx) -> Check {
 	if ctx.config.is_facility() {
 		return Check::skip(
 			"fhir_jobs",
@@ -153,8 +153,8 @@ pub async fn run(ctx: AppCx) -> Check {
 /// check's registry entry) so a slowly-draining queue is not repeatedly kicked.
 ///
 /// spec: CHK-FHJ#self-healing
-pub async fn heal(ctx: AppCx) -> HealOutcome {
-	if ctx.server_kind() != Some(ApiServerKind::Central) {
+pub async fn heal(ctx: TamanuCx) -> HealOutcome {
+	if ctx.server_kind() != ApiServerKind::Central {
 		return HealOutcome::Deferred;
 	}
 	if !ctx.config.fhir_worker_enabled() {
