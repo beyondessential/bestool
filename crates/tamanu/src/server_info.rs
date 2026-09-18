@@ -228,15 +228,22 @@ async fn get_or_create_machine_id_at(path: &Path) -> Result<String> {
 /// Resolve the machine id from what the registration answered, the standard
 /// file, or a freshly minted one.
 ///
-/// A registration that is present but unreadable fails here: the machine has an
-/// identity, and the standard file holds the one enrolment replaced.
+/// A registration that is present but unreadable will not mint: the machine
+/// already has an identity, and a fresh one is written over the standard file
+/// and kept.
 fn machine_id_from(registered: Result<Option<String>>, path: &Path) -> Result<String> {
-	if let Some(id) = registered.wrap_err("reading the canopy registration")? {
-		return Ok(id);
-	}
+	let unreadable = match registered {
+		Ok(Some(id)) => return Ok(id),
+		Ok(None) => None,
+		Err(err) => Some(err),
+	};
 
 	if let Some(id) = read_machine_id_file(path) {
 		return Ok(id);
+	}
+
+	if let Some(err) = unreadable {
+		return Err(err).wrap_err("reading the canopy registration");
 	}
 
 	let id = Uuid::new_v4().to_string();
@@ -666,19 +673,31 @@ mod tests {
 	}
 
 	#[test]
-	fn machine_id_errors_when_the_registration_is_unreadable() {
-		// An enrolled host that can't read its registration must not answer with
-		// the standard file's id: that's the identity enrolment replaced, so
-		// reporting under it files this machine's status against another.
+	fn machine_id_errors_rather_than_minting_when_the_registration_is_unreadable() {
+		// Minting claims a new identity for a box that already has one, and
+		// persists it over the standard file.
 		let dir = tempfile::tempdir().unwrap();
 		let path = dir.path().join("server-id");
-		let superseded = uuid::Uuid::new_v4().to_string();
-		std::fs::write(&path, &superseded).unwrap();
 
 		let err = machine_id_from(Err(miette::miette!("permission denied")), &path)
-			.expect_err("unreadable registration → must error");
+			.expect_err("unreadable registration and no standard file → must error");
 		let msg = format!("{err}");
 		assert!(msg.contains("canopy registration"), "{msg}");
+		assert!(!path.exists(), "no id was written");
+	}
+
+	#[test]
+	fn machine_id_still_uses_the_standard_file_when_the_registration_is_unreadable() {
+		// Canopy authorises a push by the device bound to the machine, so an id
+		// naming another machine is refused there rather than misfiled.
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+		let cached = uuid::Uuid::new_v4().to_string();
+		std::fs::write(&path, &cached).unwrap();
+
+		let id = machine_id_from(Err(miette::miette!("permission denied")), &path)
+			.expect("the standard file still answers");
+		assert_eq!(id, cached);
 	}
 
 	#[test]
