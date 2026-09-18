@@ -283,8 +283,20 @@ impl CertificateState {
 			None => true,
 			Some(last) => (now - last).get_seconds() >= STEADY_INTERVAL.as_secs() as i64,
 		};
-		if steady_due || !self.wanted.lock().await.is_empty() {
+		if steady_due {
 			return true;
+		}
+
+		// Each name asked for is tested rather than the set merely being
+		// non-empty: a name whose last attempt failed is still asked for, and
+		// waking a full pass — which asks canopy what this server may do before
+		// it does anything else — on every tick until it succeeds is what the
+		// per-name backoff exists to stop.
+		let wanted: Vec<String> = self.wanted.lock().await.iter().cloned().collect();
+		for name in &wanted {
+			if self.name_due(name, now).await {
+				return true;
+			}
 		}
 
 		self.orders.read().await.values().any(|order| {
@@ -343,30 +355,42 @@ impl CertificateState {
 			if !due {
 				continue;
 			}
-			if let Err(err) = self.collect_one(ctx, &name).await {
-				// One name failing must not stop the rest: a stuck order on one
-				// site is not a reason to leave every other name uncollected.
-				warn!(name, %err, "could not collect a certificate");
-				self.orders
-					.write()
-					.await
-					.entry(name.clone())
-					.or_default()
-					.last_error = Some(why(&err));
+			match self.collect_one(ctx, &name).await {
+				Ok(()) => {
+					self.wanted.lock().await.remove(&name);
+				}
+				Err(err) => {
+					// One name failing must not stop the rest: a stuck order on
+					// one site is not a reason to leave every other name
+					// uncollected.
+					warn!(name, %err, "could not collect a certificate");
+					let mut orders = self.orders.write().await;
+					let order = orders.entry(name.clone()).or_default();
+					order.last_error = Some(why(&err));
+					// Stamped although canopy recorded nothing, so a failed
+					// attempt backs off exactly as a pending order does. The
+					// name stays asked-for: dropping it on a transient failure
+					// would leave a name Caddy is serving waiting out the steady
+					// interval for its first chain.
+					order.asked_at = Some(now);
+				}
 			}
-			self.wanted.lock().await.remove(&name);
 		}
 		Ok(())
 	}
 
 	/// Whether one name is due to be asked about outside a steady pass.
+	///
+	/// A name nothing has been attempted for is due at once, which is what makes
+	/// a handshake's ask prompt. Once an attempt has been made — whether canopy
+	/// recorded an order or the attempt failed outright — the retry backoff
+	/// governs, so neither a pending order nor a failing one is asked about every
+	/// tick.
 	async fn name_due(&self, name: &str, now: Timestamp) -> bool {
-		if self.wanted.lock().await.contains(name) {
-			return true;
-		}
+		let wanted = self.wanted.lock().await.contains(name);
 		match self.orders.read().await.get(name) {
 			None => true,
-			Some(order) if order.pending() => order
+			Some(order) if wanted || order.pending() => order
 				.asked_at
 				.is_none_or(|at| (now - at).get_seconds() >= PENDING_RETRY.as_secs() as i64),
 			Some(_) => false,
@@ -446,35 +470,35 @@ impl CertificateState {
 			.await
 			.insert(name.to_owned(), order.clone());
 
-		// A key canopy condemns is replaced before the next request, rather than
-		// asked against again. It is never certified again for any name, so
-		// replacing it is the only way forward and no operator has to act.
-		//
-		// spec: TLS#revocation-and-key-replacement
-		if answer.key_must_be_replaced {
-			info!(name, "canopy condemned this key; generating a replacement");
-			self.replace_key(name).await?;
-		}
-
-		// A certificate canopy reports as revoked stops being served at once. A
-		// replacement is requested under the ordinary schedule: revoking pauses
-		// the server, so asking now would only be refused, and the refusal is an
-		// operator deciding when this host may have a certificate again.
-		if answer.revoked {
-			info!(
-				name,
-				"canopy reports this certificate revoked; taking it out of service"
-			);
-			self.drop_held(name).await?;
-			return Ok(());
-		}
-
-		match answer.chain {
-			Some(chain) if !chain.trim().is_empty() => {
+		match disposition(&order, answer.chain.as_deref()) {
+			// A key canopy condemns is replaced before the next request, rather
+			// than asked against again. It is never certified again for any
+			// name, so replacing it is the only way forward and no operator has
+			// to act.
+			//
+			// spec: TLS#revocation-and-key-replacement
+			Disposition::ReplaceKey => {
+				info!(name, "canopy condemned this key; generating a replacement");
+				self.replace_key(name).await?;
+			}
+			// A certificate canopy reports as revoked stops being served at
+			// once. A replacement is requested under the ordinary schedule:
+			// revoking pauses the server, so asking now would only be refused,
+			// and the refusal is an operator deciding when this host may have a
+			// certificate again.
+			Disposition::DropHeld => {
+				info!(
+					name,
+					"canopy reports this certificate revoked; taking it out of service"
+				);
+				self.drop_held(name).await?;
+			}
+			Disposition::TakeChain => {
+				let chain = answer.chain.unwrap_or_default();
 				self.take_chain(name, chain, not_after, answer.usable)
 					.await?;
 			}
-			_ => debug!(name, state = %answer.state, "no chain yet"),
+			Disposition::Wait => debug!(name, state = %answer.state, "no chain yet"),
 		}
 		Ok(())
 	}
@@ -675,6 +699,40 @@ impl CertificateState {
 	}
 }
 
+/// What one answer from canopy means for what this host holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Disposition {
+	/// Replace the key, and take nothing from this answer.
+	ReplaceKey,
+	/// Take the certificate held for this name out of service.
+	DropHeld,
+	/// Take the chain this answer carries into service.
+	TakeChain,
+	/// Nothing to act on yet.
+	Wait,
+}
+
+/// Read an answer for what to do with it.
+///
+/// The order is the point. A condemned key comes first and takes nothing else
+/// from the answer: any chain alongside it covers the key being replaced, so
+/// installing the two together would hand Caddy a chain and a key that do not
+/// match — which fails the handshake outright, where declining would have let
+/// Caddy issue for the name itself. The next pass requests against the new key.
+///
+/// spec: TLS#revocation-and-key-replacement
+fn disposition(order: &Order, chain: Option<&str>) -> Disposition {
+	if order.key_must_be_replaced {
+		Disposition::ReplaceKey
+	} else if order.revoked {
+		Disposition::DropHeld
+	} else if chain.is_some_and(|chain| !chain.trim().is_empty()) {
+		Disposition::TakeChain
+	} else {
+		Disposition::Wait
+	}
+}
+
 /// Why this server makes no requests, where it makes none.
 ///
 /// A server that may not obtain certificates stops requesting them, and so does
@@ -797,6 +855,15 @@ impl BackgroundTask for CanopyNames {
 								.collect::<Vec<_>>()
 						})
 						.unwrap_or_default();
+					// An empty list is what withdraws a name, so registering
+					// with none would take the records down — and would look
+					// like a publish that had worked. Withdrawing is its own
+					// endpoint, asked for deliberately.
+					if addresses.is_empty() {
+						return Err(miette!(
+							"registering {name} needs at least one address; use dns-withdraw to take its records down"
+						));
+					}
 					let answer = state.register_name(&ctx, &name, addresses).await?;
 					Ok(registered(&answer))
 				})
@@ -1068,6 +1135,128 @@ mod tests {
 		let entitlement = state.entitlement.read().await.clone().unwrap();
 		let names = state.target_names(&detached_ctx(), &entitlement).await;
 		assert_eq!(names, vec!["app.example.com".to_string()]);
+	}
+
+	/// A condemned key takes precedence over everything else the answer carries.
+	///
+	/// Canopy can answer with a chain and `key_must_be_replaced` together: the
+	/// chain covers the key being condemned. Taking it would pair the old chain
+	/// with the new key, and the endpoint hands Caddy both — a mismatch fails
+	/// the handshake outright, where declining would have let Caddy issue for
+	/// the name itself.
+	///
+	/// spec: TLS#revocation-and-key-replacement
+	#[test]
+	fn a_condemned_key_is_replaced_and_nothing_else_in_the_answer_is_taken() {
+		let condemned = Order {
+			state: "issued".into(),
+			key_must_be_replaced: true,
+			..Order::default()
+		};
+		assert_eq!(
+			disposition(&condemned, Some("-----BEGIN CERTIFICATE-----")),
+			Disposition::ReplaceKey
+		);
+		// Even alongside a revocation, which would otherwise be the action.
+		let both = Order {
+			revoked: true,
+			..condemned.clone()
+		};
+		assert_eq!(
+			disposition(&both, Some("-----BEGIN CERTIFICATE-----")),
+			Disposition::ReplaceKey
+		);
+	}
+
+	/// The rest of the precedence: a revocation drops what is held whatever
+	/// chain came with it, a chain is taken, and an empty one waits.
+	#[test]
+	fn a_revocation_drops_what_is_held_and_a_chain_is_otherwise_taken() {
+		let revoked = Order {
+			revoked: true,
+			..Order::default()
+		};
+		assert_eq!(disposition(&revoked, Some("chain")), Disposition::DropHeld);
+
+		let issued = Order {
+			state: "issued".into(),
+			..Order::default()
+		};
+		assert_eq!(disposition(&issued, Some("chain")), Disposition::TakeChain);
+
+		let pending = Order {
+			state: "pending".into(),
+			..Order::default()
+		};
+		assert_eq!(disposition(&pending, None), Disposition::Wait);
+		assert_eq!(disposition(&pending, Some("   ")), Disposition::Wait);
+	}
+
+	/// A name whose attempt failed outright stays asked for, so it is retried
+	/// rather than waiting out the steady interval — but it backs off like a
+	/// pending order, rather than waking a full pass on every tick.
+	#[tokio::test]
+	async fn a_failed_attempt_is_retried_on_the_backoff_rather_than_every_tick() {
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+		state.note_wanted("app.example.com").await;
+		*state.last_pass.write().await = Some(Timestamp::now());
+
+		// Nothing attempted yet, so the name asked for makes a pass due.
+		let now = Timestamp::now();
+		assert!(state.pass_due().await);
+		assert!(state.name_due("app.example.com", now).await);
+
+		// A pass that failed on it: the failure is recorded and stamped, and the
+		// name is still asked for.
+		{
+			let mut orders = state.orders.write().await;
+			let order = orders.entry("app.example.com".to_string()).or_default();
+			order.last_error = Some("canopy unreachable".into());
+			order.asked_at = Some(now);
+		}
+		assert!(state.wanted.lock().await.contains("app.example.com"));
+		assert!(!state.name_due("app.example.com", now).await);
+		assert!(!state.pass_due().await);
+
+		// Once the backoff has elapsed it is due again.
+		let later = now + jiff::SignedDuration::from_secs(PENDING_RETRY.as_secs() as i64 + 1);
+		assert!(state.name_due("app.example.com", later).await);
+	}
+
+	/// An empty address list is what withdraws a name, so registering with none
+	/// would take a production name's records down while reading as a publish
+	/// that had worked. Withdrawing is its own endpoint, asked for deliberately.
+	///
+	/// spec: NAM#registering-addresses-for-a-name
+	#[tokio::test]
+	async fn registering_with_no_address_is_refused_rather_than_withdrawing() {
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+		let task = CanopyNames::new(Arc::new(state));
+		let endpoints = task.http_endpoints();
+		let register = endpoints
+			.iter()
+			.find(|endpoint| endpoint.name == "dns-register")
+			.expect("the task exposes dns-register");
+
+		for query in [vec![], vec![("addresses", "")], vec![("addresses", " , ")]] {
+			let mut ctx = detached_ctx();
+			ctx.query.insert("name".into(), "app.example.com".into());
+			for (key, value) in &query {
+				ctx.query.insert((*key).into(), (*value).into());
+			}
+			match (register.handler)(ctx).await {
+				TaskEndpointResponse::Error { status, message } => {
+					assert_eq!(status, 400);
+					assert!(
+						message.contains("dns-withdraw"),
+						"the refusal must point at the endpoint that does withdraw: {message}"
+					);
+				}
+				_ => panic!("expected a refusal for {query:?}"),
+			}
+		}
 	}
 
 	/// Canopy publishes what it is handed, so an address that is not one is

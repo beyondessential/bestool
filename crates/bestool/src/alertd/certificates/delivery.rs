@@ -96,12 +96,13 @@ pub async fn handle_certificate(
 		return (StatusCode::FORBIDDEN, format!("{err}")).into_response();
 	}
 
+	// A request naming no name names nothing this is responsible for, so it
+	// declines rather than failing: a client that offered no server name
+	// indication is Caddy's to answer from its own default, and an error here
+	// would end that handshake instead of handing it back.
 	if query.server_name.is_empty() {
-		return (
-			StatusCode::BAD_REQUEST,
-			"a certificate request must carry a server_name",
-		)
-			.into_response();
+		debug!("a certificate request carried no server_name");
+		return StatusCode::NO_CONTENT.into_response();
 	}
 
 	match certificates.serve(&query.server_name).await {
@@ -321,6 +322,21 @@ mod tests {
 			let response = reqwest::get(format!("{base}/certificate?server_name=app.example.com"))
 				.await
 				.unwrap();
+			assert_eq!(response.status(), 204);
+		}
+
+		/// A request naming no name is a decline too. An error would end the
+		/// handshake with no fallback, and a client that offered no server name
+		/// indication is Caddy's to answer from its own default.
+		#[tokio::test]
+		async fn a_request_with_no_server_name_declines() {
+			let base = serve(Some(state_holding(Some("app.example.com")).await)).await;
+			let response = reqwest::get(format!("{base}/certificate?server_name="))
+				.await
+				.unwrap();
+			assert_eq!(response.status(), 204);
+
+			let response = reqwest::get(format!("{base}/certificate")).await.unwrap();
 			assert_eq!(response.status(), 204);
 		}
 

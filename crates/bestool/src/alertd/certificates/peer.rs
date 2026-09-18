@@ -133,12 +133,25 @@ fn socket_owner(peer: SocketAddr, local: SocketAddr) -> Result<u32> {
 	))
 }
 
+/// `TCP_ESTABLISHED`, as the kernel's table spells it.
+///
+/// The only state the caller's socket can be in: it is waiting on the response
+/// to the request being answered.
+const ESTABLISHED: &str = "01";
+
 /// Find the uid owning the socket whose local end is `want_local` and whose
 /// remote end is `want_remote`, in one of the kernel's TCP tables.
 ///
 /// The table is a fixed-column text file: a header line, then one line per
-/// socket with `local_address` and `rem_address` as hex `ADDRESS:PORT`, and the
-/// owner's uid in the eighth field.
+/// socket with `local_address` and `rem_address` as hex `ADDRESS:PORT`, the
+/// connection state, and the owner's uid in the eighth field.
+///
+/// Only an established connection is considered. A four-tuple on loopback can
+/// appear more than once — a `TIME_WAIT` remnant of an earlier connection sits
+/// in the table alongside the live one, and reports the uid of whatever held it
+/// rather than of the caller now asking. Taking the first row to match the tuple
+/// would let that remnant answer for the live connection, which decides the
+/// permission on the wrong socket's owner.
 fn find_owner(table: &str, want_local: SocketAddr, want_remote: SocketAddr) -> Option<u32> {
 	// The caller's port is what tells its row from every other socket on the
 	// host, and the table prints ports as four upper-case hex digits — so the
@@ -155,8 +168,11 @@ fn find_owner(table: &str, want_local: SocketAddr, want_remote: SocketAddr) -> O
 		}
 		let local = parse_address(local_cell)?;
 		let remote = parse_address(fields.next()?)?;
-		// st, tx:rx, tr:tm, retrnsmt, then uid.
-		let uid = fields.nth(4)?.parse::<u32>().ok()?;
+		if fields.next()? != ESTABLISHED {
+			return None;
+		}
+		// tx:rx, tr:tm, retrnsmt, then uid.
+		let uid = fields.nth(3)?.parse::<u32>().ok()?;
 
 		(same_endpoint(local, want_local) && same_endpoint(remote, want_remote)).then_some(uid)
 	})
@@ -226,6 +242,16 @@ mod tests {
    2: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 4113 1 0000 10 0
 ";
 
+	// A TIME_WAIT remnant of an earlier connection on the same four-tuple, sat
+	// ahead of the live one. `06` is TCP_TIME_WAIT, and such a row reports the
+	// uid of whatever held it — root, here — rather than of the caller asking
+	// now.
+	const TCP4_WITH_REMNANT: &str = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:C142 0100007F:2047 06 00000000:00000000 00:00000000 00000000     0        0 51230 1 0000 20 0
+   1: 0100007F:C142 0100007F:2047 01 00000000:00000000 00:00000000 00000000   997        0 51231 1 0000 20 0
+";
+
 	const TCP6: &str = "\
   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 00000000000000000000000001000000:C143 00000000000000000000000001000000:2047 01 00000000:00000000 00:00000000 00000000  1001        0 51999 1 0000 20 0
@@ -242,6 +268,23 @@ mod tests {
 		// the end the daemon accepted on.
 		let uid = find_owner(TCP4, addr("127.0.0.1:49474"), addr("127.0.0.1:8263"));
 		assert_eq!(uid, Some(997));
+	}
+
+	/// Only the established connection answers. A remnant on the same four-tuple
+	/// reports whoever held it, so taking the first row to match would decide
+	/// the permission on the wrong socket's owner.
+	#[test]
+	fn a_remnant_on_the_same_four_tuple_does_not_answer_for_the_live_connection() {
+		let uid = find_owner(
+			TCP4_WITH_REMNANT,
+			addr("127.0.0.1:49474"),
+			addr("127.0.0.1:8263"),
+		);
+		assert_eq!(
+			uid,
+			Some(997),
+			"the live connection's owner, not the remnant's"
+		);
 	}
 
 	#[test]
