@@ -12,7 +12,7 @@ pub mod store;
 pub mod subject;
 pub mod sweep;
 
-pub use runtime::{Compute, Duty, HttpRuntime, ServiceRuntime, TamanuDuty};
+pub use runtime::{CertificateSource, Compute, Duty, HttpRuntime, ServiceRuntime, TamanuDuty};
 pub use stat::{MetricsSnapshot, Stat, StatKind, StatusCounts};
 pub use store::{CheckStore, Lifetime};
 pub use subject::{ApplicationKind, Subject, TamanuScope};

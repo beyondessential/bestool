@@ -33,7 +33,9 @@ use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tracing::debug;
 use x509_parser::prelude::*;
 
-use super::{Certificate, HttpRuntime, TrafficCounters, TrafficSource, Unavailable};
+use super::{
+	Certificate, CertificateSource, HttpRuntime, TrafficCounters, TrafficSource, Unavailable,
+};
 use crate::checks::fmt_chain;
 
 const METRICS_URL: &str = "http://localhost:2019/metrics";
@@ -168,16 +170,28 @@ async fn read_certificates(client: &reqwest::Client) -> Result<Vec<Certificate>,
 	// cert) and any manually-loaded cert files is blocking I/O — on Windows each
 	// read is antivirus-scanned. Run it on the blocking pool so it can't stall
 	// other checks sharing the executor.
-	let found = tokio::task::spawn_blocking(move || gather_certs(&active, &config))
+	let scan_active = active.clone();
+	let found = tokio::task::spawn_blocking(move || gather_certs(&scan_active, &config))
 		.await
 		.unwrap_or_else(|err| {
 			debug!(%err, "caddy certificate scan task did not complete");
 			Vec::new()
-		});
+		})
+		.into_iter()
+		.map(|(origin, cert)| (origin, CertificateSource::FrontEnd, cert))
+		.collect::<Vec<_>>();
+
+	// The chains canopy issued are in force too, and Caddy's store holds none
+	// of them: it is handed each one during the handshake rather than keeping
+	// it. Without them a canopy-served host would grade as having no certificate
+	// at all for the names it actually answers on.
+	//
+	// spec: CHK-CCT#certificates-from-canopy
+	let collected = canopy_chains(&active).await;
 
 	let mut out: Vec<Certificate> = Vec::new();
 	let mut seen: HashSet<Vec<u8>> = HashSet::new();
-	for (origin, cert) in found {
+	for (origin, source, cert) in found.into_iter().chain(collected) {
 		// The same certificate is reachable through several subjects and
 		// sources; a substrate reports each one once.
 		if !seen.insert(cert.der.clone()) {
@@ -195,6 +209,7 @@ async fn read_certificates(client: &reqwest::Client) -> Result<Vec<Certificate>,
 		};
 
 		out.push(Certificate {
+			source,
 			names: cert.sans,
 			origin,
 			not_before,
@@ -366,6 +381,36 @@ fn gather_certs(active: &BTreeSet<String>, config: &Value) -> Vec<(String, DiskC
 	certs
 }
 
+/// The chains the daemon collected from canopy, for the names still active in
+/// Caddy's configuration.
+///
+/// Read from the chain store on disk rather than asked of the running daemon, so
+/// a one-shot `bestool tamanu doctor` grades them too — and so a daemon that has
+/// stopped collecting does not also stop them being graded.
+///
+/// spec: CHK-CCT#certificates-from-canopy
+async fn canopy_chains(active: &BTreeSet<String>) -> Vec<(String, CertificateSource, DiskCert)> {
+	let dir = bestool_canopy::certificates::default_dir();
+	let chains = match bestool_canopy::certificates::load_chains(&dir).await {
+		Ok(chains) => chains,
+		Err(err) => {
+			debug!(%err, "could not read the canopy chain store");
+			return Vec::new();
+		}
+	};
+
+	chains
+		.into_iter()
+		.filter_map(|(name, chain)| {
+			let cert = parse_cert(chain.as_bytes())?;
+			// A chain for a name Caddy no longer serves is not in force, the
+			// same reasoning that keeps Caddy's own store from being the list.
+			cert.covers_any(active)
+				.then(|| (format!("canopy: {name}"), CertificateSource::Canopy, cert))
+		})
+		.collect()
+}
+
 /// caddy's `certificates/` store, probed at the well-known data-dir locations
 /// (the data dir belongs to the caddy service user, not ours, so we can't just
 /// ask `dirs`). caddy's layout is `<data_dir>/certificates`, and `<data_dir>`
@@ -530,6 +575,21 @@ async fn fetch_admin_config(client: &reqwest::Client) -> Option<serde_json::Valu
 		return None;
 	}
 	resp.json().await.ok()
+}
+
+/// The site addresses caddy is configured to serve, read from its live admin
+/// configuration.
+///
+/// `None` where the configuration could not be read at all, which is how a host
+/// not running caddy is passed over. Exposed because more than the certificate
+/// reading needs it: which names the host answers on is also what says which
+/// names a collection owes a chain for.
+///
+/// spec: CHK-CCO#which-names-it-grades
+pub async fn read_active_subjects(client: &reqwest::Client) -> Option<BTreeSet<String>> {
+	fetch_admin_config(client)
+		.await
+		.map(|config| active_subjects(&config))
 }
 
 /// Every hostname caddy considers active, gathered from the config: route
@@ -919,6 +979,7 @@ other_metric{foo=\"bar\"} 7
 		let now = Timestamp::from_second(1_700_000_000).unwrap();
 		let mut certs = vec![
 			Certificate {
+				source: CertificateSource::FrontEnd,
 				names: vec!["*.example.com".to_string()],
 				origin: "/store/wild.crt".into(),
 				not_before: now,
@@ -927,6 +988,7 @@ other_metric{foo=\"bar\"} 7
 				served_leaf: None,
 			},
 			Certificate {
+				source: CertificateSource::FrontEnd,
 				names: Vec::new(),
 				origin: "/store/unnamed.crt".into(),
 				not_before: now,

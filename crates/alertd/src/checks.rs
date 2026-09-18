@@ -33,6 +33,7 @@ pub mod caddy_certs;
 pub mod caddy_resolvers;
 pub mod caddy_version;
 pub mod caddyfile_version;
+pub mod canopy_certificates;
 pub mod canopy_registration;
 pub mod certificate_notification_errors;
 pub mod db_connect;
@@ -166,6 +167,10 @@ pub struct TamanuCx {
 	/// connections stay warm between ticks; HTTP checks apply per-request
 	/// timeouts via `RequestBuilder::timeout`.
 	pub http: reqwest::Client,
+	/// Shared canopy client, for a check that grades what canopy says about this
+	/// deployment. `None` on a one-shot local sweep with no canopy connectivity,
+	/// where such a check skips.
+	pub canopy: Option<Arc<CanopyClient>>,
 	/// What is running this deployment: how a check reads its services and
 	/// their facts, whatever is running them here.
 	///
@@ -590,6 +595,11 @@ pub fn all() -> Vec<CheckEntry> {
 		// The certificates, by contrast, are the application's: they are issued for
 		// the names it answers on.
 		entry!("caddy_certs", caddy_certs::run, tamanu_app),
+		// The collection behind a canopy-issued certificate is the application's
+		// too, and attributed more finely than `caddy_certs` manages: canopy
+		// names the application each certificate belongs to, where caddy's
+		// configuration says nothing about which application a site serves.
+		entry!("canopy_certificates", canopy_certificates::run, tamanu_app),
 		// Grades the machine's Caddyfile version marker, so it reports for the
 		// machine — reading the deployment's version off the machine's context to
 		// tell whether the marker is stale. Windows-only, and self-skips when
@@ -740,6 +750,7 @@ pub mod test_support {
 			database_url: "postgresql://localhost/tamanu-central".into(),
 			pool: Some(pool),
 			http: reqwest::Client::new(),
+			canopy: None,
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
@@ -757,6 +768,7 @@ pub mod test_support {
 			database_url: "postgresql://localhost/tamanu-facility".into(),
 			pool: None,
 			http: reqwest::Client::new(),
+			canopy: None,
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
@@ -865,6 +877,7 @@ mod tests {
 			database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
 			pool: None,
 			http: reqwest::Client::new(),
+			canopy: None,
 			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
 			traffic: Arc::new(crate::runtime::fake::FakeTraffic::absent()),
 			store: Arc::new(crate::store::MemoryStore::new()),
