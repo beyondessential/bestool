@@ -54,10 +54,27 @@ Caddy's certificate management stays enabled, because its own issuance is the fa
 
 A name no site is configured for never reaches the endpoint, and no certificate is issued for it by either party.
 
+The endpoint is `/certificate` on the daemon's local HTTP interface, and a per-site block is what names it:
+
+```caddyfile
+app.example.com {
+	tls {
+		get_certificate http http://127.0.0.1:8271/certificate
+	}
+	# everything else about the site, including its issuer, unchanged
+}
+```
+
+Per-site rather than a catch-all automation policy: a catch-all lets an unconfigured server name indication reach the endpoint, and a decline then falls through to on-demand issuance, which Caddy retries for weeks per name.
+The cost of per-site blocks is not learning a name Caddy is not configured for, which is a name this server would not certify anyway.
+
+bestool does not write or patch the Caddyfile; the shape is an interface the deployment applies.
+
 ## Who may fetch a certificate
 
 The endpoint hands out a private key, so it identifies its caller rather than accepting any connection that reaches it.
 
-The daemon resolves the connecting process and the user it runs as, and serves the superuser and one further user named in the daemon's configuration, which is the user Caddy runs as.
+The daemon resolves the user that owns the connection, and serves the superuser and one further user named in the daemon's configuration, which is the user Caddy runs as.
+Which user owns a connection is what the kernel already records against the socket, so resolving it needs no privilege to read another user's processes.
 
 A caller that is not permitted is refused, and that refusal is a failure rather than a decline: it is a misconfiguration to correct, not a name for Caddy to begin issuing for itself.

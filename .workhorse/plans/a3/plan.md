@@ -34,7 +34,9 @@ One encrypted file holds every name's key; collected chains sit beside it in the
 
 ## Identifying the caller
 
-Peer credentials over a socket are not reachable through Caddy. `HTTPCertGetter` parses the URL with `url.Parse` and issues through `http.DefaultClient`: no unix socket, no custom dialer, no client certificate, no configurable transport. So the connection is ordinary loopback TCP and the peer is resolved out of band — `/proc/net/tcp` and `/proc/net/tcp6` for the socket inode, then a scan of `/proc/*/fd` for the process holding it.
+Peer credentials over a socket are not reachable through Caddy. `HTTPCertGetter` parses the URL with `url.Parse` and issues through `http.DefaultClient`: no unix socket, no custom dialer, no client certificate, no configurable transport. So the connection is ordinary loopback TCP and the peer is resolved out of band — the connection's four-tuple matched in `/proc/net/tcp` and `/proc/net/tcp6`, whose rows carry the owning uid.
+
+The `/proc/*/fd` scan that would also name the *process* was dropped once the unit file was read: that scan needs `CAP_SYS_PTRACE` to reach another user's process, the unit's bounding set does not grant it, and `ProtectProc=invisible` hides those directories from the daemon anyway. Adding the capability would buy only the process name, when the uid is what the decision turns on — and a socket's owner is the effective user of whatever created it. The endpoint therefore resolves the user and not the process, which is what [TLSD](../../specs/canopy/certificate-delivery.md#who-may-fetch-a-certificate) now says.
 
 The permission model follows tailscaled's: superuser by default, plus one further user named in configuration, the same shape as `TS_PERMIT_CERT_UID=caddy`, which exists because Caddy commonly runs as its own unprivileged user.
 
@@ -60,18 +62,18 @@ The union is confined to *asking*. Reporting is per application, because Canopy'
 
 ## Build
 
-- [ ] Key store: generate P-256 keys, one per name, in a machine-bound encrypted file beside the registration; chains as plain files alongside.
-- [ ] CSR generation, base64 DER, exactly one name per request.
-- [ ] Entitlements call, including the union over the applications list, the domain check, and the paused and grant states.
-- [ ] Read Caddy's admin config for active subjects; reuse what `caddy_certs` already does rather than parsing a Caddyfile.
-- [ ] Request/collect against Canopy, holding pending orders and retrying them sooner than the steady tick.
-- [ ] Revocation and forced key replacement handling, including that a revocation pauses the server in Canopy so the replacement request is refused until an operator lifts it.
-- [ ] Background task in the alertd daemon wiring the above, with the fast-tick-and-rate-limit shape.
-- [ ] Certificate endpoint: in-memory answers only, decline by default, chain plus key as PEM on a hit.
-- [ ] Peer identification and the configured permitted user; refusal as a failure.
-- [ ] Task HTTP endpoints for status and for forcing a collection.
-- [ ] `bestool canopy certs`: list, request, collect.
-- [ ] `bestool canopy dns`: register, withdraw, show.
-- [ ] `canopy_certificates` healthcheck, application-scoped (`tamanu_app`, as `caddy_certs` already is), including its skip conditions. Match a Canopy entitlement entry to the application by type slug, which is what `ApplicationKind::type_slug()` already produces.
-- [ ] Teach `caddy_certs` about a chain served by the daemon.
-- [ ] Document the required Caddyfile shape for the deployment to apply.
+- [x] Key store: generate P-256 keys, one per name, in a machine-bound encrypted file beside the registration; chains as plain files alongside.
+- [x] CSR generation, base64 DER, exactly one name per request.
+- [x] Entitlements call, including the union over the applications list, the domain check, and the paused and grant states.
+- [x] Read Caddy's admin config for active subjects; reuse what `caddy_certs` already does rather than parsing a Caddyfile.
+- [x] Request/collect against Canopy, holding pending orders and retrying them sooner than the steady tick.
+- [x] Revocation and forced key replacement handling, including that a revocation pauses the server in Canopy so the replacement request is refused until an operator lifts it.
+- [x] Background task in the alertd daemon wiring the above, with the fast-tick-and-rate-limit shape.
+- [x] Certificate endpoint: in-memory answers only, decline by default, chain plus key as PEM on a hit.
+- [x] Peer identification and the configured permitted user; refusal as a failure.
+- [x] Task HTTP endpoints for status and for forcing a collection.
+- [x] `bestool canopy certs`: list, request, collect.
+- [x] `bestool canopy dns`: register, withdraw, show.
+- [x] `canopy_certificates` healthcheck, application-scoped (`tamanu_app`, as `caddy_certs` already is), including its skip conditions. Match a Canopy entitlement entry to the application by type slug, which is what `ApplicationKind::type_slug()` already produces.
+- [x] Teach `caddy_certs` about a chain served by the daemon.
+- [x] Document the required Caddyfile shape for the deployment to apply (in [TLSD](../../specs/canopy/certificate-delivery.md#caddy-configuration), which is where the interface belongs).

@@ -322,17 +322,8 @@ impl CertificateState {
 		self.load_from_disk().await?;
 		let entitlement = self.refresh_entitlement(ctx).await?;
 
-		// A server that may not obtain certificates stops requesting them, and
-		// so does one canopy reports as paused. Neither takes a collected chain
-		// out of service, so what is held stays served.
-		//
-		// spec: TLS#when-the-grant-is-absent-or-the-server-is-paused
-		if !entitlement.holds_tls_grant() {
-			debug!("no TLS grant; not requesting certificates");
-			return Ok(());
-		}
-		if entitlement.fully_paused() {
-			debug!("canopy reports this server paused; waiting rather than retrying");
+		if let Some(reason) = stands_down(&entitlement) {
+			debug!(reason, "not requesting certificates");
 			return Ok(());
 		}
 
@@ -655,6 +646,28 @@ impl CertificateState {
 	}
 }
 
+/// Why this server makes no requests, where it makes none.
+///
+/// A server that may not obtain certificates stops requesting them, and so does
+/// one canopy reports as paused. Neither takes a collected chain out of service,
+/// so what is held stays served either way: withdrawing a grant from a host
+/// under suspicion stops it obtaining anything new without also dropping every
+/// name it currently answers on.
+///
+/// A pause is canopy's to lift and no length of pause is escalated from here, so
+/// a paused server waits rather than retrying against the refusal.
+///
+/// spec: TLS#when-the-grant-is-absent-or-the-server-is-paused
+fn stands_down(entitlement: &Entitlement) -> Option<&'static str> {
+	if !entitlement.holds_tls_grant() {
+		Some("this server holds no TLS grant")
+	} else if entitlement.fully_paused() {
+		Some("canopy reports this server paused")
+	} else {
+		None
+	}
+}
+
 /// The background task: the collection loop, and the endpoints the CLI reaches.
 pub struct CanopyNames {
 	state: Arc<CertificateState>,
@@ -827,6 +840,19 @@ mod tests {
 		*state.entitlement.write().await = Some(Entitlement::from_wire(&wire));
 	}
 
+	/// A context with nothing behind it: no canopy, and an HTTP client whose
+	/// caddy admin API is not running, so the subjects it reads are empty.
+	fn detached_ctx() -> TaskContext {
+		TaskContext {
+			http_client: reqwest::Client::new(),
+			canopy_client: None,
+			reload: tokio::sync::watch::channel(0u64).1,
+			#[cfg(windows)]
+			restart: None,
+			query: Default::default(),
+		}
+	}
+
 	async fn hold(state: &CertificateState, name: &str, usable: bool) {
 		state.held.write().await.insert(
 			name.to_owned(),
@@ -914,16 +940,65 @@ mod tests {
 		state.note_wanted("app.example.com").await;
 
 		let entitlement = state.entitlement.read().await.clone().unwrap();
-		let ctx = TaskContext {
-			http_client: reqwest::Client::new(),
-			canopy_client: None,
-			reload: tokio::sync::watch::channel(0u64).1,
-			#[cfg(windows)]
-			restart: None,
-			query: Default::default(),
-		};
-		let names = state.target_names(&ctx, &entitlement).await;
+		let names = state.target_names(&detached_ctx(), &entitlement).await;
 		assert_eq!(names, vec!["app.example.com".to_string()]);
+	}
+
+	/// A grant withdrawn under an incident, and a pause, both stop new requests
+	/// — and neither is a revocation, so what is already held stays served.
+	#[tokio::test]
+	async fn a_withdrawn_grant_and_a_pause_both_stop_requesting_without_dropping_what_is_held() {
+		let (_dir, state) = state();
+		hold(&state, "app.example.com", true).await;
+
+		with_entitlement(&state, &["example.com"], false, false).await;
+		let withdrawn = state.entitlement.read().await.clone().unwrap();
+		assert_eq!(
+			stands_down(&withdrawn),
+			Some("this server holds no TLS grant")
+		);
+		assert!(state.serve("app.example.com").await.is_some());
+
+		with_entitlement(&state, &["example.com"], true, true).await;
+		let paused = state.entitlement.read().await.clone().unwrap();
+		assert_eq!(
+			stands_down(&paused),
+			Some("canopy reports this server paused")
+		);
+		assert!(state.serve("app.example.com").await.is_some());
+
+		with_entitlement(&state, &["example.com"], true, false).await;
+		let entitled = state.entitlement.read().await.clone().unwrap();
+		assert_eq!(stands_down(&entitled), None);
+	}
+
+	/// A name has to meet both tests: Caddy serving it, and the entitlement
+	/// covering it. One without the other is left to Caddy's own issuance.
+	#[tokio::test]
+	async fn a_name_meeting_one_test_and_not_the_other_is_not_ordered_for() {
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+		let entitlement = state.entitlement.read().await.clone().unwrap();
+
+		// Caddy's admin API is not running under this test, so the subjects it
+		// would contribute are empty: a name the entitlement covers that Caddy
+		// does not serve produces no order.
+		assert!(
+			state
+				.target_names(&detached_ctx(), &entitlement)
+				.await
+				.is_empty()
+		);
+
+		// And a subject the entitlement does not cover is dropped even when it
+		// reaches the task by the one route a test can drive.
+		state.note_wanted("app.elsewhere.test").await;
+		assert!(
+			state
+				.target_names(&detached_ctx(), &entitlement)
+				.await
+				.is_empty()
+		);
 	}
 
 	#[tokio::test]
