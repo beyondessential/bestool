@@ -43,6 +43,18 @@ use crate::alertd::{
 	BackgroundTask, TaskContext, TaskEndpoint, TaskEndpointResponse, tasks::TaskEndpointHandler,
 };
 
+/// A report's whole cause chain, joined.
+///
+/// A bare `Display` gives only the outermost wrap — "asking canopy what this
+/// server may do" — which says what was being done and nothing about what went
+/// wrong. What an operator needs is the cause underneath it.
+fn why(err: &miette::Report) -> String {
+	err.chain()
+		.map(ToString::to_string)
+		.collect::<Vec<_>>()
+		.join(": ")
+}
+
 pub mod delivery;
 pub mod peer;
 
@@ -345,7 +357,7 @@ impl CertificateState {
 					.await
 					.entry(name.clone())
 					.or_default()
-					.last_error = Some(format!("{err}"));
+					.last_error = Some(why(&err));
 			}
 			self.wanted.lock().await.remove(&name);
 		}
@@ -688,7 +700,7 @@ impl BackgroundTask for CanopyNames {
 				}
 				Err(err) => {
 					warn!(%err, "certificate collection pass failed");
-					*self.state.last_error.write().await = Some(format!("{err}"));
+					*self.state.last_error.write().await = Some(why(&err));
 				}
 			}
 			if steady {
@@ -784,7 +796,7 @@ fn endpoint(
 				Ok(value) => TaskEndpointResponse::Json(value),
 				Err(err) => TaskEndpointResponse::Error {
 					status: 400,
-					message: format!("{err}"),
+					message: why(&err),
 				},
 			}
 		})

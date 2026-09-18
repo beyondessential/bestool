@@ -20,7 +20,7 @@ mod endpoints;
 mod metrics_render;
 mod state;
 #[cfg(test)]
-mod test_utils;
+pub(crate) mod test_utils;
 mod types;
 
 pub use endpoints::*;

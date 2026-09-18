@@ -229,4 +229,119 @@ mod tests {
 	fn a_configuration_naming_no_site_names_nothing() {
 		assert!(active_subjects(&serde_json::json!({"apps": {}})).is_empty());
 	}
+
+	/// The endpoint over a real loopback connection, which is the only way to
+	/// exercise the caller check: it reads the connection out of the kernel's
+	/// table, so there has to be a connection.
+	#[cfg(target_os = "linux")]
+	mod over_a_connection {
+		use std::sync::Arc;
+
+		use axum::{Router, routing::get};
+
+		use super::super::{Endpoints, handle_certificate};
+		use crate::alertd::certificates::{CertificateState, peer};
+
+		/// Serve the certificate route on an ephemeral loopback port, and answer
+		/// from `state`.
+		async fn serve(state: Option<Arc<CertificateState>>) -> String {
+			let mut server = crate::alertd::http_server::test_utils::create_test_state().await;
+			Arc::get_mut(&mut server).unwrap().certificates = state;
+
+			let app = Router::new()
+				.route("/certificate", get(handle_certificate))
+				.with_state(server);
+			let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+			let base = format!("http://{}", listener.local_addr().unwrap());
+			tokio::spawn(async move {
+				let _ = axum::serve(
+					listener,
+					app.into_make_service_with_connect_info::<Endpoints>(),
+				)
+				.await;
+			});
+			base
+		}
+
+		/// This process's own uid, read the same way the endpoint reads a
+		/// caller's: without libc, which the workspace forbids reaching for.
+		fn own_uid() -> u32 {
+			std::fs::read_to_string("/proc/self/status")
+				.unwrap()
+				.lines()
+				.find_map(|line| line.strip_prefix("Uid:"))
+				.and_then(|rest| rest.split_whitespace().next()?.parse().ok())
+				.unwrap()
+		}
+
+		async fn state_holding(name: Option<&str>) -> Arc<CertificateState> {
+			let state = Arc::new(CertificateState::new(
+				std::env::temp_dir().join("a3-delivery-test"),
+				peer::Permitted::new(Some(own_uid())),
+			));
+			if let Some(name) = name {
+				state.held.write().await.insert(
+					name.to_owned(),
+					crate::alertd::certificates::Held {
+						chain: "-----BEGIN CERTIFICATE-----\nchain\n-----END CERTIFICATE-----"
+							.into(),
+						key_pem: "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n"
+							.into(),
+						not_after: None,
+						usable: true,
+						revoked: false,
+					},
+				);
+			}
+			state
+		}
+
+		/// The handler reaches no network, so canopy being unreachable — here,
+		/// absent entirely — cannot stall or fail a handshake.
+		#[tokio::test]
+		async fn a_held_chain_is_served_from_memory_with_its_key() {
+			let base = serve(Some(state_holding(Some("app.example.com")).await)).await;
+			let response = reqwest::get(format!("{base}/certificate?server_name=app.example.com"))
+				.await
+				.unwrap();
+
+			assert_eq!(response.status(), 200);
+			let body = response.text().await.unwrap();
+			assert!(body.contains("BEGIN CERTIFICATE"), "{body}");
+			assert!(body.contains("BEGIN PRIVATE KEY"), "{body}");
+		}
+
+		/// A decline, not an error: an error would take down a name Caddy would
+		/// otherwise have issued for itself.
+		#[tokio::test]
+		async fn nothing_held_declines_with_no_content() {
+			let base = serve(Some(state_holding(None).await)).await;
+			let response = reqwest::get(format!("{base}/certificate?server_name=app.example.com"))
+				.await
+				.unwrap();
+			assert_eq!(response.status(), 204);
+		}
+
+		/// A refused caller is a failure rather than a decline: it is a
+		/// misconfiguration to correct, not a name for Caddy to begin issuing
+		/// for itself.
+		#[tokio::test]
+		async fn a_caller_that_is_not_permitted_is_refused() {
+			if own_uid() == 0 {
+				// The superuser is always permitted, so there is no refusal to
+				// observe from a test running as root.
+				return;
+			}
+			let state = Arc::new(CertificateState::new(
+				std::env::temp_dir().join("a3-delivery-test"),
+				// Someone else entirely, and not root.
+				peer::Permitted::new(Some(own_uid().wrapping_add(1))),
+			));
+			let base = serve(Some(state)).await;
+			let response = reqwest::get(format!("{base}/certificate?server_name=app.example.com"))
+				.await
+				.unwrap();
+			assert_eq!(response.status(), 403);
+		}
+	}
 }
