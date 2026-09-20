@@ -201,12 +201,6 @@ pub struct TamanuCx {
 	///
 	/// spec: SUB#check-state
 	pub store: Arc<dyn CheckStore>,
-	/// Shared canopy client, a parameter of the sweep rather than of the
-	/// application, as [`http`](Self::http) is. It serves a check whose
-	/// judgement is canopy's to make: what the application has is read from the
-	/// application, and what it should have is canopy's answer. `None` on a
-	/// one-shot local sweep with no canopy connectivity.
-	pub canopy: Option<Arc<CanopyClient>>,
 }
 
 /// What a Postgres check is handed: the cluster it reports for, and how to
@@ -777,7 +771,6 @@ pub mod test_support {
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
-			canopy: None,
 		})
 	}
 
@@ -797,7 +790,6 @@ pub mod test_support {
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
-			canopy: None,
 		}
 	}
 
@@ -908,7 +900,6 @@ mod tests {
 			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
 			traffic: Arc::new(crate::runtime::fake::FakeTraffic::absent()),
 			store: Arc::new(crate::store::MemoryStore::new()),
-			canopy: None,
 		}
 	}
 
