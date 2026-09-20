@@ -21,6 +21,11 @@
 //!   reload — a warning. Where the substrate had nothing to compare, that is not
 //!   a mismatch and is not graded as one.
 //!
+//! A certificate collected from canopy and served to the front end is graded
+//! like any other, and reported as having come from canopy: the two fail
+//! differently, and a host that has quietly fallen back to the front end's own
+//! issuance would otherwise present exactly as a healthy canopy-served one.
+//!
 //! Skips when the substrate cannot serve the reading (e.g. no front end here).
 //!
 //! The check keeps its name, which still says caddy: it is wire-visible and
@@ -152,6 +157,12 @@ fn grade(certs: &[Certificate], now: Timestamp) -> Check {
 		stats.push(
 			Stat::gauge("days_remaining", (days * 10.0).round() / 10.0)
 				.label("cert", cert_id.clone())
+				// Which side obtained it: a host that has quietly fallen back to
+				// the front end's own issuance is visible here rather than
+				// looking the same as one canopy is serving.
+				//
+				// spec: CHK-CCT#certificates-from-canopy
+				.label("source", cert.source.as_str())
 				.help("Days until certificate expiry"),
 		);
 		if let Some(matches) = served_matches {
@@ -164,6 +175,7 @@ fn grade(certs: &[Certificate], now: Timestamp) -> Check {
 
 		details.push(json!({
 			"names": cert.names,
+			"source": cert.source.as_str(),
 			"origin": cert.origin,
 			"not_after": cert.not_after.as_second(),
 			"days_remaining": (days * 10.0).round() / 10.0,
@@ -193,7 +205,7 @@ fn grade(certs: &[Certificate], now: Timestamp) -> Check {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::check::CheckStatus;
+	use crate::{check::CheckStatus, runtime::CertificateSource};
 
 	fn classify(remaining: i64, lifetime: i64) -> &'static str {
 		match classify_expiry(remaining, lifetime) {
@@ -268,6 +280,7 @@ mod tests {
 		let now = Timestamp::from_second(1_700_000_000).unwrap();
 		let not_after = now.as_second() + remaining_days * D;
 		Certificate {
+			source: CertificateSource::FrontEnd,
 			names: names.iter().map(|n| (*n).to_string()).collect(),
 			origin: "/store/example.crt".into(),
 			not_before: Timestamp::from_second(not_after - lifetime_days * D).unwrap(),
@@ -279,6 +292,33 @@ mod tests {
 
 	fn now() -> Timestamp {
 		Timestamp::from_second(1_700_000_000).unwrap()
+	}
+
+	/// A host that has quietly fallen back to the front end's own issuance must
+	/// be tellable from one canopy is serving: without the distinction it
+	/// presents as healthy while still depending on the DNS credential that
+	/// issuing through canopy exists to remove.
+	///
+	/// spec: CHK-CCT#certificates-from-canopy
+	#[test]
+	fn a_certificate_says_which_side_obtained_it() {
+		let certs = [
+			Certificate {
+				source: CertificateSource::Canopy,
+				origin: "canopy: a.example.com".into(),
+				..cert(&["a.example.com"], 60, 90)
+			},
+			cert(&["b.example.com"], 60, 90),
+		];
+		let check = grade(&certs, now());
+		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+
+		let reported = check.details["certificates"].as_array().unwrap();
+		let sources: Vec<&str> = reported
+			.iter()
+			.map(|row| row["source"].as_str().unwrap())
+			.collect();
+		assert_eq!(sources, vec!["canopy", "front-end"]);
 	}
 
 	/// A front end serving something other than what is configured has not

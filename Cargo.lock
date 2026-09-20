@@ -711,6 +711,7 @@ dependencies = [
  "jiff",
  "miette",
  "node-semver",
+ "rcgen",
  "reqwest",
  "rustix 1.1.4",
  "rustls",
@@ -718,6 +719,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "tempfile",
+ "time",
  "tokio",
  "tokio-postgres",
  "tokio-rustls",
@@ -746,12 +748,14 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sysinfo",
  "tempfile",
  "time",
  "tokio",
  "tracing",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]
@@ -6238,6 +6242,7 @@ dependencies = [
  "rustls-platform-verifier 0.7.0",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

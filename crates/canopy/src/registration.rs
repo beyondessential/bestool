@@ -19,50 +19,23 @@
 //! in hardware via [`machine_passphrase`] — while hosts without one keep using
 //! the machine id, and neither the file format nor any consumer changes.
 
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::{
 	fmt,
 	path::{Path, PathBuf},
 };
 
-use algae_cli::{
-	passphrases::Passphrase,
-	streams::{decrypt_stream, encrypt_stream},
-};
-use base64::{
-	Engine as _,
-	engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
-};
+use algae_cli::passphrases::Passphrase;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use miette::{IntoDiagnostic as _, Result, WrapErr as _, miette};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+use crate::machine_store::{
+	DIR_ENV, WORK_FACTOR, decrypt_bytes, encrypt_bytes, machine_passphrase, remove_if_present,
+	scrypt_work_factor, write_atomic,
+};
+
 const VERSION: &str = "registration-1";
-
-/// Environment variable overriding the base directory for the registration
-/// file. Set by tests and honoured for ad-hoc relocation; when set, legacy
-/// migration is skipped.
-const DIR_ENV: &str = "BESTOOL_CANOPY_DIR";
-
-/// blake3 KDF context string for the machine-id-derived file passphrase. Bump
-/// the version suffix if the derivation ever changes.
-const KDF_CONTEXT: &str = "bestool canopy-registration v1 (machine-id)";
-
-/// Unix mode for the registration file. Group-readable so unprivileged runs
-/// sharing the daemon's group (e.g. `bestool tamanu doctor` run by hand) read
-/// the same registration instead of falling back to the database and
-/// rewriting the legacy `/etc/tamanu` files.
-#[cfg(unix)]
-const REG_FILE_MODE: u32 = 0o640;
-
-/// scrypt work factor (`N = 2^REG_WORK_FACTOR`) for the registration file.
-///
-/// The machine passphrase is a 256-bit blake3-derived key, so scrypt's
-/// memory-hardness adds no protection; age's default calibrates to ~1 second
-/// of scrypt, which on a fast server is a 512MiB arena — enough to blow
-/// through a service MemoryMax. 2^12 keeps the arena at 4MiB.
-const REG_WORK_FACTOR: u8 = 12;
 
 /// This host's canopy enrollment state.
 ///
@@ -108,23 +81,12 @@ impl fmt::Debug for Registration {
 	}
 }
 
-/// Default base directory for the registration file (honours [`DIR_ENV`]).
+/// Default base directory for the registration file.
 ///
-/// Uses the platform convention for machine-global state: `/etc` on Linux,
-/// `%ProgramData%` on Windows.
+/// Shared with every other machine-bound file this host keeps, so all per-host
+/// canopy state lives in one place; see [`crate::machine_store::default_dir`].
 pub fn default_dir() -> PathBuf {
-	if let Some(dir) = std::env::var_os(DIR_ENV) {
-		return PathBuf::from(dir);
-	}
-	#[cfg(windows)]
-	{
-		let base = std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into());
-		PathBuf::from(base).join("bestool")
-	}
-	#[cfg(not(windows))]
-	{
-		PathBuf::from("/etc/bestool")
-	}
+	crate::machine_store::default_dir()
 }
 
 fn registration_file(dir: &Path) -> PathBuf {
@@ -243,16 +205,6 @@ pub async fn delete_in(dir: &Path) -> Result<bool> {
 	Ok(existed)
 }
 
-async fn remove_if_present(path: &Path) -> Result<bool> {
-	match tokio::fs::remove_file(path).await {
-		Ok(()) => Ok(true),
-		Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-		Err(err) => Err(err)
-			.into_diagnostic()
-			.wrap_err_with(|| format!("removing {}", path.display())),
-	}
-}
-
 /// Encrypt a registration under an operator passphrase, for `canopy export`.
 pub fn encrypt_with_passphrase(reg: &Registration, passphrase: Passphrase) -> Result<Vec<u8>> {
 	let plaintext = serde_json::to_vec(reg)
@@ -280,18 +232,8 @@ pub fn decrypt_with_passphrase(bytes: &[u8], passphrase: Passphrase) -> Result<R
 }
 
 async fn read_and_decrypt(path: &Path) -> Result<Registration> {
-	// Repair the mode of files written before group read was granted.
-	// Best-effort: only the owner can chmod, and unprivileged readers that get
-	// this far don't need to.
 	#[cfg(unix)]
-	if let Ok(meta) = tokio::fs::metadata(path).await
-		&& meta.permissions().mode() & 0o777 != REG_FILE_MODE
-	{
-		let _ =
-			tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(REG_FILE_MODE)).await;
-	}
-	#[cfg(unix)]
-	inherit_dir_group(path).await;
+	crate::machine_store::repair_mode(path).await;
 
 	let bytes = tokio::fs::read(path)
 		.await
@@ -304,7 +246,7 @@ async fn read_and_decrypt(path: &Path) -> Result<Registration> {
 	// default, which costs hundreds of MiB to decrypt on every load. Re-encrypt
 	// once with the cheap factor. Best-effort: unprivileged readers can't write
 	// here, and the owner will on its next load.
-	if scrypt_work_factor(&bytes).is_some_and(|log_n| log_n > REG_WORK_FACTOR) {
+	if scrypt_work_factor(&bytes).is_some_and(|log_n| log_n > WORK_FACTOR) {
 		match encrypt_bytes(&plaintext, machine_passphrase()?) {
 			Ok(cheap) => match write_atomic(path, &cheap).await {
 				Ok(()) => {
@@ -319,20 +261,6 @@ async fn read_and_decrypt(path: &Path) -> Result<Registration> {
 	serde_json::from_slice(&plaintext)
 		.into_diagnostic()
 		.wrap_err("parsing registration")
-}
-
-/// Extract the scrypt work factor (log_n) from an age file header.
-///
-/// The header is ASCII text even in the binary format: a version line, then
-/// `-> scrypt <salt> <log_n>` for passphrase-encrypted files.
-fn scrypt_work_factor(ciphertext: &[u8]) -> Option<u8> {
-	ciphertext
-		.split(|&b| b == b'\n')
-		.take(2)
-		.filter_map(|line| std::str::from_utf8(line).ok())
-		.find_map(|line| line.strip_prefix("-> scrypt "))
-		.and_then(|rest| rest.split_ascii_whitespace().nth(1))
-		.and_then(|n| n.parse().ok())
 }
 
 async fn migrate_from_legacy(dir: &Path) -> Result<Option<Registration>> {
@@ -391,116 +319,15 @@ fn read_trimmed(path: &Path) -> Option<String> {
 		.filter(|s| !s.is_empty())
 }
 
-/// Build the passphrase that unlocks the local registration file from the
-/// host's machine id, read via the `machine-uid` crate (machine-id on Linux,
-/// MachineGuid on Windows, IOPlatformUUID on macOS). A TPM, where one is
-/// present, could augment this by sealing the key in hardware; hosts without a
-/// TPM keep using the machine id.
-fn machine_passphrase() -> Result<Passphrase> {
-	let id =
-		machine_uid::get().map_err(|err| miette!("could not read the host machine id: {err}"))?;
-	Ok(Passphrase::with_work_factor(
-		derive_passphrase(&id).into(),
-		REG_WORK_FACTOR,
-	))
-}
-
-fn derive_passphrase(machine_id: &str) -> String {
-	let key = blake3::derive_key(KDF_CONTEXT, machine_id.as_bytes());
-	STANDARD_NO_PAD.encode(key)
-}
-
-// algae's stream API takes `Box<dyn Identity>` (not `Send`), which would poison
-// the `Send` futures the reporting path requires. The payload is tiny and fully
-// in-memory (no tokio reactor needed), so we drive algae to completion on the
-// current thread with `block_on` inside a synchronous helper — nothing
-// non-`Send` is then held across an `.await` in the async callers.
-fn encrypt_bytes(plaintext: &[u8], passphrase: Passphrase) -> Result<Vec<u8>> {
-	futures::executor::block_on(async {
-		let mut out = futures::io::Cursor::new(Vec::new());
-		encrypt_stream(plaintext, &mut out, Box::new(passphrase))
-			.await
-			.wrap_err("encrypting registration")?;
-		Ok(out.into_inner())
-	})
-}
-
-fn decrypt_bytes(ciphertext: &[u8], passphrase: Passphrase) -> Result<Vec<u8>> {
-	futures::executor::block_on(async {
-		let reader = futures::io::Cursor::new(ciphertext.to_vec());
-		let mut out: Vec<u8> = Vec::new();
-		decrypt_stream(reader, &mut out, Box::new(passphrase))
-			.await
-			.wrap_err("decrypting registration")?;
-		Ok(out)
-	})
-}
-
-async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-	let tmp = path.with_extension("tmp");
-	let mut opts = tokio::fs::OpenOptions::new();
-	opts.write(true).create(true).truncate(true);
-	#[cfg(windows)]
-	{
-		const FILE_ATTRIBUTE_HIDDEN: u32 = 0x0000_0002;
-		opts.attributes(FILE_ATTRIBUTE_HIDDEN);
-	}
-	#[cfg(unix)]
-	{
-		opts.mode(REG_FILE_MODE);
-	}
-	let mut f = opts
-		.open(&tmp)
-		.await
-		.into_diagnostic()
-		.wrap_err_with(|| format!("creating {}", tmp.display()))?;
-	use tokio::io::AsyncWriteExt as _;
-	f.write_all(bytes).await.into_diagnostic()?;
-	f.sync_all().await.into_diagnostic()?;
-	drop(f);
-
-	// `mode()` only applies on creation and is filtered by the umask, so set
-	// the permissions explicitly to cover pre-existing tmp files and
-	// restrictive service umasks.
-	#[cfg(unix)]
-	tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(REG_FILE_MODE))
-		.await
-		.into_diagnostic()
-		.wrap_err_with(|| format!("setting permissions on {}", tmp.display()))?;
-	#[cfg(unix)]
-	inherit_dir_group(&tmp).await;
-
-	tokio::fs::rename(&tmp, path)
-		.await
-		.into_diagnostic()
-		.wrap_err_with(|| format!("renaming into {}", path.display()))
-}
-
-/// Give `path` the group of the directory it sits in, so [`REG_FILE_MODE`]'s
-/// group read reaches the group owning the config directory. A setgid
-/// directory confers it already; one without the bit does not. Best-effort,
-/// since chowning needs ownership and a reader that can already open the file
-/// does not need it to have worked.
-#[cfg(unix)]
-async fn inherit_dir_group(path: &Path) {
-	let Some(dir) = path.parent() else { return };
-	let (Ok(file), Ok(dir)) = (
-		tokio::fs::metadata(path).await,
-		tokio::fs::metadata(dir).await,
-	) else {
-		return;
-	};
-
-	if file.gid() != dir.gid()
-		&& let Err(err) = std::os::unix::fs::chown(path, None, Some(dir.gid()))
-	{
-		debug!(path = %path.display(), %err, "could not set the registration's group");
-	}
-}
-
 #[cfg(test)]
 mod tests {
+	#[cfg(unix)]
+	use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
 	use super::*;
+	#[cfg(unix)]
+	use crate::machine_store::FILE_MODE;
+	use crate::machine_store::derive_passphrase;
 
 	fn passphrase(s: &str) -> Passphrase {
 		Passphrase::new(s.to_owned().into())
@@ -540,18 +367,6 @@ mod tests {
 	fn passphrase_decrypt_rejects_wrong_passphrase() {
 		let blob = encrypt_with_passphrase(&sample(), passphrase("right-passphrase")).unwrap();
 		assert!(decrypt_with_passphrase(&blob, passphrase("wrong-passphrase")).is_err());
-	}
-
-	#[test]
-	fn derive_passphrase_is_stable_and_machine_specific() {
-		assert_eq!(
-			derive_passphrase("machine-aaaa"),
-			derive_passphrase("machine-aaaa")
-		);
-		assert_ne!(
-			derive_passphrase("machine-aaaa"),
-			derive_passphrase("machine-bbbb")
-		);
 	}
 
 	#[tokio::test]
@@ -626,7 +441,7 @@ mod tests {
 		store_in(dir.path(), &sample()).await.unwrap();
 
 		let raw = std::fs::read(registration_file(dir.path())).unwrap();
-		assert_eq!(scrypt_work_factor(&raw), Some(REG_WORK_FACTOR));
+		assert_eq!(scrypt_work_factor(&raw), Some(WORK_FACTOR));
 	}
 
 	#[tokio::test]
@@ -638,20 +453,18 @@ mod tests {
 		// Simulate a file written before the work factor was fixed (one notch
 		// up, to keep the test fast).
 		let machine_id = machine_uid::get().unwrap();
-		let expensive = Passphrase::with_work_factor(
-			derive_passphrase(&machine_id).into(),
-			REG_WORK_FACTOR + 1,
-		);
+		let expensive =
+			Passphrase::with_work_factor(derive_passphrase(&machine_id).into(), WORK_FACTOR + 1);
 		let blob = encrypt_bytes(&serde_json::to_vec(&reg).unwrap(), expensive).unwrap();
 		write_atomic(&path, &blob).await.unwrap();
-		assert_eq!(scrypt_work_factor(&blob), Some(REG_WORK_FACTOR + 1));
+		assert_eq!(scrypt_work_factor(&blob), Some(WORK_FACTOR + 1));
 
 		let back = load_from(dir.path()).await.unwrap().unwrap();
 		assert_eq!(back.server_id, reg.server_id);
 		assert_eq!(back.device_key, reg.device_key);
 
 		let raw = std::fs::read(&path).unwrap();
-		assert_eq!(scrypt_work_factor(&raw), Some(REG_WORK_FACTOR));
+		assert_eq!(scrypt_work_factor(&raw), Some(WORK_FACTOR));
 		let again = load_from(dir.path()).await.unwrap().unwrap();
 		assert_eq!(again.server_id, reg.server_id);
 	}
@@ -666,10 +479,7 @@ mod tests {
 			.unwrap()
 			.permissions()
 			.mode() & 0o777;
-		assert_eq!(
-			mode, REG_FILE_MODE,
-			"expected {REG_FILE_MODE:o}, got {mode:o}"
-		);
+		assert_eq!(mode, FILE_MODE, "expected {FILE_MODE:o}, got {mode:o}");
 	}
 
 	/// A group this process may chown to, other than `exclude`; `None` when it
@@ -732,9 +542,6 @@ mod tests {
 
 		load_from(dir.path()).await.unwrap().unwrap();
 		let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-		assert_eq!(
-			mode, REG_FILE_MODE,
-			"expected {REG_FILE_MODE:o}, got {mode:o}"
-		);
+		assert_eq!(mode, FILE_MODE, "expected {FILE_MODE:o}, got {mode:o}");
 	}
 }

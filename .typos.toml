@@ -6,6 +6,7 @@ extend-exclude = ["CHANGELOG.md", "crates/psql/EXAMPLES.md"]
 [default.extend-words]
 larg = "larg" # left arg (in parsers)
 MIGH = "MIGH" # base64 PEM data in tests
+NAM = "NAM" # spec id (.workhorse/specs/canopy/names.md)
 unparseable = "unparseable" # incredibly common typo and honestly idgaf
 invokable = "invokable" # Workhorse-managed wording (AGENTS.md, skills)
 HPE = "HPE" # server vendor, as it appears in SMBIOS

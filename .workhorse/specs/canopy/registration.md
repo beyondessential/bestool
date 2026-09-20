@@ -1,5 +1,5 @@
 ---
-id: REG
+id: CHK-REG
 ---
 
 # Canopy registration health
