@@ -605,7 +605,7 @@ dependencies = [
 
 [[package]]
 name = "bestool"
-version = "2.1.1"
+version = "2.1.4"
 dependencies = [
  "age",
  "algae-cli",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "28.0.1"
+version = "28.1.2"
 dependencies = [
  "async-trait",
  "bestool-canopy",
@@ -711,6 +711,7 @@ dependencies = [
  "jiff",
  "miette",
  "node-semver",
+ "rcgen",
  "reqwest",
  "rustix 1.1.4",
  "rustls",
@@ -718,6 +719,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "tempfile",
+ "time",
  "tokio",
  "tokio-postgres",
  "tokio-rustls",
@@ -728,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-canopy"
-version = "0.7.12"
+version = "0.7.13"
 dependencies = [
  "algae-cli",
  "async-trait",
@@ -746,12 +748,14 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sysinfo",
  "tempfile",
  "time",
  "tokio",
  "tracing",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]
@@ -861,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.19.12"
+version = "0.19.15"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
@@ -6238,6 +6242,7 @@ dependencies = [
  "rustls-platform-verifier 0.7.0",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

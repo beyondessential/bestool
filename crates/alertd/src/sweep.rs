@@ -36,6 +36,7 @@ use crate::{
 	server_info::ServerFacts,
 	store,
 	subject::{ApplicationKind, ApplicationRef, Subject},
+	sweep_cache::SweepCache,
 };
 
 /// The name bestool's daemon reports under.
@@ -365,6 +366,7 @@ fn tamanu_context(
 	pool: &Option<bestool_postgres::pool::PgPool>,
 	http: &reqwest::Client,
 	canopy: &Option<Arc<CanopyClient>>,
+	sweep: &Arc<SweepCache>,
 ) -> checks::TamanuCx {
 	let tamanu = tamanu.as_ref();
 	// `0.0.0` is the sweep's marker for a version it could not resolve, which
@@ -380,7 +382,11 @@ fn tamanu_context(
 		http: http.clone(),
 		canopy: canopy.clone(),
 		runtime: tamanu_runtime(app, &version),
-		traffic: Arc::new(runtime::caddy::CaddyRuntime::new(http.clone())),
+		traffic: Arc::new(runtime::caddy::CaddyRuntime::new(
+			http.clone(),
+			sweep.clone(),
+		)),
+		sweep: sweep.clone(),
 		store: Arc::new(store::FileStore::for_subject(&Subject::Application(
 			app.clone(),
 		))),
@@ -891,6 +897,11 @@ pub async fn perform_sweep(
 	//
 	// `applications` is empty unless the sweep resolved targets, so there is
 	// nothing to build a context from without them.
+	// One per sweep, so the readings that are the machine's — Canopy's
+	// entitlement, Caddy's configuration, the collected chains — are taken once
+	// however many applications this host carries.
+	let sweep_cache = Arc::new(SweepCache::new());
+
 	let mut pg_cxs: HashMap<ApplicationRef, checks::PgCx> = HashMap::new();
 	let mut tamanu_cxs: HashMap<ApplicationRef, checks::TamanuCx> = HashMap::new();
 	if let Some(targets) = targets.as_ref() {
@@ -900,7 +911,15 @@ pub async fn perform_sweep(
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
 				pg_cxs.insert(app.clone(), cx);
 			} else {
-				let cx = tamanu_context(app, targets, &tamanu, &check_pool, &http_client, &canopy);
+				let cx = tamanu_context(
+					app,
+					targets,
+					&tamanu,
+					&check_pool,
+					&http_client,
+					&canopy,
+					&sweep_cache,
+				);
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
 				tamanu_cxs.insert(app.clone(), cx);
 			}
@@ -1603,6 +1622,7 @@ mod tests {
 			&None,
 			&http,
 			&None,
+			&Arc::new(SweepCache::new()),
 		);
 		assert_eq!(deployment.install_root, Some(PathBuf::from("/opt/tamanu")));
 		assert!(deployment.installed_config().is_some());

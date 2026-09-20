@@ -364,11 +364,39 @@ pub trait ServiceRuntime: Send + Sync {
 	async fn service_facts(&self, id: &ServiceId) -> Result<ServiceFacts, Unavailable>;
 }
 
+/// Where a certificate in force came from.
+///
+/// The two fail differently and are fixed differently: a host whose canopy
+/// collection has stopped working falls back to the front end's own issuance and
+/// keeps serving, so without the distinction it presents exactly as a healthy
+/// canopy-served host while still depending on the DNS credential that issuing
+/// through canopy exists to remove.
+///
+/// spec: CHK-CCT#certificates-from-canopy
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateSource {
+	/// Obtained by the front end itself.
+	FrontEnd,
+	/// Collected from canopy and served to the front end by the daemon.
+	Canopy,
+}
+
+impl CertificateSource {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::FrontEnd => "front-end",
+			Self::Canopy => "canopy",
+		}
+	}
+}
+
 /// One TLS certificate in force for an application.
 ///
 /// spec: SUB#http-traffic-and-certificates
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Certificate {
+	/// Whether the front end obtained this itself or was served it from canopy.
+	pub source: CertificateSource,
 	/// The names this certificate is in force for.
 	pub names: Vec<String>,
 	/// Where the substrate found it, for diagnostics: a path, an issuer

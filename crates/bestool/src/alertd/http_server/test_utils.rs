@@ -28,5 +28,6 @@ pub async fn create_test_state() -> Arc<ServerState> {
 		control: crate::alertd::daemon::DaemonControl::detached(),
 		backups: None,
 		metrics: None,
+		certificates: None,
 	})
 }

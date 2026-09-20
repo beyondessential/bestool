@@ -349,18 +349,9 @@ impl BackgroundTask for BackupTask {
 		};
 
 		vec![
-			TaskEndpoint {
-				name: "run",
-				handler: run_handler,
-			},
-			TaskEndpoint {
-				name: "running",
-				handler: running_handler,
-			},
-			TaskEndpoint {
-				name: "hold",
-				handler: hold_handler,
-			},
+			TaskEndpoint::open("run", run_handler),
+			TaskEndpoint::open("running", running_handler),
+			TaskEndpoint::open("hold", hold_handler),
 		]
 	}
 }

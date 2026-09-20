@@ -157,9 +157,32 @@ fn save_cached_tags_at(path: &Path, tags: &BTreeMap<String, String>) -> Result<(
 	std::fs::write(&tmp, &json)
 		.into_diagnostic()
 		.wrap_err_with(|| format!("writing tags cache tempfile at {}", tmp.display()))?;
+	#[cfg(unix)]
+	inherit_dir_group(&tmp);
 	std::fs::rename(&tmp, path)
 		.into_diagnostic()
 		.wrap_err_with(|| format!("renaming tags cache into place at {}", path.display()))
+}
+
+/// Give `path` the group of the directory it sits in, so the group owning the
+/// config directory can read what the root daemon writes there. A setgid
+/// directory confers it already; one without the bit does not, and a leftover
+/// tempfile keeps the group it was created with. Best-effort, since chowning
+/// needs ownership of the file.
+#[cfg(all(unix, feature = "canopy-registration"))]
+fn inherit_dir_group(path: &Path) {
+	use std::os::unix::fs::MetadataExt as _;
+
+	let Some(dir) = path.parent() else { return };
+	let (Ok(file), Ok(dir)) = (std::fs::metadata(path), std::fs::metadata(dir)) else {
+		return;
+	};
+
+	if file.gid() != dir.gid()
+		&& let Err(err) = std::os::unix::fs::chown(path, None, Some(dir.gid()))
+	{
+		debug!(path = %path.display(), %err, "could not set the tags cache's group");
+	}
 }
 
 /// Resolve this machine's Canopy identity.
@@ -193,14 +216,34 @@ pub async fn get_or_create_machine_id() -> Result<String> {
 /// `/etc/tamanu`.
 async fn get_or_create_machine_id_at(path: &Path) -> Result<String> {
 	#[cfg(feature = "canopy-registration")]
-	if let Some(reg) = load_registration().await
-		&& let Some(id) = reg.server_id
-	{
-		return Ok(id);
-	}
+	let registered = load_registration()
+		.await
+		.map(|reg| reg.and_then(|reg| reg.server_id));
+	#[cfg(not(feature = "canopy-registration"))]
+	let registered: Result<Option<String>> = Ok(None);
+
+	machine_id_from(registered, path)
+}
+
+/// Resolve the machine id from what the registration answered, the standard
+/// file, or a freshly minted one.
+///
+/// A registration that is present but unreadable will not mint: the machine
+/// already has an identity, and a fresh one is written over the standard file
+/// and kept.
+fn machine_id_from(registered: Result<Option<String>>, path: &Path) -> Result<String> {
+	let unreadable = match registered {
+		Ok(Some(id)) => return Ok(id),
+		Ok(None) => None,
+		Err(err) => Some(err),
+	};
 
 	if let Some(id) = read_machine_id_file(path) {
 		return Ok(id);
+	}
+
+	if let Some(err) = unreadable {
+		return Err(err).wrap_err("reading the canopy registration");
 	}
 
 	let id = Uuid::new_v4().to_string();
@@ -292,29 +335,30 @@ pub fn generate_device_key_pem() -> Result<String> {
 	Ok(pem.to_string())
 }
 
-/// Load this host's canopy registration, logging (and swallowing) errors.
+/// Load this host's canopy registration.
 ///
 /// The registration is the source of truth for the device key and server id;
-/// callers fall back to the standard plaintext file path when it's absent.
+/// callers fall back to the standard plaintext file path when it's absent
+/// (`Ok(None)`). A registration that is present but can't be read or decrypted
+/// is an error, so a caller that must not answer with a superseded identity can
+/// tell the two apart.
 #[cfg(feature = "canopy-registration")]
-async fn load_registration() -> Option<bestool_canopy::registration::Registration> {
-	match bestool_canopy::registration::load().await {
-		Ok(opt) => opt,
-		Err(err) => {
-			warn!(%err, "could not load canopy registration; falling back to legacy paths");
-			None
-		}
-	}
+async fn load_registration() -> Result<Option<bestool_canopy::registration::Registration>> {
+	bestool_canopy::registration::load().await
 }
 
 /// Best-effort device key from the canopy registration or the standard file
 /// path (no DB). Used by callers that degrade cleanly when it's absent.
 pub async fn fetch_device_key() -> Option<String> {
 	#[cfg(feature = "canopy-registration")]
-	if let Some(reg) = load_registration().await
-		&& let Some(key) = reg.device_key
-	{
-		return Some(key);
+	match load_registration().await {
+		Ok(Some(reg)) => {
+			if let Some(key) = reg.device_key {
+				return Some(key);
+			}
+		}
+		Ok(None) => {}
+		Err(err) => warn!(%err, "could not load canopy registration; falling back to legacy paths"),
 	}
 
 	read_device_key_file(&standard_device_key_path())
@@ -573,6 +617,112 @@ mod tests {
 			.expect_err("unwritable path → must error");
 		let msg = format!("{err}");
 		assert!(msg.contains("machine id"), "{msg}");
+	}
+
+	/// A group this process may chown to, other than `exclude`; `None` when it
+	/// belongs to no other group and so can't set up the mismatch.
+	#[cfg(all(unix, feature = "canopy-registration"))]
+	fn other_gid(exclude: u32) -> Option<u32> {
+		let out = std::process::Command::new("id").arg("-G").output().ok()?;
+		String::from_utf8(out.stdout)
+			.ok()?
+			.split_whitespace()
+			.filter_map(|gid| gid.parse().ok())
+			.find(|gid| *gid != exclude)
+	}
+
+	#[cfg(all(unix, feature = "canopy-registration"))]
+	#[test]
+	fn tags_cache_takes_the_directory_group() {
+		use std::os::unix::fs::MetadataExt as _;
+
+		let dir = tempfile::tempdir().unwrap();
+		let dir_gid = std::fs::metadata(dir.path()).unwrap().gid();
+		let Some(shared) = other_gid(dir_gid) else {
+			return;
+		};
+		std::os::unix::fs::chown(dir.path(), None, Some(shared)).unwrap();
+
+		let path = dir.path().join("tags.json");
+		save_cached_tags_at(&path, &BTreeMap::new()).unwrap();
+
+		let gid = std::fs::metadata(&path).unwrap().gid();
+		assert_eq!(gid, shared, "expected group {shared}, got {gid}");
+	}
+
+	#[cfg(all(unix, feature = "canopy-registration"))]
+	#[test]
+	fn tags_cache_regroups_a_leftover_tempfile() {
+		use std::os::unix::fs::MetadataExt as _;
+
+		let dir = tempfile::tempdir().unwrap();
+		let dir_gid = std::fs::metadata(dir.path()).unwrap().gid();
+		let Some(other) = other_gid(dir_gid) else {
+			return;
+		};
+
+		let path = dir.path().join("tags.json");
+		let tmp = path.with_extension("json.tmp");
+		std::fs::write(&tmp, b"{}").unwrap();
+		std::os::unix::fs::chown(&tmp, None, Some(other)).unwrap();
+
+		save_cached_tags_at(&path, &BTreeMap::new()).unwrap();
+
+		let gid = std::fs::metadata(&path).unwrap().gid();
+		assert_eq!(gid, dir_gid, "expected group {dir_gid}, got {gid}");
+	}
+
+	#[test]
+	fn machine_id_errors_rather_than_minting_when_the_registration_is_unreadable() {
+		// Minting claims a new identity for a box that already has one, and
+		// persists it over the standard file.
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+
+		let err = machine_id_from(Err(miette::miette!("permission denied")), &path)
+			.expect_err("unreadable registration and no standard file → must error");
+		let msg = format!("{err}");
+		assert!(msg.contains("canopy registration"), "{msg}");
+		assert!(!path.exists(), "no id was written");
+	}
+
+	#[test]
+	fn machine_id_still_uses_the_standard_file_when_the_registration_is_unreadable() {
+		// Canopy authorises a push by the device bound to the machine, so an id
+		// naming another machine is refused there rather than misfiled.
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+		let cached = uuid::Uuid::new_v4().to_string();
+		std::fs::write(&path, &cached).unwrap();
+
+		let id = machine_id_from(Err(miette::miette!("permission denied")), &path)
+			.expect("the standard file still answers");
+		assert_eq!(id, cached);
+	}
+
+	#[test]
+	fn machine_id_falls_back_when_there_is_no_registration() {
+		// No registration is the migration path, not a failure: a host that
+		// hasn't enrolled keeps resolving from the standard file.
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+		let cached = uuid::Uuid::new_v4().to_string();
+		std::fs::write(&path, &cached).unwrap();
+
+		assert_eq!(machine_id_from(Ok(None), &path).unwrap(), cached);
+	}
+
+	#[test]
+	fn machine_id_prefers_the_registration() {
+		let dir = tempfile::tempdir().unwrap();
+		let path = dir.path().join("server-id");
+		std::fs::write(&path, uuid::Uuid::new_v4().to_string()).unwrap();
+
+		let enrolled = uuid::Uuid::new_v4().to_string();
+		assert_eq!(
+			machine_id_from(Ok(Some(enrolled.clone())), &path).unwrap(),
+			enrolled
+		);
 	}
 
 	#[test]

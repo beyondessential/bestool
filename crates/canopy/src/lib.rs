@@ -28,7 +28,10 @@
 //! and returning these types; any non-2xx surfaces as [`CanopyHttpError`].
 
 mod backup;
+pub mod certificates;
 mod connect;
+pub mod machine_store;
+pub mod names;
 pub mod registration;
 mod reqwest_transport;
 #[cfg(test)]
