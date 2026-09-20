@@ -106,8 +106,9 @@ mod tests {
 	use super::*;
 	use crate::alertd::tasks::TaskEndpoint;
 
-	/// This process's own uid, read without libc, which the workspace forbids
-	/// reaching for.
+	/// This process's own uid, read the same way the guard reads a caller's:
+	/// without libc, which the workspace forbids reaching for.
+	#[cfg(target_os = "linux")]
 	fn own_uid() -> u32 {
 		std::fs::read_to_string("/proc/self/status")
 			.unwrap()
@@ -178,6 +179,11 @@ mod tests {
 
 	/// And a POST from anyone but the superuser is refused, so an unprivileged
 	/// local process cannot repoint a name or spend an order.
+	///
+	/// Only Linux can name a caller today. Everywhere else the lookup is not
+	/// implemented and the guard refuses whoever asks, which is the safe
+	/// direction — a refusal is a misconfiguration to correct, not a silent
+	/// grant — so that is what this pins there.
 	#[tokio::test]
 	async fn a_guarded_endpoint_identifies_its_caller() {
 		let base = serve().await;
@@ -186,10 +192,12 @@ mod tests {
 			.send()
 			.await
 			.unwrap();
-		if own_uid() == 0 {
-			assert_eq!(response.status(), 200);
-		} else {
-			assert_eq!(response.status(), 403);
-		}
+
+		#[cfg(target_os = "linux")]
+		let expected = if own_uid() == 0 { 200 } else { 403 };
+		#[cfg(not(target_os = "linux"))]
+		let expected = 403;
+
+		assert_eq!(response.status(), expected);
 	}
 }
