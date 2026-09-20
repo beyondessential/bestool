@@ -120,11 +120,26 @@ pub async fn caller_permitted(
 /// and its remote address is the one we accepted on.
 #[cfg(target_os = "linux")]
 fn socket_owner(peer: SocketAddr, local: SocketAddr) -> Result<u32> {
-	for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
-		let Ok(body) = std::fs::read_to_string(table) else {
+	// The caller's own family first. A v6 socket is recorded in `tcp6`, and
+	// reading `tcp4` ahead of it would walk every v4 socket on the host before
+	// reaching the row wanted. Both are still tried: which table a connection
+	// lands in depends on the listener's family, not the address axum reports.
+	let tables = if peer.is_ipv6() {
+		["/proc/net/tcp6", "/proc/net/tcp"]
+	} else {
+		["/proc/net/tcp", "/proc/net/tcp6"]
+	};
+
+	for table in tables {
+		// Scanned a line at a time and stopped at the caller's row, rather than
+		// read whole. The kernel generates these by walking every socket hash
+		// bucket in the netns, so on a front end holding tens of thousands of
+		// connections the table is megabytes — and this sits on the TLS
+		// handshake path, once per handshake.
+		let Ok(file) = std::fs::File::open(table) else {
 			continue;
 		};
-		if let Some(uid) = find_owner(&body, peer, local) {
+		if let Some(uid) = find_owner(std::io::BufReader::new(file), peer, local) {
 			return Ok(uid);
 		}
 	}
@@ -152,30 +167,46 @@ const ESTABLISHED: &str = "01";
 /// rather than of the caller now asking. Taking the first row to match the tuple
 /// would let that remnant answer for the live connection, which decides the
 /// permission on the wrong socket's owner.
-fn find_owner(table: &str, want_local: SocketAddr, want_remote: SocketAddr) -> Option<u32> {
+fn find_owner(
+	table: impl std::io::BufRead,
+	want_local: SocketAddr,
+	want_remote: SocketAddr,
+) -> Option<u32> {
 	// The caller's port is what tells its row from every other socket on the
 	// host, and the table prints ports as four upper-case hex digits — so the
 	// test is a string compare against the cell's tail. Addresses are parsed
 	// only for the rows that clear it, which keeps the scan off the addresses of
 	// the thousands of connections a busy front end holds.
 	let port_tag = format!(":{:04X}", want_local.port());
-	table.lines().skip(1).find_map(|line| {
-		let mut fields = line.split_whitespace();
-		let _slot = fields.next()?;
-		let local_cell = fields.next()?;
-		if !local_cell.ends_with(&port_tag) {
-			return None;
-		}
-		let local = parse_address(local_cell)?;
-		let remote = parse_address(fields.next()?)?;
-		if fields.next()? != ESTABLISHED {
-			return None;
-		}
-		// tx:rx, tr:tm, retrnsmt, then uid.
-		let uid = fields.nth(3)?.parse::<u32>().ok()?;
+	table
+		.lines()
+		.map_while(Result::ok)
+		.skip(1)
+		.find_map(|line| owner_of_row(&line, &port_tag, want_local, want_remote))
+}
 
-		(same_endpoint(local, want_local) && same_endpoint(remote, want_remote)).then_some(uid)
-	})
+/// Read one row of the table, where it is the row wanted.
+fn owner_of_row(
+	line: &str,
+	port_tag: &str,
+	want_local: SocketAddr,
+	want_remote: SocketAddr,
+) -> Option<u32> {
+	let mut fields = line.split_whitespace();
+	let _slot = fields.next()?;
+	let local_cell = fields.next()?;
+	if !local_cell.ends_with(port_tag) {
+		return None;
+	}
+	let local = parse_address(local_cell)?;
+	let remote = parse_address(fields.next()?)?;
+	if fields.next()? != ESTABLISHED {
+		return None;
+	}
+	// tx:rx, tr:tm, retrnsmt, then uid.
+	let uid = fields.nth(3)?.parse::<u32>().ok()?;
+
+	(same_endpoint(local, want_local) && same_endpoint(remote, want_remote)).then_some(uid)
 }
 
 /// Whether two endpoints name the same socket, treating an IPv4-mapped IPv6
@@ -266,7 +297,11 @@ mod tests {
 		// The caller's socket is the mirror of ours: its local end is our peer,
 		// and its owner is the user the caller runs as — not root, which owns
 		// the end the daemon accepted on.
-		let uid = find_owner(TCP4, addr("127.0.0.1:49474"), addr("127.0.0.1:8263"));
+		let uid = find_owner(
+			TCP4.as_bytes(),
+			addr("127.0.0.1:49474"),
+			addr("127.0.0.1:8263"),
+		);
 		assert_eq!(uid, Some(997));
 	}
 
@@ -276,7 +311,7 @@ mod tests {
 	#[test]
 	fn a_remnant_on_the_same_four_tuple_does_not_answer_for_the_live_connection() {
 		let uid = find_owner(
-			TCP4_WITH_REMNANT,
+			TCP4_WITH_REMNANT.as_bytes(),
 			addr("127.0.0.1:49474"),
 			addr("127.0.0.1:8263"),
 		);
@@ -290,20 +325,28 @@ mod tests {
 	#[test]
 	fn a_connection_that_is_not_there_names_nobody() {
 		assert_eq!(
-			find_owner(TCP4, addr("127.0.0.1:49999"), addr("127.0.0.1:8263")),
+			find_owner(
+				TCP4.as_bytes(),
+				addr("127.0.0.1:49999"),
+				addr("127.0.0.1:8263")
+			),
 			None
 		);
 		// A listening socket is not a connection, so its remote end matches
 		// nothing we accepted.
 		assert_eq!(
-			find_owner(TCP4, addr("127.0.0.1:8080"), addr("127.0.0.1:8263")),
+			find_owner(
+				TCP4.as_bytes(),
+				addr("127.0.0.1:8080"),
+				addr("127.0.0.1:8263")
+			),
 			None
 		);
 	}
 
 	#[test]
 	fn the_v6_table_is_read_too() {
-		let uid = find_owner(TCP6, addr("[::1]:49475"), addr("[::1]:8263"));
+		let uid = find_owner(TCP6.as_bytes(), addr("[::1]:49475"), addr("[::1]:8263"));
 		assert_eq!(uid, Some(1001));
 	}
 

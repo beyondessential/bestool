@@ -23,7 +23,7 @@
 
 use std::collections::BTreeSet;
 
-use bestool_canopy::{certificates as certs, names::AppEntitlement};
+use bestool_canopy::names::AppEntitlement;
 use jiff::Timestamp;
 use serde_json::{Value, json};
 use tracing::debug;
@@ -107,14 +107,14 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		}
 	};
 
-	let chains = match ctx.sweep.canopy_chains().await {
-		Ok(chains) => chains,
-		Err(err) => {
-			return Check::broken(NAME, "could not read the collected chains", err);
-		}
-	};
+	if let Err(err) = ctx.sweep.canopy_chains().await {
+		return Check::broken(NAME, "could not read the collected chains", err);
+	}
 
-	grade(app, &subjects, &chains, Timestamp::now())
+	// Parsed once for the sweep, on the blocking pool, rather than decoded here
+	// per name per application.
+	let validity = ctx.sweep.canopy_chain_validity().await;
+	grade(app, &subjects, &validity, Timestamp::now())
 }
 
 /// Grade one application's names: those Caddy serves that its entitlement
@@ -127,7 +127,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 fn grade(
 	app: &AppEntitlement,
 	subjects: &BTreeSet<String>,
-	chains: &std::collections::BTreeMap<String, String>,
+	validity: &std::collections::BTreeMap<String, (i64, i64)>,
 	now: Timestamp,
 ) -> Check {
 	let graded: Vec<&String> = subjects.iter().filter(|name| app.covers(name)).collect();
@@ -144,14 +144,14 @@ fn grade(
 	let mut stats: Vec<Stat> = Vec::new();
 
 	for name in &graded {
-		let held = chains.get(name.as_str());
+		let held = validity.get(name.as_str()).copied();
 		let canopy_says = app.certificate(name);
 		// While canopy is still retrying, it reports why the last attempt
 		// failed. Surfacing it is what shows an operator why issuance is stuck
 		// rather than only that nothing arrived.
 		let last_error = canopy_says.and_then(|held| held.last_error_reason());
 
-		let remaining_days = match held.and_then(|chain| certs::chain_validity(chain)) {
+		let remaining_days = match held {
 			None => {
 				let mut reason = format!("{name}: no chain collected");
 				if let Some(err) = &last_error {
@@ -233,6 +233,8 @@ impl HeldReason for bestool_canopy::schema::HeldCertificate {
 mod tests {
 	use std::collections::BTreeMap;
 
+	use bestool_canopy::certificates as certs;
+
 	use super::*;
 	use crate::check::CheckStatus;
 
@@ -285,10 +287,16 @@ mod tests {
 		params.self_signed(&key).unwrap().pem()
 	}
 
-	fn chains(entries: &[(&str, String)]) -> BTreeMap<String, String> {
+	/// What the sweep's cache would have parsed off these chains.
+	fn chains(entries: &[(&str, String)]) -> BTreeMap<String, (i64, i64)> {
 		entries
 			.iter()
-			.map(|(name, pem)| ((*name).to_string(), pem.clone()))
+			.map(|(name, pem)| {
+				(
+					(*name).to_string(),
+					certs::chain_validity(pem).expect("the test chains are real certificates"),
+				)
+			})
 			.collect()
 	}
 

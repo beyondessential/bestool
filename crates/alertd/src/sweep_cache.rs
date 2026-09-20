@@ -43,6 +43,9 @@ pub struct SweepCache {
 	/// Held apart from the read above because the two consumers want different
 	/// shapes of the same file, and neither should pay for the other's.
 	parsed_chains: OnceCell<Arc<Vec<(String, caddy::DiskCert)>>>,
+	/// The validity window of each collected chain, keyed by the name it covers.
+	/// Read off the parses above rather than off the PEM again.
+	chain_validity: OnceCell<Arc<BTreeMap<String, (i64, i64)>>>,
 	/// What Canopy last said this machine may do.
 	entitlement: OnceCell<Result<Entitlement, String>>,
 }
@@ -122,6 +125,27 @@ impl SweepCache {
 					Vec::new()
 				});
 				Arc::new(parsed)
+			})
+			.await
+			.clone()
+	}
+
+	/// When each collected chain is valid from and until, as seconds since the
+	/// epoch.
+	///
+	/// Taken off the parses the sweep already did on the blocking pool, so a
+	/// check grading how far a chain has run down does not decode the same PEM
+	/// again on a runtime thread — once per name, per application.
+	pub async fn canopy_chain_validity(&self) -> Arc<BTreeMap<String, (i64, i64)>> {
+		self.chain_validity
+			.get_or_init(|| async {
+				let parsed = self.parsed_canopy_chains().await;
+				Arc::new(
+					parsed
+						.iter()
+						.map(|(name, cert)| (name.clone(), cert.validity()))
+						.collect(),
+				)
 			})
 			.await
 			.clone()

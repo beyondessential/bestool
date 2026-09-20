@@ -77,6 +77,16 @@ const TICK: Duration = Duration::from_secs(60);
 /// passes before it matters.
 const STEADY_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
+/// The most names a handshake may leave waiting for a pass.
+///
+/// `wanted` is a backstop between passes, not a discovery route: what a pass
+/// acts on comes from Caddy's configuration, which this only anticipates. A site
+/// configured for a wildcard makes the name remote input, because Caddy passes
+/// the client's own server name through — so the set is bounded, and past the
+/// bound a new name is dropped rather than an old one evicted. Evicting would
+/// let a stream of invented names push out the one a real client asked for.
+const WANTED_LIMIT: usize = 64;
+
 /// How soon a name whose order is pending is asked about again.
 ///
 /// Sooner than the steady interval, so an order in flight is collected promptly
@@ -154,6 +164,14 @@ pub struct CertificateState {
 	keys: Mutex<Option<KeyStore>>,
 	/// When the last steady-state pass ran.
 	last_pass: RwLock<Option<Timestamp>>,
+	/// When a pass last stood down, where the last one did.
+	///
+	/// A handshake records a name whatever this server may do, and a server
+	/// standing down holds no chains — so every handshake it declines records
+	/// one. Without remembering the stand-down, those names would wake a pass,
+	/// and an entitlement request with it, on every tick until the grant
+	/// returns.
+	stood_down: RwLock<Option<Timestamp>>,
 	/// What went wrong on the last pass, where something did.
 	last_error: RwLock<Option<String>>,
 }
@@ -169,6 +187,7 @@ impl CertificateState {
 			wanted: Mutex::new(BTreeSet::new()),
 			keys: Mutex::new(None),
 			last_pass: RwLock::new(None),
+			stood_down: RwLock::new(None),
 			last_error: RwLock::new(None),
 		}
 	}
@@ -226,7 +245,16 @@ impl CertificateState {
 		if self.held.read().await.contains_key(&name) {
 			return;
 		}
-		if self.wanted.lock().await.insert(name.clone()) {
+
+		let mut wanted = self.wanted.lock().await;
+		if wanted.len() >= WANTED_LIMIT && !wanted.contains(&name) {
+			debug!(
+				name,
+				"not recording a name asked for during a handshake; too many are already waiting"
+			);
+			return;
+		}
+		if wanted.insert(name.clone()) {
 			debug!(name, "recorded a name asked for during a handshake");
 		}
 	}
@@ -287,6 +315,14 @@ impl CertificateState {
 			return true;
 		}
 
+		// A server standing down is answered the same way until the steady
+		// interval comes round again, so nothing short of that wakes a pass.
+		if let Some(at) = *self.stood_down.read().await
+			&& (now - at).get_seconds() < STEADY_INTERVAL.as_secs() as i64
+		{
+			return false;
+		}
+
 		// Each name asked for is tested rather than the set merely being
 		// non-empty: a name whose last attempt failed is still asked for, and
 		// waking a full pass — which asks canopy what this server may do before
@@ -340,10 +376,15 @@ impl CertificateState {
 
 		if let Some(reason) = stands_down(&entitlement) {
 			debug!(reason, "not requesting certificates");
+			self.stand_down().await;
 			return Ok(());
 		}
+		*self.stood_down.write().await = None;
 
 		let names = self.target_names(ctx, &entitlement).await;
+
+		self.prune_orders(&names).await;
+
 		if names.is_empty() {
 			debug!("no name to certify on this host");
 			return Ok(());
@@ -377,6 +418,35 @@ impl CertificateState {
 			}
 		}
 		Ok(())
+	}
+
+	/// Record a pass that stood down.
+	///
+	/// Nothing will be ordered for while this stands, and the names a handshake
+	/// left behind are the reason a pass was due at all — so they go, and the
+	/// stand-down is remembered so the ones arriving next do not wake another.
+	/// The grant and the pause are canopy's to lift; asking again before the
+	/// steady interval only earns the same refusal.
+	///
+	/// spec: TLS#when-the-grant-is-absent-or-the-server-is-paused
+	async fn stand_down(&self) {
+		self.wanted.lock().await.clear();
+		*self.stood_down.write().await = Some(Timestamp::now());
+	}
+
+	/// Drop what canopy said about names no longer in play.
+	///
+	/// A name reaches the target list from Caddy's configuration or from a
+	/// handshake, and one that has left both is not going to be asked about
+	/// again. Without this a host serving a wildcard keeps an entry for every
+	/// name any client ever offered.
+	async fn prune_orders(&self, targets: &[String]) {
+		let held = self.held.read().await;
+		let targets: BTreeSet<&String> = targets.iter().collect();
+		self.orders
+			.write()
+			.await
+			.retain(|name, _| targets.contains(name) || held.contains_key(name));
 	}
 
 	/// Whether one name is due to be asked about outside a steady pass.
@@ -1257,6 +1327,102 @@ mod tests {
 				_ => panic!("expected a refusal for {query:?}"),
 			}
 		}
+	}
+
+	/// A handshake records a name whatever this server may do, and a server
+	/// standing down holds no chains — so every handshake it declines records
+	/// one. Those names must not wake a pass, or a paused server spends an
+	/// entitlement request every tick on an answer that cannot change.
+	///
+	/// spec: TLS#when-the-grant-is-absent-or-the-server-is-paused
+	#[tokio::test]
+	async fn a_server_standing_down_waits_rather_than_asking_every_tick() {
+		let (_dir, state) = state();
+		// The grant is gone, which is what a pass will find.
+		with_entitlement(&state, &["example.com"], false, false).await;
+		*state.last_pass.write().await = Some(Timestamp::now());
+
+		state.note_wanted("app.example.com").await;
+		assert!(state.pass_due().await, "a name asked for makes a pass due");
+
+		// What a pass finds, and so which branch it takes.
+		let entitlement = state.entitlement.read().await.clone().unwrap();
+		assert_eq!(
+			stands_down(&entitlement),
+			Some("this server holds no TLS grant")
+		);
+
+		// It drops what it will never order for, and remembers having done so.
+		state.stand_down().await;
+		assert!(state.wanted.lock().await.is_empty());
+		assert!(!state.pass_due().await);
+
+		// And a handshake arriving after it does not wake another.
+		state.note_wanted("other.example.com").await;
+		assert!(
+			!state.pass_due().await,
+			"a name recorded under a stand-down must not wake a pass"
+		);
+	}
+
+	/// Caddy passes the client's own server name through for a wildcard site, so
+	/// the name reaching `note_wanted` is remote input. The set it feeds is
+	/// bounded, and past the bound a new name is dropped rather than an old one
+	/// evicted — evicting would let invented names push out a real client's.
+	#[tokio::test]
+	async fn a_stream_of_invented_names_cannot_grow_the_set_without_bound() {
+		let (_dir, state) = state();
+		state.note_wanted("real.example.com").await;
+		for n in 0..WANTED_LIMIT * 2 {
+			state
+				.note_wanted(&format!("invented-{n}.example.com"))
+				.await;
+		}
+
+		let wanted = state.wanted.lock().await;
+		assert_eq!(wanted.len(), WANTED_LIMIT);
+		assert!(
+			wanted.contains("real.example.com"),
+			"the name a real client asked for must not be pushed out"
+		);
+	}
+
+	/// An order is kept for a name still in play and dropped for one that has
+	/// left both Caddy's configuration and the set a handshake feeds, so a host
+	/// serving a wildcard does not keep an entry per name ever offered.
+	#[tokio::test]
+	async fn what_canopy_said_about_a_name_no_longer_in_play_is_dropped() {
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+		let entitlement = state.entitlement.read().await.clone().unwrap();
+		hold(&state, "held.example.com", true).await;
+
+		for name in ["gone.example.com", "held.example.com", "app.example.com"] {
+			state.orders.write().await.insert(
+				name.to_string(),
+				Order {
+					state: "issued".into(),
+					..Order::default()
+				},
+			);
+		}
+		// Caddy's admin API is not running under the test, so the set a handshake
+		// feeds is the whole of the target list.
+		state.note_wanted("app.example.com").await;
+		let targets = state.target_names(&detached_ctx(), &entitlement).await;
+		assert_eq!(targets, vec!["app.example.com".to_string()]);
+		state.prune_orders(&targets).await;
+
+		let orders = state.orders.read().await;
+		assert!(orders.contains_key("app.example.com"), "a target is kept");
+		assert!(
+			orders.contains_key("held.example.com"),
+			"a name still holding a chain is kept"
+		);
+		assert!(
+			!orders.contains_key("gone.example.com"),
+			"a name in neither is dropped"
+		);
 	}
 
 	/// Canopy publishes what it is handed, so an address that is not one is

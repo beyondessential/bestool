@@ -22,6 +22,10 @@ The daemon orders for the names meeting both ahead of any client arriving, becau
 
 A handshake for a configured name the daemon holds no chain for records that name so that an order follows, which covers a name added to Caddy between reads of its configuration.
 A name recorded this way is subject to the same entitlement test as one read from the configuration, so a handshake cannot conjure an order for a name outside the server's reach.
+Caddy passes the client's own server name through for a site configured on a wildcard, so the name reaching the daemon this way is remote input: the number of names a handshake may leave waiting is bounded, and past the bound a new name is dropped rather than an older one evicted, so a stream of invented names cannot push out the name a real client asked for.
+What a pass acts on still comes from Caddy's configuration; a name recorded during a handshake only anticipates the next read of it.
+
+A server standing down records nothing to act on, so the names handshakes leave behind while it stands down do not bring a pass forward: it waits for the ordinary interval rather than asking again for an answer that cannot change until the grant returns or the pause lifts.
 
 A name may also be requested explicitly through a command, for pre-provisioning.
 

@@ -485,6 +485,12 @@ pub struct DiskCert {
 impl DiskCert {
 	/// Whether any of this cert's SANs is one of the active subjects, treating
 	/// wildcard SANs (and wildcard subjects) appropriately.
+	/// When this certificate is valid from and until, as seconds since the
+	/// epoch, for a caller grading how far a chain has run down.
+	pub(crate) fn validity(&self) -> (i64, i64) {
+		(self.not_before, self.not_after)
+	}
+
 	pub(crate) fn covers_any(&self, active: &BTreeSet<String>) -> bool {
 		self.sans
 			.iter()
