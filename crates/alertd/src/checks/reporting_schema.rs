@@ -154,7 +154,10 @@ async fn read_stamp(db: &tokio_postgres::Client) -> Result<Stamp, tokio_postgres
 /// canopy's own digest string and is only ever compared with another of those.
 ///
 /// A schema the builder stamped and nothing has applied yet carries the version
-/// alone, so the build is optional.
+/// alone, so the build is optional. Anything after the version that is not a
+/// digest makes the whole comment no stamp: it is arbitrary text anyone with
+/// COMMENT rights can set and it rides to canopy as a status fact, so what is
+/// carried is only ever what this check wrote.
 fn stamp_of(comment: String) -> Option<(Version, Option<String>)> {
 	let trimmed = comment.trim();
 	if trimmed.is_empty() || trimmed.len() > MAX_STAMP_LEN {
@@ -166,10 +169,25 @@ fn stamp_of(comment: String) -> Option<(Version, Option<String>)> {
 		None => (trimmed, None),
 	};
 
-	Some((
-		Version::parse(version).ok()?,
-		build.filter(|b| !b.is_empty()).map(str::to_owned),
-	))
+	let build = match build.filter(|b| !b.is_empty()) {
+		Some(build) if !is_digest(build) => return None,
+		build => build.map(str::to_owned),
+	};
+
+	Some((Version::parse(version).ok()?, build))
+}
+
+/// Whether `text` is shaped like the Subresource Integrity digest canopy
+/// offers, e.g. `sha256-LCTbqp…`. Only the shape: what it digests is canopy's
+/// to say, and this check only ever compares one of these with another.
+fn is_digest(text: &str) -> bool {
+	text.split_once('-').is_some_and(|(algorithm, encoded)| {
+		matches!(algorithm, "sha256" | "sha384" | "sha512")
+			&& !encoded.is_empty()
+			&& encoded
+				.bytes()
+				.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+	})
 }
 
 /// What the stamp on the server says against what canopy offers.
@@ -753,9 +771,27 @@ mod tests {
 		Version::parse(version).expect("a version")
 	}
 
+	/// What canopy offers, with no digest: the shape every deployment had before
+	/// canopy held the bytes, and the one these gradings are about.
+	fn offered(version: &str) -> Offered {
+		Offered {
+			version: v(version),
+			id: "cccccccc-cccc-cccc-cccc-cccccccccccc".to_string(),
+			download_url: "https://canopy.example/artifacts/schema.sql".to_string(),
+			digest: None,
+		}
+	}
+
+	fn applied(version: &str) -> Stamp {
+		Stamp::Applied {
+			version: v(version),
+			build: None,
+		}
+	}
+
 	#[test]
 	fn a_matching_stamp_passes() {
-		let check = grade(&Stamp::Version(v("2.60.0")), &v("2.60.0"));
+		let check = grade(&applied("2.60.0"), &offered("2.60.0"));
 		assert!(matches!(check.status, CheckStatus::Pass));
 	}
 
@@ -764,10 +800,10 @@ mod tests {
 	#[test]
 	fn a_stamp_written_differently_still_matches() {
 		for written in ["v2.60.0", "2.60.0+build7"] {
-			let stamp = stamp_of(written.to_owned()).expect("parses as a version");
+			let (version, build) = stamp_of(written.to_owned()).expect("parses as a version");
 			assert!(
 				matches!(
-					grade(&Stamp::Version(stamp), &v("2.60.0")).status,
+					grade(&Stamp::Applied { version, build }, &offered("2.60.0")).status,
 					CheckStatus::Pass
 				),
 				"{written} names the offered schema"
@@ -777,7 +813,7 @@ mod tests {
 
 	#[test]
 	fn a_different_stamp_fails_and_names_both() {
-		let check = grade(&Stamp::Version(v("2.59.0")), &v("2.60.0"));
+		let check = grade(&applied("2.59.0"), &offered("2.60.0"));
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
 		// Both versions belong in the summary: which one the server is on is
 		// the thing an operator needs, not just that it is wrong.
@@ -787,7 +823,7 @@ mod tests {
 
 	#[test]
 	fn no_schema_at_all_fails() {
-		let check = grade(&Stamp::NoSchema, &v("2.60.0"));
+		let check = grade(&Stamp::NoSchema, &offered("2.60.0"));
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
 	}
 
@@ -797,8 +833,8 @@ mod tests {
 	/// a server whose reports are reading from one.
 	#[test]
 	fn an_unstamped_schema_is_not_an_absent_one() {
-		let unstamped = grade(&Stamp::Unstamped, &v("2.60.0"));
-		let absent = grade(&Stamp::NoSchema, &v("2.60.0"));
+		let unstamped = grade(&Stamp::Unstamped, &offered("2.60.0"));
+		let absent = grade(&Stamp::NoSchema, &offered("2.60.0"));
 
 		assert!(matches!(unstamped.status, CheckStatus::Fail(_)));
 		assert_ne!(unstamped.summary, absent.summary);
@@ -822,8 +858,8 @@ mod tests {
 		// A server on the wrong schema is exactly when knowing which one it
 		// has matters, so the fact rides along with a failure too.
 		let check = with_version(
-			grade(&Stamp::Version(v("2.59.0")), &v("2.60.0")),
-			&Stamp::Version(v("2.59.0")),
+			grade(&applied("2.59.0"), &offered("2.60.0")),
+			&applied("2.59.0"),
 		);
 		assert_eq!(
 			check.payload_extras.get(VERSION_FACT),
@@ -836,12 +872,29 @@ mod tests {
 	/// plausibly a version reads as no stamp rather than being carried.
 	#[test]
 	fn a_comment_that_is_not_a_version_is_not_a_stamp() {
-		assert_eq!(stamp_of("  2.60.0 ".to_owned()), Some(v("2.60.0")));
+		assert_eq!(stamp_of("  2.60.0 ".to_owned()), Some((v("2.60.0"), None)));
 		assert_eq!(stamp_of("   ".to_owned()), None);
 		assert_eq!(stamp_of("x".repeat(MAX_STAMP_LEN + 1)), None);
 		assert_eq!(stamp_of("built by hand".to_owned()), None);
 		assert_eq!(
 			stamp_of("2.60.0\n<script>alert(1)</script>".to_owned()),
+			None
+		);
+	}
+
+	/// The digest rides to canopy as a status fact, so only what is shaped like
+	/// one is carried: the comment is arbitrary text anyone with COMMENT rights
+	/// on the schema can set.
+	#[test]
+	fn only_a_digest_shaped_build_is_carried() {
+		assert_eq!(
+			stamp_of("2.60.0 sha256-LCTbqpIiSOs=".to_owned()),
+			Some((v("2.60.0"), Some("sha256-LCTbqpIiSOs=".to_owned())))
+		);
+		assert_eq!(stamp_of("2.60.0 built-by-hand".to_owned()), None);
+		assert_eq!(stamp_of("2.60.0 sha256-".to_owned()), None);
+		assert_eq!(
+			stamp_of("2.60.0 <script>alert(1)</script>".to_owned()),
 			None
 		);
 	}
@@ -875,7 +928,10 @@ mod tests {
 
 	#[test]
 	fn a_server_with_no_schema_reports_no_version() {
-		let check = with_version(grade(&Stamp::NoSchema, &v("2.60.0")), &Stamp::NoSchema);
+		let check = with_version(
+			grade(&Stamp::NoSchema, &offered("2.60.0")),
+			&Stamp::NoSchema,
+		);
 		assert!(!check.payload_extras.contains_key(VERSION_FACT));
 	}
 }
