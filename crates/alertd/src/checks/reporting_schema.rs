@@ -198,19 +198,16 @@ fn is_digest(text: &str) -> bool {
 /// makes, and it is worth being able to state it without a database.
 fn grade(running: &Stamp, offered: &Offered) -> Check {
 	match running {
-		Stamp::Applied { version, build } if version == &offered.version => {
-			match (build, &offered.digest) {
-				(_, None) => Check::pass(NAME, format!("reporting schema {version}")),
-				(Some(build), Some(digest)) if build == digest => {
-					Check::pass(NAME, format!("reporting schema {version}"))
-				}
-				_ => Check::fail(
-					NAME,
-					format!("reporting schema {version}, a newer build offered"),
-					"the server's reports read from an earlier build of this version's schema",
-				),
+		Stamp::Applied { version, build } if version == &offered.version => match build {
+			Some(build) if build == &offered.digest => {
+				Check::pass(NAME, format!("reporting schema {version}"))
 			}
-		}
+			_ => Check::fail(
+				NAME,
+				format!("reporting schema {version}, a newer build offered"),
+				"the server's reports read from an earlier build of this version's schema",
+			),
+		},
 		Stamp::Applied { version, .. } => Check::fail(
 			NAME,
 			format!("reporting schema {version}, offered {}", offered.version),
@@ -252,7 +249,7 @@ struct Offered {
 	/// Canopy's digest of the bytes it holds. A rebuild of a pair re-registers
 	/// under the same artifact id, so this is what tells two builds of one
 	/// version apart.
-	digest: Option<String>,
+	digest: String,
 }
 
 /// How long an answer from canopy about what is offered is reused for.
@@ -303,11 +300,17 @@ async fn offered_schema(
 		Err(err) => return Err(err),
 	};
 
-	let offered = artifacts.into_iter().find(is_schema).map(|a| Offered {
-		version: version.clone(),
-		id: a.id.to_string(),
-		download_url: a.download_url,
-		digest: a.digest,
+	let offered = artifacts.into_iter().find_map(|a| {
+		if !is_schema(&a) {
+			return None;
+		}
+
+		Some(Offered {
+			version: version.clone(),
+			id: a.id.to_string(),
+			download_url: a.download_url,
+			digest: a.digest?,
+		})
 	});
 
 	cache_offer(version, &offered);
@@ -318,8 +321,14 @@ async fn offered_schema(
 ///
 /// Canopy resolves a version's artifacts before answering, keeping the most
 /// specific of a type, so the schema in the answer is the one to grade against.
+///
+/// A digest is what says canopy holds the bytes rather than naming somewhere
+/// else to fetch them from. Artifacts of this type published against a version
+/// range, pointing at a release bucket, are offered to every machine in the
+/// fleet: a schema this check is willing to run against a server's database is
+/// one canopy built for that server's group and can vouch for.
 fn is_schema(artifact: &bestool_canopy::schema::Artifact) -> bool {
-	artifact.artifact_type == ARTIFACT_TYPE
+	artifact.artifact_type == ARTIFACT_TYPE && artifact.digest.is_some()
 }
 
 /// Whether canopy's answer means it offers nothing for this version, as
@@ -400,9 +409,7 @@ async fn fetch_offered(
 		bail!("the offered reporting schema is empty");
 	}
 
-	if let Some(digest) = offered.digest.as_deref()
-		&& !matches_digest(&sql, digest)
-	{
+	if !matches_digest(&sql, &offered.digest) {
 		bail!("the offered reporting schema is not the bytes canopy named");
 	}
 
@@ -671,7 +678,7 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 	// the schema is dropped and rebuilt on every interval, forever.
 	match read_stamp(&db).await {
 		Ok(Stamp::Applied { version, build })
-			if version == offered.version && build == offered.digest =>
+			if version == offered.version && build.as_deref() == Some(&offered.digest) =>
 		{
 			tracing::info!(version = %offered.version, "applied reporting schema");
 			HealOutcome::Healed
@@ -701,13 +708,9 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 /// pipeline at all. Which build of that version it is, canopy alone knows, so
 /// the check records it here and grades against it afterwards.
 fn stamped(sql: &str, offered: &Offered) -> String {
-	let Some(digest) = offered.digest.as_deref() else {
-		return sql.to_owned();
-	};
-
 	format!(
 		"{sql}\nCOMMENT ON SCHEMA reporting IS '{}';",
-		quoted(&format!("{} {digest}", offered.version))
+		quoted(&format!("{} {}", offered.version, offered.digest))
 	)
 }
 
@@ -722,10 +725,7 @@ fn quoted(value: &str) -> String {
 /// under the id the artifact already has, and a build that failed to stamp says
 /// nothing about the one that replaces it.
 fn applied_key(offered: &Offered) -> String {
-	match offered.digest.as_deref() {
-		Some(digest) => format!("{} {digest}", offered.id),
-		None => offered.id.clone(),
-	}
+	format!("{} {}", offered.id, offered.digest)
 }
 
 /// Artifacts this process has applied that did not leave the stamp they should.
@@ -911,11 +911,16 @@ mod tests {
 	}
 
 	fn artifact(kind: &str) -> bestool_canopy::schema::Artifact {
+		held_artifact(kind, Some("sha256-LCTbqpIiSOs="))
+	}
+
+	fn held_artifact(kind: &str, digest: Option<&str>) -> bestool_canopy::schema::Artifact {
 		serde_json::from_value(serde_json::json!({
 			"artifact_type": kind,
 			"download_url": "https://canopy.example/s.sql",
 			"id": "00000000-0000-0000-0000-000000000000",
 			"platform": "any",
+			"digest": digest,
 		}))
 		.expect("an artifact")
 	}
@@ -925,6 +930,15 @@ mod tests {
 	#[test]
 	fn the_schema_canopy_offers_is_graded_against() {
 		assert!(is_schema(&artifact("reporting-schema")));
+	}
+
+	/// An artifact of this type published against a version range, naming a
+	/// release bucket to fetch from, is offered to every machine in the fleet.
+	/// A schema this check will run against a database is one canopy holds for
+	/// that server's group, which is what carrying a digest says.
+	#[test]
+	fn a_schema_canopy_does_not_hold_is_not_offered() {
+		assert!(!is_schema(&held_artifact("reporting-schema", None)));
 	}
 
 	/// Other artifact types share the version listing, and an installer is not
@@ -959,14 +973,13 @@ mod tests {
 		Version::parse(version).expect("a version")
 	}
 
-	/// What canopy offers, with no digest: the shape every deployment had before
-	/// canopy held the bytes, and the one these gradings are about.
+	/// What canopy offers: a version and the digest of the bytes it holds for it.
 	fn offered(version: &str) -> Offered {
 		Offered {
 			version: v(version),
 			id: "cccccccc-cccc-cccc-cccc-cccccccccccc".to_string(),
 			download_url: "https://canopy.example/artifacts/schema.sql".to_string(),
-			digest: None,
+			digest: "sha256-LCTbqpIiSOs=".to_string(),
 		}
 	}
 
@@ -977,9 +990,18 @@ mod tests {
 		}
 	}
 
+	/// A stamp carrying the build canopy offers, which is what this check writes
+	/// when it applies one.
+	fn applied_build(version: &str) -> Stamp {
+		Stamp::Applied {
+			version: v(version),
+			build: Some(offered(version).digest),
+		}
+	}
+
 	#[test]
 	fn a_matching_stamp_passes() {
-		let check = grade(&applied("2.60.0"), &offered("2.60.0"));
+		let check = grade(&applied_build("2.60.0"), &offered("2.60.0"));
 		assert!(matches!(check.status, CheckStatus::Pass));
 	}
 
@@ -987,8 +1009,10 @@ mod tests {
 	/// not this codebase, and `v2.60.0` names the schema `2.60.0` does.
 	#[test]
 	fn a_stamp_written_differently_still_matches() {
+		let digest = offered("2.60.0").digest;
 		for written in ["v2.60.0", "2.60.0+build7"] {
-			let (version, build) = stamp_of(written.to_owned()).expect("parses as a version");
+			let (version, build) =
+				stamp_of(format!("{written} {digest}")).expect("parses as a version");
 			assert!(
 				matches!(
 					grade(&Stamp::Applied { version, build }, &offered("2.60.0")).status,
@@ -997,6 +1021,16 @@ mod tests {
 				"{written} names the offered schema"
 			);
 		}
+	}
+
+	/// The builder stamps the version alone, so a schema applied by hand from a
+	/// build names no build. Which build of the version it is, canopy alone
+	/// knows, so it grades as an earlier one until this check has applied it.
+	#[test]
+	fn a_stamp_with_no_build_is_an_earlier_one() {
+		let check = grade(&applied("2.60.0"), &offered("2.60.0"));
+		assert!(matches!(check.status, CheckStatus::Fail(_)));
+		assert!(check.summary.contains("newer build"), "{}", check.summary);
 	}
 
 	#[test]
