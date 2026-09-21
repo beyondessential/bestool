@@ -370,6 +370,7 @@ fn canopy_is_out(err: &bestool_canopy::Error) -> bool {
 async fn fetch_offered(
 	canopy: &Arc<CanopyClient>,
 	offered: &Offered,
+	max_bytes: usize,
 ) -> Result<String, miette::Report> {
 	let mut response = canopy
 		.transport()
@@ -392,15 +393,15 @@ async fn fetch_offered(
 	}
 
 	if let Some(len) = response.content_length()
-		&& len > MAX_SCHEMA_BYTES as u64
+		&& len > max_bytes as u64
 	{
-		bail!("the offered reporting schema is larger than {MAX_SCHEMA_BYTES} bytes");
+		bail!("the offered reporting schema is larger than {max_bytes} bytes");
 	}
 
 	let mut sql = Vec::new();
 	while let Some(chunk) = response.chunk().await.into_diagnostic()? {
-		if sql.len() + chunk.len() > MAX_SCHEMA_BYTES {
-			bail!("the offered reporting schema is larger than {MAX_SCHEMA_BYTES} bytes");
+		if sql.len() + chunk.len() > max_bytes {
+			bail!("the offered reporting schema is larger than {max_bytes} bytes");
 		}
 		sql.extend_from_slice(&chunk);
 	}
@@ -638,7 +639,7 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 		return HealOutcome::Deferred;
 	}
 
-	let sql = match fetch_offered(canopy, &offered).await {
+	let sql = match fetch_offered(canopy, &offered, MAX_SCHEMA_BYTES).await {
 		Ok(sql) => sql,
 		Err(err) => {
 			tracing::warn!("fetching the offered reporting schema failed: {err}");
@@ -989,19 +990,16 @@ mod tests {
 		}
 	}
 
-	/// A stamp carrying the build canopy offers, which is what this check writes
-	/// when it applies one.
-	fn applied_build(version: &str) -> Stamp {
-		Stamp::Applied {
-			version: v(version),
-			build: Some(offered(version).digest),
-		}
-	}
-
 	#[test]
 	fn a_matching_stamp_passes() {
-		let check = grade(&applied_build("2.60.0"), &offered("2.60.0"));
-		assert!(matches!(check.status, CheckStatus::Pass));
+		let stamp = Stamp::Applied {
+			version: v("2.60.0"),
+			build: Some(offered("2.60.0").digest),
+		};
+		assert!(matches!(
+			grade(&stamp, &offered("2.60.0")).status,
+			CheckStatus::Pass
+		));
 	}
 
 	/// A stamp is compared as a version, not as text: the SQL that writes it is
@@ -1020,16 +1018,6 @@ mod tests {
 				"{written} names the offered schema"
 			);
 		}
-	}
-
-	/// The builder stamps the version alone, so a schema applied by hand from a
-	/// build names no build. Which build of the version it is, canopy alone
-	/// knows, so it grades as an earlier one until this check has applied it.
-	#[test]
-	fn a_stamp_with_no_build_is_an_earlier_one() {
-		let check = grade(&applied("2.60.0"), &offered("2.60.0"));
-		assert!(matches!(check.status, CheckStatus::Fail(_)));
-		assert!(check.summary.contains("newer build"), "{}", check.summary);
 	}
 
 	#[test]
@@ -1230,5 +1218,503 @@ mod tests {
 			&Stamp::NoSchema,
 		);
 		assert!(!check.payload_extras.contains_key(VERSION_FACT));
+	}
+
+	/// What canopy offers when it holds the bytes it names, which is what tells
+	/// two builds of one version apart.
+	fn built(version: &str, digest: &str) -> Offered {
+		Offered {
+			digest: digest.to_owned(),
+			..offered(version)
+		}
+	}
+
+	fn applied_build(version: &str, digest: &str) -> Stamp {
+		Stamp::Applied {
+			version: v(version),
+			build: Some(digest.to_owned()),
+		}
+	}
+
+	/// A group gets a new build of the version it already runs whenever its
+	/// reports are fixed, so the build is graded alongside the version and a
+	/// server on the offered one is current.
+	#[test]
+	fn the_offered_build_passes() {
+		let check = grade(
+			&applied_build("2.60.0", "sha256-LCTbqpIiSOs="),
+			&built("2.60.0", "sha256-LCTbqpIiSOs="),
+		);
+		assert!(
+			matches!(check.status, CheckStatus::Pass),
+			"{}",
+			check.summary
+		);
+	}
+
+	/// The version a schema was built for says nothing about which build of it a
+	/// server has, so a stamp naming another build is a server whose reports
+	/// read from that one.
+	#[test]
+	fn an_earlier_build_of_the_offered_version_fails() {
+		let check = grade(
+			&applied_build("2.60.0", "sha256-LCTbqpIiSOs="),
+			&built(
+				"2.60.0",
+				"sha256-ujw9dykwmiegt+dMTirjNmjYuieQjjSl2U/Y+f9Mn3A=",
+			),
+		);
+		assert!(matches!(check.status, CheckStatus::Fail(_)));
+		assert!(check.summary.contains("2.60.0"), "{}", check.summary);
+		assert!(
+			check.summary.contains("a newer build offered"),
+			"{}",
+			check.summary
+		);
+	}
+
+	/// A stamp carrying the version alone names no build, so a server holding
+	/// one cannot be shown to have the build canopy offers.
+	#[test]
+	fn a_stamp_naming_no_build_fails_against_an_offered_one() {
+		let check = grade(&applied("2.60.0"), &built("2.60.0", "sha256-LCTbqpIiSOs="));
+		assert!(matches!(check.status, CheckStatus::Fail(_)));
+		assert!(
+			check.summary.contains("a newer build offered"),
+			"{}",
+			check.summary
+		);
+	}
+
+	/// The builder stamps the version, and which build of that version this is
+	/// only canopy knows, so the apply records the digest offered and the next
+	/// sweep grades against it.
+	#[test]
+	fn the_applied_build_is_stamped_on_the_schema() {
+		let sql = stamped(
+			"CREATE SCHEMA reporting;",
+			&built("2.60.0", "sha256-LCTbqpIiSOs="),
+		);
+		assert!(sql.starts_with("CREATE SCHEMA reporting;"), "{sql}");
+		assert!(
+			sql.contains("COMMENT ON SCHEMA reporting IS '2.60.0 sha256-LCTbqpIiSOs='"),
+			"{sql}"
+		);
+	}
+
+	/// The digest is canopy's own string and rides into an SQL literal in a
+	/// batch that runs as DDL, so an apostrophe in it must not close the
+	/// literal.
+	#[test]
+	fn an_apostrophe_in_the_stamp_cannot_close_the_literal() {
+		assert_eq!(quoted("it's"), "it''s");
+		let sql = stamped("CREATE SCHEMA reporting;", &built("2.60.0", "sha256-a'b"));
+		assert!(sql.contains("IS '2.60.0 sha256-a''b';"), "{sql}");
+	}
+
+	/// An artifact that applied without stamping is not applied again, since
+	/// retrying it rebuilds the schema on every backoff step with reports broken
+	/// through each rebuild. A rebuild of a pair re-registers under the id the
+	/// artifact already has, so the digest is remembered with it and the new
+	/// build is applied.
+	#[test]
+	fn a_rebuild_is_not_held_back_by_the_build_it_replaces() {
+		let failed = Offered {
+			id: "1dd4b8f6-0f57-4a3f-9a2e-5d1c0b7e6a41".to_owned(),
+			..built("2.60.0", "sha256-LCTbqpIiSOs=")
+		};
+		let rebuilt = Offered {
+			digest: "sha256-ujw9dykwmiegt+dMTirjNmjYuieQjjSl2U/Y+f9Mn3A=".to_owned(),
+			..failed.clone()
+		};
+
+		assert!(!applied_without_stamping(&applied_key(&failed)));
+		note_unstamped(&applied_key(&failed));
+
+		assert!(applied_without_stamping(&applied_key(&failed)));
+		assert!(!applied_without_stamping(&applied_key(&rebuilt)));
+	}
+
+	/// A loopback socket nothing is listening on, so the tailnet probe refuses
+	/// at once and the client takes the device credential's path.
+	fn closed_url() -> String {
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback socket");
+		let addr = listener.local_addr().expect("the socket's address");
+		drop(listener);
+		format!("http://{addr}")
+	}
+
+	/// A canopy on loopback answering one request per connection, in order, and
+	/// recording the request lines it was asked. The answers are built against
+	/// the URL it ends up on, which is the origin an offer has to name.
+	fn serve(
+		answers: impl FnOnce(&str) -> Vec<String>,
+	) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+		use std::io::{Read as _, Write as _};
+
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback socket");
+		let base = format!(
+			"http://{}",
+			listener.local_addr().expect("the canopy address")
+		);
+		let answers = answers(&base);
+		let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+		let recorded = Arc::clone(&asked);
+		std::thread::spawn(move || {
+			for answer in answers {
+				let Ok((mut stream, _)) = listener.accept() else {
+					return;
+				};
+
+				let mut head = Vec::new();
+				let mut buf = [0u8; 1024];
+				while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+					match stream.read(&mut buf) {
+						Ok(0) | Err(_) => return,
+						Ok(read) => head.extend_from_slice(&buf[..read]),
+					}
+				}
+
+				let head = String::from_utf8_lossy(&head).into_owned();
+				recorded
+					.lock()
+					.expect("the record of what canopy was asked")
+					.push(head.lines().next().unwrap_or_default().to_owned());
+
+				let _ = stream.write_all(answer.as_bytes());
+				let _ = stream.flush();
+			}
+		});
+
+		(base, asked)
+	}
+
+	/// A client reaching the canopy at `base` over the device credential, the
+	/// path a server off the tailnet takes: the tailnet probe is aimed at a
+	/// closed port.
+	async fn canopy_at(base: &str) -> Arc<CanopyClient> {
+		let key = bestool_canopy::certificates::generate_key().expect("a device key");
+		let transport = bestool_canopy::ReqwestTransport::new(
+			base.parse().expect("the canopy URL"),
+			closed_url().parse().expect("the tailnet URL"),
+			Some(&key.serialize_pem()),
+			reqwest::Client::builder,
+		)
+		.await
+		.expect("the transport builds")
+		.expect("a device key is an auth path");
+		Arc::new(CanopyClient::new(transport))
+	}
+
+	/// An answer carrying `body` whole.
+	fn answer(media_type: &str, body: &str) -> String {
+		format!(
+			"HTTP/1.1 200 OK\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\n\
+			 Connection: close\r\n\r\n{body}",
+			body.len()
+		)
+	}
+
+	/// The offer a fetch follows to the canopy serving it.
+	fn offered_from(base: &str, body: &[u8]) -> Offered {
+		Offered {
+			download_url: format!("{base}/versions/2.60.0/artifacts/a/download"),
+			digest: sri(body),
+			..offered("2.60.0")
+		}
+	}
+
+	/// One fetch against a canopy answering exactly `response`, whose body
+	/// canopy is taken to have named the digest of.
+	async fn fetch(response: &str, body: &str, max_bytes: usize) -> Result<String, miette::Report> {
+		let response = response.to_owned();
+		let (base, _asked) = serve(|_| vec![response]);
+		let canopy = canopy_at(&base).await;
+		fetch_offered(&canopy, &offered_from(&base, body.as_bytes()), max_bytes).await
+	}
+
+	/// A 2xx is not on its own a schema: a page from something between the
+	/// server and canopy would be executed as SQL, and the schema's own SQL
+	/// drops itself first, so a wrong body destroys what it does not replace.
+	#[tokio::test]
+	async fn a_body_that_is_not_sql_is_refused() {
+		let err = fetch(
+			&answer("text/html", "<html>no</html>"),
+			"<html>no</html>",
+			MAX_SCHEMA_BYTES,
+		)
+		.await
+		.expect_err("a page is not a schema");
+		assert!(err.to_string().contains("text/html"), "{err}");
+	}
+
+	/// Canopy hands back whatever media type the registration named, and a
+	/// schema is SQL text under any of them.
+	#[tokio::test]
+	async fn the_media_types_a_schema_is_served_as_are_taken() {
+		for media_type in SCHEMA_MEDIA_TYPES {
+			let sql = fetch(
+				&answer(media_type, "CREATE SCHEMA reporting;"),
+				"CREATE SCHEMA reporting;",
+				MAX_SCHEMA_BYTES,
+			)
+			.await
+			.unwrap_or_else(|err| panic!("{media_type}: {err}"));
+			assert_eq!(sql, "CREATE SCHEMA reporting;");
+		}
+
+		assert!(
+			fetch(
+				&answer("TEXT/PLAIN; charset=utf-8", "CREATE SCHEMA reporting;"),
+				"CREATE SCHEMA reporting;",
+				MAX_SCHEMA_BYTES,
+			)
+			.await
+			.is_ok()
+		);
+	}
+
+	/// Canopy holds nothing larger than the ceiling, so a body declaring more
+	/// than it is refused on the declaration, without a byte of it being read.
+	#[tokio::test]
+	async fn a_body_declaring_more_than_the_ceiling_is_refused() {
+		let err = fetch(
+			"HTTP/1.1 200 OK\r\nContent-Type: application/sql\r\nContent-Length: 200\r\n\
+			 Connection: close\r\n\r\n",
+			"",
+			64,
+		)
+		.await
+		.expect_err("more than the ceiling is not a schema");
+		assert!(err.to_string().contains("larger than"), "{err}");
+	}
+
+	/// A body declaring no length at all is held to the ceiling as it is read,
+	/// so it cannot stream past one it never declared.
+	#[tokio::test]
+	async fn a_body_that_streams_past_the_ceiling_is_refused() {
+		let chunk = "x".repeat(40);
+		let err = fetch(
+			&format!(
+				"HTTP/1.1 200 OK\r\nContent-Type: application/sql\r\n\
+				 Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+				 28\r\n{chunk}\r\n28\r\n{chunk}\r\n0\r\n\r\n"
+			),
+			"",
+			64,
+		)
+		.await
+		.expect_err("a body streamed past the ceiling is not a schema");
+		assert!(err.to_string().contains("larger than"), "{err}");
+	}
+
+	/// An empty body is not a schema, and applying it would stamp the offered
+	/// build onto whatever schema the server already has.
+	#[tokio::test]
+	async fn an_empty_body_is_not_a_schema() {
+		let err = fetch(&answer("application/sql", ""), "", MAX_SCHEMA_BYTES)
+			.await
+			.expect_err("an empty body is not a schema");
+		assert!(err.to_string().contains("empty"), "{err}");
+	}
+
+	/// The offer cache and the registry of applies that did not stamp are one
+	/// per process, so the tests that drive them take a turn each.
+	async fn one_at_a_time() -> tokio::sync::MutexGuard<'static, ()> {
+		static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+		TURN.lock().await
+	}
+
+	/// Canopy's answer for a version's artifacts, offering a schema it holds.
+	fn artifacts_answer(base: &str, id: &str) -> String {
+		answer(
+			"application/json",
+			&serde_json::json!([{
+				"artifact_type": ARTIFACT_TYPE,
+				"download_url": format!("{base}/artifacts/{id}/download"),
+				"digest": "sha256-LCTbqpIiSOs=",
+				"id": id,
+				"platform": "any",
+			}])
+			.to_string(),
+		)
+	}
+
+	/// What canopy offers for one exact version changes only when a build
+	/// publishes a new schema, so the answer stands for the window rather than
+	/// being asked for once a minute by every server in the fleet.
+	#[tokio::test]
+	async fn an_answer_already_given_is_not_asked_for_again() {
+		const ID: &str = "8c4d1b02-9f3e-4a7c-b6d5-0e2f1a3c4b59";
+
+		let _turn = one_at_a_time().await;
+		let (base, asked) = serve(|base| vec![artifacts_answer(base, ID); 2]);
+		let canopy = canopy_at(&base).await;
+
+		let first = offered_schema(&canopy, &v("9.60.0"))
+			.await
+			.expect("canopy answered");
+		let again = offered_schema(&canopy, &v("9.60.0"))
+			.await
+			.expect("the answer already given stands");
+
+		assert!(first.is_some() && again.is_some());
+		assert_eq!(asked.lock().expect("what canopy was asked").len(), 1);
+	}
+
+	/// The window is keyed by version, so a server that has just upgraded asks
+	/// afresh rather than grading against the schema of the version it left.
+	#[tokio::test]
+	async fn an_upgrade_asks_afresh() {
+		const ID: &str = "5a7e3c91-2d48-4f60-8b1a-7c9d0e6f2a34";
+
+		let _turn = one_at_a_time().await;
+		let (base, asked) = serve(|base| vec![artifacts_answer(base, ID); 2]);
+		let canopy = canopy_at(&base).await;
+
+		offered_schema(&canopy, &v("9.61.0"))
+			.await
+			.expect("canopy answered");
+		let upgraded = offered_schema(&canopy, &v("9.61.1"))
+			.await
+			.expect("canopy answered again");
+
+		assert_eq!(
+			upgraded
+				.expect("a schema is offered for the version now running")
+				.version,
+			v("9.61.1")
+		);
+		let asked = asked.lock().expect("what canopy was asked");
+		assert_eq!(asked.len(), 2);
+		assert!(asked[1].contains("/versions/9.61.1/artifacts"), "{asked:?}");
+	}
+
+	/// A Subresource Integrity digest of some bytes, as canopy names them.
+	fn sri(bytes: &[u8]) -> String {
+		format!("sha256-{}", BASE64.encode(Sha256::digest(bytes)))
+	}
+
+	async fn admin_connection() -> Option<tokio_postgres::Client> {
+		bestool_postgres::pool::connect_one(
+			"postgresql://localhost/tamanu-central",
+			"bestool-alertd-test",
+		)
+		.await
+		.ok()
+	}
+
+	/// A context on a database of the test's own, so an apply that drops and
+	/// recreates the `reporting` schema cannot touch the one the borrowed
+	/// database holds.
+	async fn probe_ctx(database: &str) -> Option<TamanuCx> {
+		let borrowed = central_ctx().await?;
+		let admin = admin_connection().await?;
+		admin
+			.batch_execute(&format!(
+				"DROP DATABASE IF EXISTS \"{database}\" WITH (FORCE)"
+			))
+			.await
+			.ok()?;
+		admin
+			.batch_execute(&format!("CREATE DATABASE \"{database}\""))
+			.await
+			.ok()?;
+
+		let database_url = format!("postgresql://localhost/{database}");
+		let pool = bestool_postgres::pool::create_pool_sized(
+			&database_url,
+			"bestool-alertd-test",
+			crate::checks::POOL_SIZE,
+			bestool_postgres::pool::Prompt::Never,
+		)
+		.await
+		.ok()?;
+
+		Some(TamanuCx {
+			database_url,
+			pool: Some(pool),
+			..borrowed
+		})
+	}
+
+	async fn drop_probe(database: &str) {
+		admin_connection()
+			.await
+			.expect("the probe database was created, so it can be dropped")
+			.batch_execute(&format!(
+				"DROP DATABASE IF EXISTS \"{database}\" WITH (FORCE)"
+			))
+			.await
+			.expect("drop the probe database");
+	}
+
+	/// A heal reported as healed clears the backoff, so it is reported only
+	/// where the schema left behind carries the build canopy offered.
+	#[tokio::test]
+	async fn an_apply_leaving_the_offered_stamp_heals() {
+		const DATABASE: &str = "bestool-alertd-rsc-healed";
+		const SQL: &str = "DROP SCHEMA IF EXISTS reporting CASCADE;\nCREATE SCHEMA reporting;\n";
+
+		let _turn = one_at_a_time().await;
+		let Some(ctx) = probe_ctx(DATABASE).await else {
+			return;
+		};
+
+		let version = v("9.62.0");
+		let (base, _asked) = serve(|_| vec![answer("application/sql", SQL)]);
+		let offered = Offered {
+			version: version.clone(),
+			id: "0b6f2d14-8e35-4c79-9a2b-1d4e5f607c83".to_owned(),
+			download_url: format!("{base}/artifacts/schema/download"),
+			digest: sri(SQL.as_bytes()),
+		};
+		cache_offer(&version, &Some(offered.clone()));
+
+		let ctx = TamanuCx {
+			version,
+			canopy: Some(canopy_at(&base).await),
+			..ctx
+		};
+		let outcome = apply_offered(ctx.clone()).await;
+		let stamp = read_stamp(&ctx.db().await.expect("the probe database")).await;
+
+		drop(ctx);
+		drop_probe(DATABASE).await;
+
+		assert_eq!(outcome, HealOutcome::Healed);
+		assert_eq!(
+			stamp.expect("the stamp reads back"),
+			Stamp::Applied {
+				version: v("9.62.0"),
+				build: Some(offered.digest),
+			}
+		);
+	}
+
+	/// The sweep's client is shared by every database-backed check, so the apply
+	/// takes one of its own, opened the way every other database open in the
+	/// project is, and bounds a batch that cannot get its locks.
+	#[tokio::test]
+	async fn the_apply_opens_a_bounded_connection_of_its_own() {
+		let Ok(apply) = apply_connection("postgresql://localhost/tamanu-central").await else {
+			return;
+		};
+
+		let setting = async |name: &str| -> String {
+			apply
+				.query_one(&format!("SHOW {name}"), &[])
+				.await
+				.expect("the setting reads back")
+				.get(0)
+		};
+
+		assert_eq!(setting("statement_timeout").await, "5min");
+		assert_eq!(setting("lock_timeout").await, "30s");
+		assert_eq!(
+			setting("application_name").await,
+			"bestool-alertd-reporting-schema"
+		);
 	}
 }
