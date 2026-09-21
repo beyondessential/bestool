@@ -568,11 +568,13 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("migrations", migrations::run, tamanu_app),
 		entry!("reporting_roles", reporting_roles::run, tamanu_app),
 		// Its heal applies the schema canopy offers, the one write any check makes
-		// to Tamanu's database.
+		// to Tamanu's database. Canopy scopes an offer to the caller's group
+		// whatever kind of server asks, so a facility would be offered, and would
+		// apply, the central's schema.
 		entry!(
 			"reporting_schema",
 			reporting_schema::run,
-			tamanu_app,
+			central,
 			(|ctx| Box::pin(reporting_schema::heal(ctx))),
 			(heal::DEFAULT_MIN_INTERVAL)
 		),
@@ -1036,6 +1038,10 @@ mod tests {
 			);
 		}
 		assert_eq!(arm_of("fhir_workers"), Arm::Tamanu(TamanuScope::Central));
+		assert_eq!(
+			arm_of("reporting_schema"),
+			Arm::Tamanu(TamanuScope::Central)
+		);
 	}
 
 	/// A context describes the deployment it was built for, so the role it

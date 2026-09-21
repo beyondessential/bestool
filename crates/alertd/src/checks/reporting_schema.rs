@@ -14,9 +14,11 @@
 
 use std::sync::Arc;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bestool_canopy::CanopyClient;
 use miette::{IntoDiagnostic as _, bail};
 use node_semver::Version;
+use sha2::{Digest as _, Sha256};
 
 use super::{TamanuCx, fmt_db_error};
 use crate::{check::Check, heal::HealOutcome};
@@ -397,7 +399,26 @@ async fn fetch_offered(
 		bail!("the offered reporting schema is empty");
 	}
 
+	if let Some(digest) = offered.digest.as_deref()
+		&& !matches_digest(&sql, digest)
+	{
+		bail!("the offered reporting schema is not the bytes canopy named");
+	}
+
 	String::from_utf8(sql).into_diagnostic()
+}
+
+/// Whether bytes are the ones canopy's digest names.
+///
+/// Canopy names an artifact's bytes with a sha256 Subresource Integrity digest,
+/// and the apply stamps that digest on the schema as the build the server is on,
+/// so bytes that hash to anything else are not the schema offered.
+fn matches_digest(bytes: &[u8], digest: &str) -> bool {
+	digest
+		.trim()
+		.strip_prefix("sha256-")
+		.and_then(|encoded| BASE64.decode(encoded).ok())
+		.is_some_and(|named| named == Sha256::digest(bytes).as_slice())
 }
 
 /// What a reporting schema may be served as. Canopy hands back whatever media
@@ -406,6 +427,163 @@ const SCHEMA_MEDIA_TYPES: &[&str] = &["application/sql", "text/plain", "applicat
 
 /// Ceiling on a schema, matching what canopy will hold for one.
 const MAX_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
+
+/// What a schema artifact may not carry, the apply being one transaction.
+const TRANSACTION_CONTROL: [&str; 3] = ["begin", "commit", "rollback"];
+
+/// The transaction control the SQL carries, where it carries any.
+///
+/// The schema goes to the server as one batch, so a statement that fails partway
+/// rolls back the drop the schema opens with. A `BEGIN`, `COMMIT` or `ROLLBACK`
+/// of the artifact's own ends that transaction, and a failure after it leaves
+/// the server neither the schema it had nor the one offered.
+///
+/// Only a keyword standing as a statement counts. The same word is ordinary text
+/// in an identifier, a literal, a comment or a dollar-quoted body, and a schema
+/// refused over one is a server left on whatever it already has.
+fn transaction_control(sql: &str) -> Option<&str> {
+	let bytes = sql.as_bytes();
+	let mut at = 0;
+	let mut starts_statement = true;
+
+	while at < bytes.len() {
+		let byte = bytes[at];
+
+		if byte.is_ascii_whitespace() {
+			at += 1;
+			continue;
+		}
+		if byte == b'-' && bytes.get(at + 1) == Some(&b'-') {
+			at = past_line_comment(bytes, at);
+			continue;
+		}
+		if byte == b'/' && bytes.get(at + 1) == Some(&b'*') {
+			at = past_block_comment(bytes, at);
+			continue;
+		}
+		if byte == b';' {
+			starts_statement = true;
+			at += 1;
+			continue;
+		}
+
+		if is_word_start(byte) {
+			let end = word_end(bytes, at);
+			let word = &sql[at..end];
+
+			if starts_statement
+				&& TRANSACTION_CONTROL
+					.iter()
+					.any(|keyword| word.eq_ignore_ascii_case(keyword))
+			{
+				return Some(word);
+			}
+
+			// `E'…'`, `B'…'` and the like: the quote belongs to the word before it
+			// rather than opening a literal of its own, and only `E` takes
+			// backslash escapes.
+			at = match bytes.get(end) {
+				Some(b'\'') => past_string(bytes, end, word.eq_ignore_ascii_case("e")),
+				_ => end,
+			};
+		} else {
+			at = match byte {
+				b'\'' => past_string(bytes, at, false),
+				b'"' => past_quoted_name(bytes, at),
+				b'$' => past_dollar_quote(bytes, at),
+				_ => at + 1,
+			};
+		}
+
+		starts_statement = false;
+	}
+
+	None
+}
+
+fn is_word_start(byte: u8) -> bool {
+	byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80
+}
+
+fn word_end(bytes: &[u8], at: usize) -> usize {
+	let mut end = at;
+	while end < bytes.len() && (is_word_start(bytes[end]) || bytes[end].is_ascii_digit()) {
+		end += 1;
+	}
+	end
+}
+
+fn past_line_comment(bytes: &[u8], at: usize) -> usize {
+	let mut at = at + 2;
+	while at < bytes.len() && bytes[at] != b'\n' {
+		at += 1;
+	}
+	at
+}
+
+/// Block comments nest, so the first `*/` need not be the one that closes.
+fn past_block_comment(bytes: &[u8], at: usize) -> usize {
+	let mut at = at + 2;
+	let mut depth = 1usize;
+	while at < bytes.len() && depth > 0 {
+		match (bytes[at], bytes.get(at + 1)) {
+			(b'/', Some(b'*')) => {
+				depth += 1;
+				at += 2;
+			}
+			(b'*', Some(b'/')) => {
+				depth -= 1;
+				at += 2;
+			}
+			_ => at += 1,
+		}
+	}
+	at.min(bytes.len())
+}
+
+fn past_string(bytes: &[u8], at: usize, backslash_escapes: bool) -> usize {
+	let mut at = at + 1;
+	while at < bytes.len() {
+		match bytes[at] {
+			b'\\' if backslash_escapes => at += 2,
+			b'\'' if bytes.get(at + 1) == Some(&b'\'') => at += 2,
+			b'\'' => return at + 1,
+			_ => at += 1,
+		}
+	}
+	at.min(bytes.len())
+}
+
+fn past_quoted_name(bytes: &[u8], at: usize) -> usize {
+	let mut at = at + 1;
+	while at < bytes.len() {
+		match bytes[at] {
+			b'"' if bytes.get(at + 1) == Some(&b'"') => at += 2,
+			b'"' => return at + 1,
+			_ => at += 1,
+		}
+	}
+	at.min(bytes.len())
+}
+
+/// Past a dollar-quoted body, or past the `$` where none opens here: a tag may
+/// not start with a digit, which is what keeps `$1` a parameter.
+fn past_dollar_quote(bytes: &[u8], at: usize) -> usize {
+	let tag_end = word_end(bytes, at + 1);
+	if bytes.get(tag_end) != Some(&b'$') || bytes.get(at + 1).is_some_and(u8::is_ascii_digit) {
+		return at + 1;
+	}
+
+	let tag = &bytes[at..=tag_end];
+	let mut scan = tag_end + 1;
+	while scan + tag.len() <= bytes.len() {
+		if &bytes[scan..scan + tag.len()] == tag {
+			return scan + tag.len();
+		}
+		scan += 1;
+	}
+	bytes.len()
+}
 
 /// Apply the schema canopy offers.
 ///
@@ -460,6 +638,15 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 			return HealOutcome::Failed;
 		}
 	};
+
+	if let Some(keyword) = transaction_control(&sql) {
+		tracing::warn!(
+			artifact = %offered.id,
+			"the offered reporting schema carries its own {keyword}, so applying it \
+			 could leave the server without a reporting schema at all"
+		);
+		return HealOutcome::Failed;
+	}
 
 	let apply = match apply_connection(&ctx.database_url).await {
 		Ok(apply) => apply,
@@ -923,6 +1110,82 @@ mod tests {
 		}
 		for status in [401, 403, 404] {
 			assert!(!canopy_is_out(&http_error(status)), "{status} is an answer");
+		}
+	}
+
+	/// The apply is one batch, so a statement that fails partway rolls back the
+	/// drop the schema opens with. An artifact carrying transaction control of
+	/// its own ends that transaction, and a failure after it leaves the server
+	/// with neither schema.
+	// spec: CHK-RSC
+	#[test]
+	fn an_artifact_carrying_transaction_control_is_refused() {
+		for sql in [
+			"BEGIN; CREATE SCHEMA reporting;",
+			"commit",
+			"\n\tROLLBACK;\n",
+			"CREATE SCHEMA reporting;\nCOMMIT;",
+			"CREATE SCHEMA reporting;\n-- and then\n  CoMmIt;\n",
+			"/* header */ BEGIN;",
+			"CREATE SCHEMA reporting; /* and then */ commit;",
+			"CREATE VIEW v AS SELECT 'commit' AS label; ROLLBACK;",
+		] {
+			assert!(transaction_control(sql).is_some(), "{sql:?}");
+		}
+	}
+
+	/// Refusing an artifact leaves the server on whatever schema it has, so only
+	/// a keyword standing as a statement counts. The same word is ordinary text
+	/// in an identifier, a literal, a comment or a function body.
+	// spec: CHK-RSC
+	#[test]
+	fn the_word_elsewhere_is_not_transaction_control() {
+		for sql in [
+			"CREATE VIEW v AS SELECT committed_at FROM t;",
+			"CREATE VIEW v AS SELECT commit_date, rollback_id, begins FROM t;",
+			"CREATE VIEW v AS SELECT t.commit FROM t;",
+			"CREATE VIEW v AS SELECT 'commit; rollback;' AS label;",
+			"CREATE VIEW v AS SELECT E'it''s \\'; commit;' AS label;",
+			"-- commit\nCREATE SCHEMA reporting;",
+			"CREATE SCHEMA reporting; -- begin",
+			"/* commit; rollback; */\nCREATE SCHEMA reporting;",
+			"/* /* begin; */ commit; */ CREATE SCHEMA reporting;",
+			"CREATE TABLE t (\"commit\" int);",
+			"CREATE TABLE \"t; commit\" (a int);",
+			"CREATE PROCEDURE p() AS $$ BEGIN PERFORM 1; COMMIT; END $$ LANGUAGE plpgsql;",
+			"CREATE PROCEDURE p() AS $body$ BEGIN PERFORM 1; ROLLBACK; END $body$ LANGUAGE plpgsql;",
+			"CREATE SCHEMA reporting;\nCOMMENT ON SCHEMA reporting IS '2.60.0';\n",
+		] {
+			assert_eq!(transaction_control(sql), None, "{sql:?}");
+		}
+	}
+
+	/// Canopy names an artifact's bytes with a sha256 Subresource Integrity
+	/// digest, and the apply stamps that digest on the schema as the build the
+	/// server is on, so anything else is not the schema offered. The two digests
+	/// here are canopy's own, so the encoding is checked and not just the hash.
+	#[test]
+	fn only_the_bytes_canopy_named_are_applied() {
+		const SCHEMA: &[u8] = b"CREATE SCHEMA reporting;\n";
+		const DIGEST: &str = "sha256-ujw9dykwmiegt+dMTirjNmjYuieQjjSl2U/Y+f9Mn3A=";
+		const EMPTY: &str = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
+
+		assert!(matches_digest(SCHEMA, DIGEST));
+		assert!(matches_digest(b"", EMPTY));
+
+		assert!(!matches_digest(SCHEMA, EMPTY));
+		assert!(!matches_digest(b"CREATE SCHEMA reporting;", DIGEST));
+
+		// Only a sha256 SRI is one canopy could have offered, and bytes that
+		// cannot be checked against what was offered are not applied.
+		for digest in [
+			"",
+			"sha256-",
+			"sha256-notbase64!",
+			"ujw9dykwmiegt+dMTirjNmjYuieQjjSl2U/Y+f9Mn3A=",
+			"sha512-ujw9dykwmiegt+dMTirjNmjYuieQjjSl2U/Y+f9Mn3A=",
+		] {
+			assert!(!matches_digest(SCHEMA, digest), "{digest:?}");
 		}
 	}
 

@@ -699,6 +699,7 @@ name = "bestool-alertd"
 version = "28.1.2"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "bestool-canopy",
  "bestool-postgres",
  "bestool-tamanu",
@@ -717,6 +718,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sysinfo",
  "tempfile",
  "time",
