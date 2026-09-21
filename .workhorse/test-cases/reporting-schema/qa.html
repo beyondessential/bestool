@@ -1,0 +1,342 @@
+<title>Reporting Schema Rollout QA</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<style>
+:root{
+  --ground:#F5F6F7; --surface:#FFFFFF; --ink:#15191D; --muted:#5C6771;
+  --accent:#0E6F6B; --accent-soft:#E2F0EF; --warn:#96590A; --warn-soft:#FBF0DC;
+  --line:#DDE1E4; --code-bg:#EEF1F2;
+  --serif:"IBM Plex Serif",Georgia,serif;
+  --sans:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#0E1216; --surface:#161B20; --ink:#E4E9ED; --muted:#93A0AA;
+  --accent:#4EC5BF; --accent-soft:#12312F; --warn:#D69A43; --warn-soft:#2E2310;
+  --line:#262D34; --code-bg:#1B2127;
+}}
+:root[data-theme="dark"]{
+  --ground:#0E1216; --surface:#161B20; --ink:#E4E9ED; --muted:#93A0AA;
+  --accent:#4EC5BF; --accent-soft:#12312F; --warn:#D69A43; --warn-soft:#2E2310;
+  --line:#262D34; --code-bg:#1B2127;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.6;padding-inline:20px;padding-block:40px 80px}
+.wrap{max-width:820px;margin:0 auto;display:flex;flex-direction:column;gap:38px}
+h1{font-family:var(--serif);font-weight:600;font-size:2rem;line-height:1.2;margin:0;text-wrap:balance}
+h2{font-family:var(--serif);font-weight:600;font-size:1.35rem;margin:0;text-wrap:balance}
+h3{font-family:var(--serif);font-weight:600;font-size:1.05rem;margin:0;text-wrap:balance}
+p,li{max-width:68ch}
+p{margin:0}
+.lede{color:var(--muted)}
+.eyebrow{font-family:var(--mono);font-size:.72rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin:0}
+header{display:flex;flex-direction:column;gap:12px;border-bottom:1px solid var(--line);padding-bottom:28px}
+section{display:flex;flex-direction:column;gap:18px}
+.phase-head{display:flex;flex-direction:column;gap:6px;border-top:2px solid var(--accent);padding-top:14px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:20px;display:flex;flex-direction:column;gap:14px}
+.flow{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:4px;padding:18px 20px;display:flex;flex-direction:column;gap:14px}
+.flow.done{opacity:.5}
+.idrow{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding-bottom:12px}
+.fid{font-family:var(--mono);font-weight:600;font-size:.8rem;letter-spacing:.06em;color:var(--accent);background:var(--accent-soft);padding:3px 8px;border-radius:3px}
+.idrow h3{flex:1;min-width:200px}
+.toggle{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);cursor:pointer;user-select:none}
+.toggle input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+.why{font-style:italic;color:var(--muted)}
+.label{font-family:var(--mono);font-size:.7rem;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+ol,ul{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:7px}
+ol{counter-reset:none}
+code{font-family:var(--mono);font-size:.86em;background:var(--code-bg);padding:1px 5px;border-radius:3px}
+.cmd{background:var(--code-bg);border:1px solid var(--line);border-radius:4px;overflow-x:auto}
+.cmd .plat{font-family:var(--mono);font-size:.68rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:7px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+.cmd pre{margin:0;padding:12px;font-family:var(--mono);font-size:.82rem;line-height:1.55;white-space:pre}
+.watch{background:var(--warn-soft);border-left:3px solid var(--warn);border-radius:0 4px 4px 0;padding:12px 16px;display:flex;flex-direction:column;gap:7px}
+.watch .label{color:var(--warn)}
+.watch li{max-width:none}
+table{border-collapse:collapse;width:100%;font-size:.88rem}
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:4px}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-family:var(--mono);font-size:.7rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+tr:last-child td{border-bottom:none}
+td code{background:none;padding:0}
+a{color:var(--accent)}
+.foot{color:var(--muted);font-size:.85rem;border-top:1px solid var(--line);padding-top:20px}
+@media (max-width:520px){body{padding-inline:16px}h1{font-size:1.6rem}}
+</style>
+
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">bestool alertd · CHK-RSC</p>
+  <h1>Reporting Schema Rollout QA</h1>
+  <p class="lede">alertd reads the version stamped on a server's <code>reporting</code> schema, grades it against what canopy offers for the version that server runs, and applies the offered one when they differ. Applying is the check's self-heal, so it happens on its own, in the daemon, with no operator action. These flows are the ones a test suite cannot stand in for.</p>
+  <p class="lede">Record results on the Linear card as <code>🤖 ✅ TEST_n</code> comments. The done boxes here only keep your place.</p>
+</header>
+
+<section>
+  <div class="phase-head">
+    <p class="eyebrow">Before you start</p>
+    <h2>Access and arrangement</h2>
+  </div>
+  <div class="panel">
+    <p>Every flow below needs all of these. Gather them first: TEST_1 stalls for a full sweep interval if you discover a missing piece halfway through.</p>
+    <ul>
+      <li><strong>A test server running the daemon</strong>, Linux or Windows, registered to canopy, with a Tamanu central on it. Not a deployment carrying real patient data.</li>
+      <li><strong>Its exact Tamanu version</strong>, as canopy knows it. <code>bestool tamanu doctor --check version -a</code> reports it, and the artifact must be registered against that exact string. A range pattern is refused for a reporting schema.</li>
+      <li><strong>Its canopy group id</strong>, and <strong>a second group</strong> that the test server is not in. Without the second group the scoping half of TEST_1 asserts nothing.</li>
+      <li><strong>A canopy admin device credential</strong>, or a device with an enabled declaration building that group's artifacts. Both registrations in TEST_1 go through it.</li>
+      <li><strong>A database shell on the server's Tamanu central</strong>, to read the schema comment directly.</li>
+      <li><strong>The daemon's log</strong>. The apply reports itself only there.</li>
+    </ul>
+    <div class="cmd">
+      <div class="plat">Server · Linux · daemon log</div>
+      <pre>journalctl -u bestool-alertd -f</pre>
+    </div>
+    <div class="cmd">
+      <div class="plat">Server · Windows · daemon log</div>
+      <pre>Get-Service bestool-alertd
+Get-Content -Wait (Get-ChildItem 'C:\ProgramData\bestool\logs' |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName</pre>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Timings that decide how long you wait</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>What</th><th>Value</th><th>Why it matters here</th></tr></thead>
+        <tbody>
+          <tr><td>Sweep interval</td><td><code>60s</code></td><td>How often the check runs and can trigger an apply.</td></tr>
+          <tr><td>Offer cache</td><td><code>5 min</code></td><td>The server reuses canopy's last answer, so a fresh registration takes up to this long to be seen.</td></tr>
+          <tr><td>Heal floor</td><td><code>5 min</code></td><td>Minimum between two apply attempts, applied after a success as well.</td></tr>
+          <tr><td>Backoff ceiling</td><td><code>1 hour</code></td><td>Where attempts keep failing.</td></tr>
+          <tr><td>Lock timeout</td><td><code>30s</code></td><td>How long the apply waits for a report query to release the schema.</td></tr>
+          <tr><td>Statement timeout</td><td><code>5 min</code></td><td>Per statement inside the apply.</td></tr>
+          <tr><td>Whole-apply deadline</td><td><code>10 min</code></td><td>After this the attempt is abandoned and reported failed.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Worst case from registering an artifact to seeing the apply is around ten minutes. Anything longer is worth reporting.</p>
+  </div>
+</section>
+
+<section>
+  <div class="phase-head">
+    <p class="eyebrow">Phase 1 · Whatever autodeploys</p>
+    <h2>Smoke</h2>
+  </div>
+  <p>Twenty minutes. If any of these three is wrong, stop: the flows below will fail for reasons that have nothing to do with them.</p>
+
+  <div class="flow" data-flow="SMOKE_1">
+    <div class="idrow"><span class="fid">SMOKE_1</span><h3>The check is registered and runs</h3><label class="toggle"><input type="checkbox"> done</label></div>
+    <div class="cmd">
+      <div class="plat">Server · Linux and Windows</div>
+      <pre>bestool tamanu doctor --check tamanu-central:reporting_schema -a</pre>
+    </div>
+    <p><span class="label">Passes when</span> a <code>reporting_schema</code> line appears in the output with a result on it. A missing line means the check was not registered for this server's applications, which is the whole feature absent.</p>
+    <div class="watch">
+      <p class="label">Watch for</p>
+      <ul>
+        <li>The bare name may be refused with <code>needs the subject it reports for</code>, listing the subjects. That is the CLI asking you to qualify it, so use whichever subject it names for this server.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="flow" data-flow="SMOKE_2">
+    <div class="idrow"><span class="fid">SMOKE_2</span><h3>With nothing published, the check stands down</h3><label class="toggle"><input type="checkbox"> done</label></div>
+    <p>Run SMOKE_1's command before registering anything.</p>
+    <p><span class="label">Passes when</span> the result is a skip reading <code>none offered for this version</code>. Canopy owes a build, and that is canopy's finding rather than this server's, so a failure here would raise the same alert on every server in the fleet.</p>
+    <div class="watch">
+      <p class="label">Watch for</p>
+      <ul>
+        <li>A skip reading <code>canopy unreachable</code> instead. That is a connectivity problem, and TEST_1 cannot run until it is fixed.</li>
+        <li>A warning reading <code>could not ask canopy what is offered</code>. Canopy answered with a refusal, usually 401 or 403, which means this server's credential is not being accepted.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="flow" data-flow="SMOKE_3">
+    <div class="idrow"><span class="fid">SMOKE_3</span><h3>The stamp reaches canopy</h3><label class="toggle"><input type="checkbox"> done</label></div>
+    <p>Apply Fixture A by hand on the server's database, then wait one sweep and open the server in canopy.</p>
+    <div class="cmd">
+      <div class="plat">Server · database shell · reads the stamp back</div>
+      <pre>SELECT obj_description(oid, 'pg_namespace') AS stamp
+FROM pg_namespace WHERE nspname = 'reporting';</pre>
+    </div>
+    <p><span class="label">Passes when</span> canopy shows <code>reportingSchemaVersion</code> for this server carrying the version you stamped. That fact is what the fleet view reads to say which schema each server is on. To read it on the server instead, <code>bestool tamanu doctor --check tamanu-central:reporting_schema --json</code> carries it under <code>wire.applications.&lt;app&gt;.detail</code>, beside <code>tamanuVersion</code>.</p>
+    <div class="watch">
+      <p class="label">Watch for</p>
+      <ul>
+        <li>Only the version is published, never the digest. A stamp of <code>2.60.0 sha256-…</code> shows as <code>2.60.0</code>, and that is correct.</li>
+        <li>No fact at all means the comment did not parse as a version. The comment is arbitrary text, so anything unparseable, blank, or over 128 characters reads as no stamp and is deliberately dropped rather than published.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="phase-head">
+    <p class="eyebrow">Phase 2 · A registered server and a real canopy</p>
+    <h2>Flows</h2>
+  </div>
+
+  <div class="flow" data-flow="TEST_1">
+    <div class="idrow"><span class="fid">TEST_1</span><h3>A server takes the schema canopy offers and applies it unattended</h3><label class="toggle"><input type="checkbox"> done</label></div>
+    <p class="why">Nothing automated builds a canopy client against a real canopy, presents a device certificate, or runs the daemon's sweep-then-heal loop. The unit tests grade in process against a hand-built offer. Group scoping is only real once a second group exists to be excluded.</p>
+
+    <p><span class="label">Setup</span></p>
+    <ol>
+      <li>Note the server's exact Tamanu version and its group id.</li>
+      <li>Read and write down the current stamp using SMOKE_3's query. It may be empty.</li>
+      <li>Take Fixture A and Fixture B below, replacing <code>2.60.0</code> in each with the server's exact version.</li>
+    </ol>
+
+    <p><span class="label">Steps</span></p>
+    <ol>
+      <li>Register Fixture B against the <em>other</em> group first, so a wrong answer cannot be mistaken for a timing artefact.</li>
+      <li>Register Fixture A against the server's own group.</li>
+      <li>Leave the daemon alone and watch its log. Do not run <code>doctor --fresh</code>.</li>
+      <li>When <code>applied reporting schema</code> appears, read the stamp back and read the marker view.</li>
+      <li>Run <code>bestool tamanu doctor --check reporting_schema -a</code> and confirm it now passes.</li>
+    </ol>
+
+    <div class="cmd">
+      <div class="plat">Any machine with the credential · register for a group</div>
+      <pre>curl --cert device.pem --key device.key \
+  -X POST \
+  -H 'Content-Type: application/sql' \
+  --data-binary @fixture-a.sql \
+  https://&lt;canopy&gt;/artifacts/groups/&lt;group-id&gt;/2.60.0/reporting-schema/any</pre>
+    </div>
+    <div class="cmd">
+      <div class="plat">Server · database shell · which fixture landed</div>
+      <pre>SELECT obj_description(oid, 'pg_namespace') AS stamp
+FROM pg_namespace WHERE nspname = 'reporting';
+
+SELECT marker FROM reporting.qa_marker;</pre>
+    </div>
+
+    <p><span class="label">Passes when</span> the marker reads <code>QA_FIXTURE_A</code>, the stamp carries the version followed by a <code>sha256-</code> digest the server appended itself, and the check reports a pass. The digest is the point: it is how two builds of one version are told apart, and it is written by alertd rather than by the schema's own SQL.</p>
+
+    <div class="watch">
+      <p class="label">Watch for</p>
+      <ul>
+        <li><strong><code>doctor --fresh</code> never applies anything.</strong> An on-demand sweep is deliberately free of side effects; only the daemon's own periodic tick heals. Running it and seeing nothing change tells you nothing, and it is the easiest way to spend an hour concluding the feature is broken.</li>
+        <li><strong>A marker of <code>QA_FIXTURE_B</code> is a real defect</strong> and worth stopping for: the server took another group's schema.</li>
+        <li>Nothing happening for up to ten minutes is expected. The offer cache and the heal floor are five minutes each.</li>
+        <li>The log line <code>the offered reporting schema has already been applied without stamping its version</code> means an earlier attempt applied something that did not stamp as expected, and that artifact is now refused for the life of the process. Restart the daemon to clear it.</li>
+        <li>If this ships with the check still registered against every Tamanu application rather than centrals only, a facility server in the same group will apply the schema too. That is a known open defect on the card, so record it against that rather than filing it fresh.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="flow" data-flow="TEST_2">
+    <div class="idrow"><span class="fid">TEST_2</span><h3>An apply that runs while reports are being read</h3><label class="toggle"><input type="checkbox"> done</label></div>
+    <p class="why">The schema is dropped and recreated whole, so an apply and a running report want the same objects. A test database has no concurrent readers and never meets this.</p>
+
+    <p><span class="label">Setup</span></p>
+    <ol>
+      <li>Finish TEST_1, so the server has a schema applied by the daemon.</li>
+      <li>Register Fixture A again with one view's text changed, so canopy holds a different digest for the same version and the check grades a newer build as offered.</li>
+    </ol>
+
+    <p><span class="label">Steps</span></p>
+    <ol>
+      <li>In a database shell, open a transaction that reads a reporting view and holds it open for longer than the lock timeout.</li>
+      <li>Wait for the daemon to attempt the apply.</li>
+      <li>Read the stamp while the transaction is still open.</li>
+      <li>Close the transaction, wait for the next attempt, and read the stamp again.</li>
+    </ol>
+
+    <div class="cmd">
+      <div class="plat">Server · database shell · hold the schema</div>
+      <pre>BEGIN;
+SELECT count(*) FROM reporting.qa_marker;
+SELECT pg_sleep(60);
+COMMIT;</pre>
+    </div>
+
+    <p><span class="label">Passes when</span> the held attempt logs <code>applying the reporting schema failed</code> naming a lock timeout, the stamp is unchanged while the transaction is open, and the schema is still readable throughout. After the transaction closes, a later attempt applies and the stamp moves to the new digest.</p>
+
+    <div class="watch">
+      <p class="label">Watch for</p>
+      <ul>
+        <li><strong>A failed attempt is the correct outcome here, not a defect.</strong> The apply gives up rather than waiting behind a report, and the check stays red until the next attempt succeeds. Report it only if the schema is left missing or half-built.</li>
+        <li>Reports should keep working for the whole flow. A window where a report errors saying a reporting view does not exist is worth reporting with the timestamp.</li>
+        <li>Repeated failures stretch to an hour apart. If you are waiting a long time for the successful attempt, that is the backoff rather than a stall.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="phase-head">
+    <p class="eyebrow">Ship with the flows</p>
+    <h2>Fixtures</h2>
+  </div>
+  <p>Two small schemas, each carrying a marker view so you can tell at a glance which one a server took. Replace <code>2.60.0</code> with the server's exact Tamanu version in both. They are deliberately tiny: a real build is around 128 views, and none of them would tell you anything a marker does not.</p>
+
+  <div class="panel">
+    <h3>Fixture A · the group's own schema</h3>
+    <p>Save as <code>fixture-a.sql</code>. Validated against a real Tamanu central: two views, the grant lands, and the stamp reads back.</p>
+    <div class="cmd">
+      <div class="plat">fixture-a.sql</div>
+      <pre>drop schema if exists reporting cascade;
+create schema reporting;
+comment on schema reporting is '2.60.0';
+grant usage on schema reporting to tamanu_reporting;
+alter default privileges in schema reporting grant select on tables to tamanu_reporting;
+create or replace view "reporting"."qa_marker" as (select 'QA_FIXTURE_A'::text as marker);
+create or replace view "reporting"."patient_count" as (select count(*) as patients from patients);</pre>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Fixture B · the other group's schema</h3>
+    <p>Save as <code>fixture-b.sql</code>. Identical except for the marker, so the only thing it can prove is that scoping held.</p>
+    <div class="cmd">
+      <div class="plat">fixture-b.sql</div>
+      <pre>drop schema if exists reporting cascade;
+create schema reporting;
+comment on schema reporting is '2.60.0';
+grant usage on schema reporting to tamanu_reporting;
+alter default privileges in schema reporting grant select on tables to tamanu_reporting;
+create or replace view "reporting"."qa_marker" as (select 'QA_FIXTURE_B'::text as marker);
+create or replace view "reporting"."patient_count" as (select count(*) as patients from patients);</pre>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Constraints worth knowing before you improvise</h3>
+    <ul>
+      <li>Register with <code>application/sql</code>, <code>text/plain</code> or <code>application/octet-stream</code>. Canopy serves back whatever content type the registration named, and the server refuses anything else rather than running it as SQL.</li>
+      <li>32MB ceiling on both sides. An artifact over it is refused at registration.</li>
+      <li><strong>A fixture must carry no <code>BEGIN</code>, <code>COMMIT</code> or <code>ROLLBACK</code>.</strong> The whole schema goes to the server as one batch, which is what makes a failure partway leave the old schema in place. Transaction control inside the artifact ends that batch early, and a later failure then leaves the server with an empty <code>reporting</code> schema and no stamp.</li>
+      <li>The role <code>tamanu_reporting</code> has to exist. Tamanu creates it at startup from 2.60, so a server that has run once has it.</li>
+    </ul>
+  </div>
+</section>
+
+<p class="foot">Grading and stamp parsing are covered by the suite. What is not: the canopy round trip with a real credential, group scoping against a second group, and the apply under load. Those three are why this page exists.</p>
+
+</div>
+
+<script>
+(function(){
+  var KEY='rsc-qa-done';
+  var state={};
+  try{ state=JSON.parse(localStorage.getItem(KEY)||'{}')||{}; }catch(e){ state={}; }
+  function save(){ try{ localStorage.setItem(KEY,JSON.stringify(state)); }catch(e){} }
+  document.querySelectorAll('.flow[data-flow]').forEach(function(flow){
+    var id=flow.getAttribute('data-flow');
+    var box=flow.querySelector('.toggle input');
+    if(!box) return;
+    box.id='done-'+id;
+    box.checked=!!state[id];
+    flow.classList.toggle('done',box.checked);
+    box.addEventListener('change',function(){
+      state[id]=box.checked;
+      flow.classList.toggle('done',box.checked);
+      save();
+    });
+  });
+})();
+</script>

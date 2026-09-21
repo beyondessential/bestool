@@ -8,6 +8,9 @@ A reporting schema is the set of database views a Tamanu server's reports read f
 Canopy offers one per group and Tamanu version.
 bestool's part is to say which schema this server has, and to apply the one it is offered where they differ.
 
+Every Tamanu server in a group carries one, central and facility alike, since a facility serves reports of its own.
+A group's schema is the same on all of them.
+
 It is one of the healthchecks described by [CHK](healthchecks.md) and follows the shared outcome model in `tamanu/doctor.md`.
 
 ## What the server has
@@ -28,6 +31,10 @@ It is reported whether or not the schema matches what Canopy offers.
 Canopy is asked what it offers for the version this server runs, over the authenticated connection: a schema belongs to a group, and Canopy answers for the caller's group.
 Canopy resolves which artifact a version is offered, so the schema in its answer is the one graded against.
 
+Only a schema whose bytes Canopy holds is taken as an offer, which is what its carrying a digest says.
+A schema artifact naming somewhere else to fetch from belongs to no group, is offered to every server in the fleet, and is passed over.
+The digest also names which build of a version a schema is: a group gets a new build of the version it already runs whenever its reports are fixed, so a server on an earlier build of the offered version is graded as needing the newer one.
+
 The check passes when the stamp matches what is offered.
 It fails when they differ, when the server's schema carries no stamp, and when the server has no schema at all and one is offered.
 
@@ -41,7 +48,9 @@ Applying the offered schema is the check's self-heal action, so it runs only in 
 
 The schema's own SQL drops the schema and recreates it, and is applied as one batch, so a statement that fails partway leaves the server the schema it already had.
 That holds only while the artifact carries no transaction control of its own: a `COMMIT` part-way through ends the batch's transaction, and a later failure then leaves the server with neither the schema it had nor the one offered.
-A schema artifact therefore carries no `BEGIN`, `COMMIT` or `ROLLBACK`.
+A schema artifact therefore carries no `BEGIN`, `COMMIT` or `ROLLBACK`, and one that does is refused rather than applied.
+
+The bytes fetched are checked against the digest Canopy offered before any of them reach the database, and a schema that is not the one Canopy named is refused.
 
 A failed apply is logged and retried under the heal backoff.
 An artifact that applied without stamping the offered version is not applied again, since retrying it would rebuild the schema on every backoff step for as long as the offer stands.
