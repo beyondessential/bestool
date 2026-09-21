@@ -990,19 +990,16 @@ mod tests {
 		}
 	}
 
-	/// A stamp carrying the build canopy offers, which is what this check writes
-	/// when it applies one.
-	fn applied_build(version: &str) -> Stamp {
-		Stamp::Applied {
-			version: v(version),
-			build: Some(offered(version).digest),
-		}
-	}
-
 	#[test]
 	fn a_matching_stamp_passes() {
-		let check = grade(&applied_build("2.60.0"), &offered("2.60.0"));
-		assert!(matches!(check.status, CheckStatus::Pass));
+		let stamp = Stamp::Applied {
+			version: v("2.60.0"),
+			build: Some(offered("2.60.0").digest),
+		};
+		assert!(matches!(
+			grade(&stamp, &offered("2.60.0")).status,
+			CheckStatus::Pass
+		));
 	}
 
 	/// A stamp is compared as a version, not as text: the SQL that writes it is
@@ -1021,16 +1018,6 @@ mod tests {
 				"{written} names the offered schema"
 			);
 		}
-	}
-
-	/// The builder stamps the version alone, so a schema applied by hand from a
-	/// build names no build. Which build of the version it is, canopy alone
-	/// knows, so it grades as an earlier one until this check has applied it.
-	#[test]
-	fn a_stamp_with_no_build_is_an_earlier_one() {
-		let check = grade(&applied("2.60.0"), &offered("2.60.0"));
-		assert!(matches!(check.status, CheckStatus::Fail(_)));
-		assert!(check.summary.contains("newer build"), "{}", check.summary);
 	}
 
 	#[test]
@@ -1237,7 +1224,7 @@ mod tests {
 	/// two builds of one version apart.
 	fn built(version: &str, digest: &str) -> Offered {
 		Offered {
-			digest: Some(digest.to_owned()),
+			digest: digest.to_owned(),
 			..offered(version)
 		}
 	}
@@ -1315,17 +1302,6 @@ mod tests {
 		);
 	}
 
-	/// An offer naming no bytes leaves the builder's own stamp standing: a
-	/// digest recorded for a build canopy did not name would grade as current
-	/// against the next offer that does name one.
-	#[test]
-	fn an_offer_with_no_digest_stamps_nothing() {
-		assert_eq!(
-			stamped("CREATE SCHEMA reporting;", &offered("2.60.0")),
-			"CREATE SCHEMA reporting;"
-		);
-	}
-
 	/// The digest is canopy's own string and rides into an SQL literal in a
 	/// batch that runs as DDL, so an apostrophe in it must not close the
 	/// literal.
@@ -1348,7 +1324,7 @@ mod tests {
 			..built("2.60.0", "sha256-LCTbqpIiSOs=")
 		};
 		let rebuilt = Offered {
-			digest: Some("sha256-ujw9dykwmiegt+dMTirjNmjYuieQjjSl2U/Y+f9Mn3A=".to_owned()),
+			digest: "sha256-ujw9dykwmiegt+dMTirjNmjYuieQjjSl2U/Y+f9Mn3A=".to_owned(),
 			..failed.clone()
 		};
 
@@ -1441,19 +1417,21 @@ mod tests {
 	}
 
 	/// The offer a fetch follows to the canopy serving it.
-	fn offered_from(base: &str) -> Offered {
+	fn offered_from(base: &str, body: &[u8]) -> Offered {
 		Offered {
 			download_url: format!("{base}/versions/2.60.0/artifacts/a/download"),
+			digest: sri(body),
 			..offered("2.60.0")
 		}
 	}
 
-	/// One fetch against a canopy answering exactly `response`.
-	async fn fetch(response: &str, max_bytes: usize) -> Result<String, miette::Report> {
+	/// One fetch against a canopy answering exactly `response`, whose body
+	/// canopy is taken to have named the digest of.
+	async fn fetch(response: &str, body: &str, max_bytes: usize) -> Result<String, miette::Report> {
 		let response = response.to_owned();
 		let (base, _asked) = serve(|_| vec![response]);
 		let canopy = canopy_at(&base).await;
-		fetch_offered(&canopy, &offered_from(&base), max_bytes).await
+		fetch_offered(&canopy, &offered_from(&base, body.as_bytes()), max_bytes).await
 	}
 
 	/// A 2xx is not on its own a schema: a page from something between the
@@ -1461,9 +1439,13 @@ mod tests {
 	/// drops itself first, so a wrong body destroys what it does not replace.
 	#[tokio::test]
 	async fn a_body_that_is_not_sql_is_refused() {
-		let err = fetch(&answer("text/html", "<html>no</html>"), MAX_SCHEMA_BYTES)
-			.await
-			.expect_err("a page is not a schema");
+		let err = fetch(
+			&answer("text/html", "<html>no</html>"),
+			"<html>no</html>",
+			MAX_SCHEMA_BYTES,
+		)
+		.await
+		.expect_err("a page is not a schema");
 		assert!(err.to_string().contains("text/html"), "{err}");
 	}
 
@@ -1474,6 +1456,7 @@ mod tests {
 		for media_type in SCHEMA_MEDIA_TYPES {
 			let sql = fetch(
 				&answer(media_type, "CREATE SCHEMA reporting;"),
+				"CREATE SCHEMA reporting;",
 				MAX_SCHEMA_BYTES,
 			)
 			.await
@@ -1484,6 +1467,7 @@ mod tests {
 		assert!(
 			fetch(
 				&answer("TEXT/PLAIN; charset=utf-8", "CREATE SCHEMA reporting;"),
+				"CREATE SCHEMA reporting;",
 				MAX_SCHEMA_BYTES,
 			)
 			.await
@@ -1498,6 +1482,7 @@ mod tests {
 		let err = fetch(
 			"HTTP/1.1 200 OK\r\nContent-Type: application/sql\r\nContent-Length: 200\r\n\
 			 Connection: close\r\n\r\n",
+			"",
 			64,
 		)
 		.await
@@ -1516,6 +1501,7 @@ mod tests {
 				 Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
 				 28\r\n{chunk}\r\n28\r\n{chunk}\r\n0\r\n\r\n"
 			),
+			"",
 			64,
 		)
 		.await
@@ -1527,7 +1513,7 @@ mod tests {
 	/// build onto whatever schema the server already has.
 	#[tokio::test]
 	async fn an_empty_body_is_not_a_schema() {
-		let err = fetch(&answer("application/sql", ""), MAX_SCHEMA_BYTES)
+		let err = fetch(&answer("application/sql", ""), "", MAX_SCHEMA_BYTES)
 			.await
 			.expect_err("an empty body is not a schema");
 		assert!(err.to_string().contains("empty"), "{err}");
@@ -1682,7 +1668,7 @@ mod tests {
 			version: version.clone(),
 			id: "0b6f2d14-8e35-4c79-9a2b-1d4e5f607c83".to_owned(),
 			download_url: format!("{base}/artifacts/schema/download"),
-			digest: Some(sri(SQL.as_bytes())),
+			digest: sri(SQL.as_bytes()),
 		};
 		cache_offer(&version, &Some(offered.clone()));
 
@@ -1702,56 +1688,9 @@ mod tests {
 			stamp.expect("the stamp reads back"),
 			Stamp::Applied {
 				version: v("9.62.0"),
-				build: offered.digest,
+				build: Some(offered.digest),
 			}
 		);
-	}
-
-	/// An apply that leaves the schema stamped as anything else is not a heal:
-	/// healed clears the backoff, and the schema would be dropped and rebuilt on
-	/// every interval with reports broken through each rebuild. The artifact is
-	/// remembered so the next attempt does not apply it again.
-	#[tokio::test]
-	async fn an_apply_stamping_something_else_fails_and_is_not_applied_again() {
-		const DATABASE: &str = "bestool-alertd-rsc-unstamped";
-		const SQL: &str = "DROP SCHEMA IF EXISTS reporting CASCADE;\nCREATE SCHEMA reporting;\n\
-			 COMMENT ON SCHEMA reporting IS '2.59.0';\n";
-
-		let _turn = one_at_a_time().await;
-		let Some(ctx) = probe_ctx(DATABASE).await else {
-			return;
-		};
-
-		let version = v("9.63.0");
-		let (base, _asked) = serve(|_| vec![answer("application/sql", SQL)]);
-		let offered = Offered {
-			version: version.clone(),
-			id: "9e1c7a48-3b52-4d06-8f7e-2a6b5c4d3e10".to_owned(),
-			download_url: format!("{base}/artifacts/schema/download"),
-			digest: None,
-		};
-		cache_offer(&version, &Some(offered.clone()));
-
-		let ctx = TamanuCx {
-			version,
-			canopy: Some(canopy_at(&base).await),
-			..ctx
-		};
-		let outcome = apply_offered(ctx.clone()).await;
-		let stamp = read_stamp(&ctx.db().await.expect("the probe database")).await;
-
-		drop(ctx);
-		drop_probe(DATABASE).await;
-
-		assert_eq!(outcome, HealOutcome::Failed);
-		assert_eq!(
-			stamp.expect("the stamp reads back"),
-			Stamp::Applied {
-				version: v("2.59.0"),
-				build: None,
-			}
-		);
-		assert!(applied_without_stamping(&applied_key(&offered)));
 	}
 
 	/// The sweep's client is shared by every database-backed check, so the apply
