@@ -1,10 +1,10 @@
 # Reporting schema (CHK-RSC) — test sweep
 
-bestool#868, `feat/reporting-schema-apply` at `0360e74d`. Spec:
+bestool#868, `feat/reporting-schema-apply` at `931bae69`. Spec:
 `.workhorse/specs/tamanu/reporting-schema.md`.
 
-Suite state: `cargo test -p bestool-alertd --lib` is 486/486 against a populated
-`tamanu-central`, of which 41 are this check's. `cargo test -p bestool-canopy
+Suite state: `cargo test -p bestool-alertd --lib` is 487/487 against a populated
+`tamanu-central`, of which 42 are this check's. `cargo test -p bestool-canopy
 --all-features` is 65/65. `cargo test -p bestool --lib canopy_contract -- --ignored`
 is 15/15.
 
@@ -35,12 +35,13 @@ What canopy offers:
 - [x] Only an artifact of type `reporting-schema` is taken as the schema — CHK-RSC
 - [x] An artifact of that type resting anywhere but canopy is passed over, carrying a
       digest or not, as is one named with a digest the fetch could not check the bytes
-      against — CHK-RSC
+      against: another algorithm, an encoding that will not decode, or a hash of the
+      wrong length — CHK-RSC
 - [x] A 404 is nothing offered; 401, 403 and 5xx are the ask failing — CHK-RSC
 - [x] 5xx and transport errors are canopy being out; 401, 403, 404 and a body that
       would not decode are answers — CHK-RSC
-- [x] An answer already given inside the TTL is not asked for again, and an upgrade
-      asks afresh — CHK-RSC
+- [x] An answer already given inside the TTL is not asked for again, an upgrade asks
+      afresh, and two versions on one host each hold their own — CHK-RSC
 - [x] No database connection skips, and canopy absent grades nothing — CHK-RSC
 
 Fetching and applying:
@@ -56,8 +57,9 @@ Fetching and applying:
       or `ABORT` in statement position is refused, and the same words elsewhere are
       not — CHK-RSC
 - [x] The offered build is stamped onto the schema, an artifact ending without a
-      terminator is stamped all the same, and an apostrophe in a digest cannot close
-      the literal — CHK-RSC
+      terminator is stamped all the same (including one ending in a line comment, which
+      a terminator on the same line would fall inside), and an apostrophe in a digest
+      cannot close the literal — CHK-RSC
 - [x] A batch that fails partway leaves the schema that was already there — CHK-RSC
 - [x] An apply leaving the offered stamp heals, against a real Postgres and a canopy
       answering over HTTP — CHK-RSC
