@@ -49,7 +49,7 @@ Applying the offered schema is the check's self-heal action, so it runs only in 
 
 The schema's own SQL drops the schema and recreates it, and is applied as one batch, so a statement that fails partway leaves the server the schema it already had.
 That holds only while the artifact carries no transaction control of its own: a `COMMIT` part-way through ends the batch's transaction, and a later failure then leaves the server with neither the schema it had nor the one offered.
-A schema artifact therefore carries no `BEGIN`, `COMMIT` or `ROLLBACK`, and one that does is refused rather than applied.
+A schema artifact therefore carries no `BEGIN`, `COMMIT` or `ROLLBACK`, nor the `START TRANSACTION`, `END` and `ABORT` Postgres takes for the same three, and one that does is refused rather than applied.
 
 The bytes fetched are checked against the digest Canopy offered before any of them reach the database, and a schema that is not the one Canopy named is refused.
 

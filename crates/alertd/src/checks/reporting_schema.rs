@@ -443,14 +443,15 @@ const SCHEMA_MEDIA_TYPES: &[&str] = &["application/sql", "text/plain", "applicat
 const MAX_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
 
 /// What a schema artifact may not carry, the apply being one transaction.
-const TRANSACTION_CONTROL: [&str; 3] = ["begin", "commit", "rollback"];
+const TRANSACTION_CONTROL: [&str; 6] = ["begin", "start", "commit", "end", "rollback", "abort"];
 
 /// The transaction control the SQL carries, where it carries any.
 ///
 /// The schema goes to the server as one batch, so a statement that fails partway
 /// rolls back the drop the schema opens with. A `BEGIN`, `COMMIT` or `ROLLBACK`
 /// of the artifact's own ends that transaction, and a failure after it leaves
-/// the server neither the schema it had nor the one offered.
+/// the server neither the schema it had nor the one offered. Postgres takes
+/// `START TRANSACTION`, `END` and `ABORT` for the same three.
 ///
 /// Only a keyword standing as a statement counts. The same word is ordinary text
 /// in an identifier, a literal, a comment or a dollar-quoted body, and a schema
@@ -1183,6 +1184,10 @@ mod tests {
 			"/* header */ BEGIN;",
 			"CREATE SCHEMA reporting; /* and then */ commit;",
 			"CREATE VIEW v AS SELECT 'commit' AS label; ROLLBACK;",
+			// Postgres takes these for the same three.
+			"START TRANSACTION; CREATE SCHEMA reporting;",
+			"CREATE SCHEMA reporting;\nEND;",
+			"CREATE SCHEMA reporting;\n  abort;\n",
 		] {
 			assert!(transaction_control(sql).is_some(), "{sql:?}");
 		}
@@ -1209,6 +1214,9 @@ mod tests {
 			"CREATE PROCEDURE p() AS $$ BEGIN PERFORM 1; COMMIT; END $$ LANGUAGE plpgsql;",
 			"CREATE PROCEDURE p() AS $body$ BEGIN PERFORM 1; ROLLBACK; END $body$ LANGUAGE plpgsql;",
 			"CREATE SCHEMA reporting;\nCOMMENT ON SCHEMA reporting IS '2.60.0';\n",
+			"CREATE VIEW v AS SELECT end_date, start_date FROM t;",
+			"CREATE VIEW v AS SELECT CASE WHEN a THEN 1 ELSE 2 END AS x FROM t;",
+			"CREATE TABLE t (\"end\" int, \"abort\" int);",
 		] {
 			assert_eq!(transaction_control(sql), None, "{sql:?}");
 		}
