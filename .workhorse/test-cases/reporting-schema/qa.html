@@ -73,6 +73,29 @@ a{color:var(--accent)}
 
 <section>
   <div class="phase-head">
+    <p class="eyebrow">Start here</p>
+    <h2>What already has evidence</h2>
+  </div>
+  <div class="panel">
+    <p>Some of this was run against a Linux VM while the change was being written, on bestool 2.2.0 built from the branch: Ubuntu 25.04 on aarch64, Postgres 17.7, with a real Tamanu central schema loaded. Take the passes as done unless you are testing a later build, and spend your time on what is still open.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Flow</th><th>State</th><th>What was seen</th></tr></thead>
+        <tbody>
+          <tr><td><code>SMOKE_1</code></td><td>Pass</td><td>The check is registered and returns a result, for the central and the facility subject both.</td></tr>
+          <tr><td><code>SMOKE_2</code></td><td>Open</td><td>Only the offline path ran, skipping <code>canopy unreachable</code>. The <code>none offered</code> branch needs a server canopy can answer.</td></tr>
+          <tr><td><code>SMOKE_3</code></td><td>Pass</td><td>Fixture A applied, the stamp read back, and <code>reportingSchemaVersion</code> published as <code>2.60.0</code>, version only. A comment of <code>built by hand</code> published no fact.</td></tr>
+          <tr><td><code>TEST_1</code></td><td>Open</td><td>Needs a server enrolled against a canopy. This is the flow worth your time.</td></tr>
+          <tr><td><code>TEST_2</code></td><td>Open</td><td>The mechanism is covered by tests against a real Postgres, including the lock timeout leaving the old schema intact. What is missing is real volume.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Things you do not need to check by hand, because the suite covers them against a real database: grading a stamp against an offer, stamp parsing and its edge cases, refusing a body that is not SQL or is too large or empty, refusing bytes that are not the ones canopy named, refusing an artifact carrying transaction control, a failed batch leaving the old schema in place, and the apply opening a bounded connection of its own.</p>
+  </div>
+</section>
+
+<section>
+  <div class="phase-head">
     <p class="eyebrow">Before you start</p>
     <h2>Access and arrangement</h2>
   </div>
@@ -223,14 +246,15 @@ SELECT marker FROM reporting.qa_marker;</pre>
         <li><strong>A marker of <code>QA_FIXTURE_B</code> is a real defect</strong> and worth stopping for: the server took another group's schema.</li>
         <li>Nothing happening for up to ten minutes is expected. The offer cache and the heal floor are five minutes each.</li>
         <li>The log line <code>the offered reporting schema has already been applied without stamping its version</code> means an earlier attempt applied something that did not stamp as expected, and that artifact is now refused for the life of the process. Restart the daemon to clear it.</li>
-        <li>If this ships with the check still registered against every Tamanu application rather than centrals only, a facility server in the same group will apply the schema too. That is a known open defect on the card, so record it against that rather than filing it fresh.</li>
+        <li>A facility server in the same group applies the schema too, and that is intended: a facility serves reports of its own. If the group has one, check it landed there as well, and treat a facility that applied while the central did not as worth reporting.</li>
+        <li>Nothing at all happening, with no log line either way, usually means the artifact was registered as a URL rather than as bytes. Only a schema canopy holds is acted on.</li>
       </ul>
     </div>
   </div>
 
   <div class="flow" data-flow="TEST_2">
     <div class="idrow"><span class="fid">TEST_2</span><h3>An apply that runs while reports are being read</h3><label class="toggle"><input type="checkbox"> done</label></div>
-    <p class="why">The schema is dropped and recreated whole, so an apply and a running report want the same objects. A test database has no concurrent readers and never meets this.</p>
+    <p class="why">The mechanism is covered by tests, down to the lock timeout leaving the old schema intact. What no test has is a populated database with real report traffic on it, which is the only thing that says how long reports are actually unavailable during a rebuild.</p>
 
     <p><span class="label">Setup</span></p>
     <ol>
@@ -307,9 +331,11 @@ create or replace view "reporting"."patient_count" as (select count(*) as patien
   <div class="panel">
     <h3>Constraints worth knowing before you improvise</h3>
     <ul>
+      <li><strong>Register the bytes, not a URL.</strong> Only a schema canopy holds is acted on, which is what carrying a digest says. An artifact registered as a download URL belongs to no group, is offered to every server in the fleet, and is passed over. Several already exist for released versions and are ignored by design.</li>
+      <li>The bytes are checked against the digest canopy recorded. Register the file you are going to compare against, and do not edit it afterwards.</li>
       <li>Register with <code>application/sql</code>, <code>text/plain</code> or <code>application/octet-stream</code>. Canopy serves back whatever content type the registration named, and the server refuses anything else rather than running it as SQL.</li>
       <li>32MB ceiling on both sides. An artifact over it is refused at registration.</li>
-      <li><strong>A fixture must carry no <code>BEGIN</code>, <code>COMMIT</code> or <code>ROLLBACK</code>.</strong> The whole schema goes to the server as one batch, which is what makes a failure partway leave the old schema in place. Transaction control inside the artifact ends that batch early, and a later failure then leaves the server with an empty <code>reporting</code> schema and no stamp.</li>
+      <li><strong>A fixture must carry no <code>BEGIN</code>, <code>COMMIT</code> or <code>ROLLBACK</code>.</strong> The whole schema goes to the server as one batch, which is what makes a failure partway leave the old schema in place. Transaction control inside the artifact ends that batch early. The server refuses such an artifact outright, naming the keyword in its log, so a fixture carrying one will simply never apply.</li>
       <li>The role <code>tamanu_reporting</code> has to exist. Tamanu creates it at startup from 2.60, so a server that has run once has it.</li>
     </ul>
   </div>

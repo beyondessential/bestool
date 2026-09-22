@@ -1,6 +1,7 @@
 use std::{
 	collections::HashMap,
 	io::{IsTerminal as _, Write},
+	sync::Arc,
 	time::Duration,
 };
 
@@ -158,6 +159,9 @@ async fn run_local_sweep(
 
 	let sweep_args_only = args.only.clone();
 	let sweep_args_skip = args.skip.clone();
+	// A check that grades what canopy says about this deployment needs the client
+	// to say anything at all. Healing stays off, so the sweep only ever reads.
+	let canopy = canopy_client().await.map(Arc::new);
 	let sweep_handle = tokio::spawn(async move {
 		// The checks take their connection from a pool the same way the daemon's
 		// sweep does. `None` when there's no database to get a URL from, or when
@@ -185,7 +189,7 @@ async fn run_local_sweep(
 			&sweep_args_skip,
 			None,
 			progress,
-			None,
+			canopy,
 			false,
 			pg_pool,
 		)
@@ -225,24 +229,7 @@ async fn run_local_sweep(
 /// canopy being unreachable. Bounded by an overall timeout for the same reason.
 async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
 	tokio::time::timeout(Duration::from_secs(10), async {
-		let reg = bestool_canopy::registration::load().await.ok().flatten()?;
-		let device_key = reg.device_key.as_deref()?;
-		let base_url = reg
-			.api_url
-			.as_deref()
-			.unwrap_or(bestool_canopy::DEFAULT_CANOPY_URL)
-			.parse()
-			.ok()?;
-		let tailscale_url = bestool_canopy::TAILSCALE_URL.parse().ok()?;
-		let client = bestool_canopy::connect_to(
-			base_url,
-			tailscale_url,
-			Some(device_key),
-			crate::http::client_builder,
-		)
-		.await
-		.ok()??;
-
+		let client = canopy_client().await?;
 		let machine_id = bestool_tamanu::server_info::get_or_create_machine_id()
 			.await
 			.ok()?;
@@ -251,6 +238,30 @@ async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
 	.await
 	.ok()
 	.flatten()
+}
+
+/// A canopy client for this host, where its registration gives one.
+///
+/// Every failure path resolves to `None`, so nothing here fails or stalls a
+/// doctor run on canopy being unreachable.
+async fn canopy_client() -> Option<bestool_canopy::CanopyClient> {
+	let reg = bestool_canopy::registration::load().await.ok().flatten()?;
+	let device_key = reg.device_key.as_deref()?;
+	let base_url = reg
+		.api_url
+		.as_deref()
+		.unwrap_or(bestool_canopy::DEFAULT_CANOPY_URL)
+		.parse()
+		.ok()?;
+	let tailscale_url = bestool_canopy::TAILSCALE_URL.parse().ok()?;
+	bestool_canopy::connect_to(
+		base_url,
+		tailscale_url,
+		Some(device_key),
+		crate::http::client_builder,
+	)
+	.await
+	.ok()?
 }
 
 /// Drive a fresh sweep on the daemon and stream the per-check results back.
