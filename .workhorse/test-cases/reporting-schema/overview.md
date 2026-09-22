@@ -1,11 +1,11 @@
 # Reporting schema (CHK-RSC) — test sweep
 
-bestool#868, `feat/reporting-schema-apply` at `2091b98c`. Spec:
+bestool#868, `feat/reporting-schema-apply` at `1502132f`. Spec:
 `.workhorse/specs/tamanu/reporting-schema.md`.
 
-Suite state: `cargo test -p bestool-alertd --lib` is 482/482 against a populated
-`tamanu-central`, of which 38 are this check's. `cargo test -p bestool-canopy
---all-features` is 62/62. `cargo test -p bestool --lib canopy_contract -- --ignored`
+Suite state: `cargo test -p bestool-alertd --lib` is 485/485 against a populated
+`tamanu-central`, of which 40 are this check's. `cargo test -p bestool-canopy
+--all-features` is 64/64. `cargo test -p bestool --lib canopy_contract -- --ignored`
 is 15/15.
 
 `tamanu-central` has to exist and carry a real Tamanu schema or five unrelated
@@ -34,7 +34,8 @@ What canopy offers:
 
 - [x] Only an artifact of type `reporting-schema` is taken as the schema — CHK-RSC
 - [x] An artifact of that type that canopy does not hold, carrying no digest, is
-      passed over — CHK-RSC
+      passed over, as is one named with a digest the fetch could not check the bytes
+      against — CHK-RSC
 - [x] A 404 is nothing offered; 401, 403 and 5xx are the ask failing — CHK-RSC
 - [x] 5xx and transport errors are canopy being out; 401, 403, 404 and a body that
       would not decode are answers — CHK-RSC
@@ -45,15 +46,18 @@ What canopy offers:
 Fetching and applying:
 
 - [x] A download URL naming any origin but canopy's is refused, a redirect is
-      refused, and one on canopy's origin is followed for its path — CHK-RSC
+      refused, one carrying an authority in its path is refused, and one on canopy's
+      origin is followed for its path and query — CHK-RSC
 - [x] A media type outside the list, a declared length over the ceiling, a body that
       streams past it, and an empty body are each refused — CHK-RSC
 - [x] Bytes that are not the ones canopy named are refused before any reach the
       database — CHK-RSC
-- [x] An artifact carrying `BEGIN`, `COMMIT` or `ROLLBACK` in statement position is
-      refused, and the same words elsewhere are not — CHK-RSC
-- [x] The offered build is stamped onto the schema, and an apostrophe in a digest
-      cannot close the literal — CHK-RSC
+- [x] An artifact carrying `BEGIN`, `COMMIT`, `ROLLBACK`, `START TRANSACTION`, `END`
+      or `ABORT` in statement position is refused, and the same words elsewhere are
+      not — CHK-RSC
+- [x] The offered build is stamped onto the schema, an artifact ending without a
+      terminator is stamped all the same, and an apostrophe in a digest cannot close
+      the literal — CHK-RSC
 - [x] A batch that fails partway leaves the schema that was already there — CHK-RSC
 - [x] An apply leaving the offered stamp heals, against a real Postgres and a canopy
       answering over HTTP — CHK-RSC
@@ -88,7 +92,10 @@ Fetching and applying:
 
 ## Automatable, not yet written
 
-Nothing outstanding. The seven gaps this sweep opened with are all covered above.
+- The apply connection asks for no password. Reaching the prompt needs a URL whose
+  auth fails with no password in it, which the local databases do not give.
+- The heal takes nothing from the checks' pool while it downloads and applies.
+  Structural, and only observable by instrumenting the pool.
 
 ## E2E
 

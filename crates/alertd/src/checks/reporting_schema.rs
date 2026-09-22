@@ -1761,8 +1761,8 @@ mod tests {
 		);
 	}
 
-	/// The sweep's client is shared by every database-backed check, so the apply
-	/// takes one of its own, opened the way every other database open in the
+	/// The checks' pool is shared across a whole sweep, so the apply takes a
+	/// connection of its own, opened the way every other database open in the
 	/// project is, and bounds a batch that cannot get its locks.
 	#[tokio::test]
 	async fn the_apply_opens_a_bounded_connection_of_its_own() {
