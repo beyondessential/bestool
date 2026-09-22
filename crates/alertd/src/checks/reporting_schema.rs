@@ -410,13 +410,17 @@ async fn fetch_offered(
 		bail!("the offered reporting schema is {media_type}, not SQL");
 	}
 
-	if let Some(len) = response.content_length()
+	let declared = response.content_length();
+	if let Some(len) = declared
 		&& len > max_bytes as u64
 	{
 		bail!("the offered reporting schema is larger than {max_bytes} bytes");
 	}
 
-	let mut sql = Vec::new();
+	// Sized from what the answer declares, which the ceiling above has already
+	// bounded, so a schema is read into one allocation rather than regrown
+	// through it. The loop still counts, since a declared length is a claim.
+	let mut sql = Vec::with_capacity(declared.unwrap_or(0) as usize);
 	while let Some(chunk) = response.chunk().await.into_diagnostic()? {
 		if sql.len() + chunk.len() > max_bytes {
 			bail!("the offered reporting schema is larger than {max_bytes} bytes");
