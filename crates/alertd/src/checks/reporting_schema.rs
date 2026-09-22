@@ -269,21 +269,24 @@ struct Offered {
 /// grading against a schema that has just been replaced.
 const OFFER_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// The last answer canopy gave, and when. Keyed by version so an upgrade asks
-/// afresh rather than grading against the schema of the version it left.
-static OFFER: std::sync::Mutex<Option<(Version, std::time::Instant, Option<Offered>)>> =
-	std::sync::Mutex::new(None);
+/// The answers canopy has given, and when. Keyed by version so an upgrade asks
+/// afresh rather than grading against the schema of the version it left, and
+/// one entry per version because a host carrying a central and a facility on
+/// versions of their own would otherwise turn every lookup into a miss.
+static OFFER: std::sync::Mutex<Vec<(Version, std::time::Instant, Option<Offered>)>> =
+	std::sync::Mutex::new(Vec::new());
 
 fn cached_offer(version: &Version) -> Option<Option<Offered>> {
 	let held = OFFER.lock().expect("offer cache poisoned");
-	held.as_ref().and_then(|(cached, taken, offered)| {
+	held.iter().find_map(|(cached, taken, offered)| {
 		(cached == version && taken.elapsed() < OFFER_TTL).then(|| offered.clone())
 	})
 }
 
 fn cache_offer(version: &Version, offered: &Option<Offered>) {
-	*OFFER.lock().expect("offer cache poisoned") =
-		Some((version.clone(), std::time::Instant::now(), offered.clone()));
+	let mut held = OFFER.lock().expect("offer cache poisoned");
+	held.retain(|(cached, taken, _)| cached != version && taken.elapsed() < OFFER_TTL);
+	held.push((version.clone(), std::time::Instant::now(), offered.clone()));
 }
 
 /// Ask canopy which reporting schema this server is offered.
@@ -1705,6 +1708,26 @@ mod tests {
 		let asked = asked.lock().expect("what canopy was asked");
 		assert_eq!(asked.len(), 2);
 		assert!(asked[1].contains("/versions/9.61.1/artifacts"), "{asked:?}");
+	}
+
+	/// A host can carry a central and a facility on versions of their own, and
+	/// the sweep runs the check once per application. One answer held between
+	/// them would make every lookup a miss.
+	#[tokio::test]
+	async fn two_versions_on_one_host_each_hold_their_answer() {
+		const ID: &str = "b1d6f47a-3c85-4e29-9f70-2a6b8d4c1e03";
+
+		let _turn = one_at_a_time().await;
+		let (base, asked) = serve(|base| vec![artifacts_answer(base, ID); 4]);
+		let canopy = canopy_at(&base).await;
+
+		for version in ["9.63.0", "9.64.0", "9.63.0", "9.64.0"] {
+			offered_schema(&canopy, &v(version))
+				.await
+				.expect("canopy answered");
+		}
+
+		assert_eq!(asked.lock().expect("what canopy was asked").len(), 2);
 	}
 
 	/// Canopy records where an artifact it does not hold rests, and one of this
