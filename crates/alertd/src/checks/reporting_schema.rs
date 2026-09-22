@@ -303,7 +303,7 @@ async fn offered_schema(
 	};
 
 	let offered = artifacts.into_iter().find_map(|a| {
-		if !is_schema(&a) {
+		if !is_schema(&a) || !canopy.transport().holds(&a.download_url) {
 			return None;
 		}
 
@@ -324,15 +324,17 @@ async fn offered_schema(
 /// Canopy resolves a version's artifacts before answering, keeping the most
 /// specific of a type, so the schema in the answer is the one to grade against.
 ///
-/// A digest is what says canopy holds the bytes rather than naming somewhere
-/// else to fetch them from. Artifacts of this type published against a version
-/// range, pointing at a release bucket, are offered to every machine in the
-/// fleet: a schema this check is willing to run against a server's database is
-/// one canopy built for that server's group and can vouch for.
+/// A schema this check is willing to run against a server's database is one
+/// canopy built for that server's group and can vouch for, which is what it
+/// holding the bytes says. An artifact canopy records a location for rests
+/// wherever its registration named, belongs to no group, and is offered to
+/// every machine in the fleet; a digest may be registered alongside either, so
+/// what is checked here is the offer naming canopy itself, not that it carries
+/// one. Whether the offer is canopy's own is the transport's to say.
 ///
-/// One the fetch can check the bytes against, at that: an offer whose digest
-/// this check could never verify would grade the server as behind and then
-/// refuse its own bytes on every attempt.
+/// A digest the fetch can check the bytes against, at that: an offer this check
+/// could never verify would grade the server as behind and then refuse its own
+/// bytes on every attempt.
 fn is_schema(artifact: &bestool_canopy::schema::Artifact) -> bool {
 	artifact.artifact_type == ARTIFACT_TYPE && artifact.digest.as_deref().is_some_and(is_digest)
 }
@@ -1657,6 +1659,39 @@ mod tests {
 		let asked = asked.lock().expect("what canopy was asked");
 		assert_eq!(asked.len(), 2);
 		assert!(asked[1].contains("/versions/9.61.1/artifacts"), "{asked:?}");
+	}
+
+	/// Canopy records where an artifact it does not hold rests, and one of this
+	/// type belongs to no group and is offered to every machine in the fleet. A
+	/// digest can be registered with either, so what says a schema is the
+	/// group's is canopy serving the bytes itself. Taking one up would grade
+	/// every server behind and then refuse the bytes on every attempt.
+	#[tokio::test]
+	async fn a_schema_resting_elsewhere_is_not_offered() {
+		const ID: &str = "3f1c8a25-6b4d-4e79-9a02-5d8c7e1b3f46";
+
+		let _turn = one_at_a_time().await;
+		let (base, _asked) = serve(|_| {
+			vec![answer(
+				"application/json",
+				&serde_json::json!([{
+					"artifact_type": ARTIFACT_TYPE,
+					"download_url": format!("https://releases.example/{ID}.sql"),
+					"digest": "sha256-LCTbqpIiSOs=",
+					"id": ID,
+					"platform": "any",
+				}])
+				.to_string(),
+			)]
+		});
+		let canopy = canopy_at(&base).await;
+
+		assert!(
+			offered_schema(&canopy, &v("9.62.0"))
+				.await
+				.expect("canopy answered")
+				.is_none()
+		);
 	}
 
 	/// A Subresource Integrity digest of some bytes, as canopy names them.

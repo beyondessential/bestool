@@ -326,6 +326,21 @@ impl ReqwestTransport {
 	/// credential is the transport's to decide, and over tailscale that is not
 	/// canopy's own origin.
 	pub async fn download_artifact(&self, offered_url: &str) -> Result<reqwest::Response> {
+		let path = self.own_path(offered_url)?;
+		self.raw_get(&format!("/public{path}"), &path).await
+	}
+
+	/// Whether an offered URL is one canopy serves itself.
+	///
+	/// Canopy records where an artifact it does not hold rests, and hands that
+	/// location back as the offer. This transport fetches only what canopy
+	/// holds, so an offer resting elsewhere is one it will not take up.
+	pub fn holds(&self, offered_url: &str) -> bool {
+		self.own_path(offered_url).is_ok()
+	}
+
+	/// The path and query to ask canopy for, from a URL canopy named.
+	fn own_path(&self, offered_url: &str) -> Result<String> {
 		let url = reqwest::Url::parse(offered_url)
 			.into_diagnostic()
 			.wrap_err("parsing the offered download URL")?;
@@ -340,11 +355,10 @@ impl ReqwestTransport {
 			bail!("the offered download URL {url} carries an authority in its path");
 		}
 
-		let path = match url.query() {
+		Ok(match url.query() {
 			Some(query) => format!("{}?{query}", url.path()),
 			None => url.path().to_owned(),
-		};
-		self.raw_get(&format!("/public{path}"), &path).await
+		})
 	}
 
 	/// GET a path, routed via tailscale when available, returning the raw response.
@@ -846,6 +860,26 @@ mod tests {
 			.await
 			.expect_err("an offer off canopy is not followed");
 		assert!(err.to_string().contains("does not name canopy"), "{err}");
+	}
+
+	/// Canopy records where an artifact it does not hold rests and hands that
+	/// location back as the offer, so what says canopy will serve the bytes
+	/// itself is the offer naming canopy.
+	#[test]
+	fn an_offer_resting_elsewhere_is_not_one_canopy_holds() {
+		let transport = ReqwestTransport::mtls_for_tests(DEFAULT_CANOPY_URL);
+
+		assert!(transport.holds(&format!(
+			"{DEFAULT_CANOPY_URL}/versions/2.60.0/artifacts/a/download"
+		)));
+
+		for offered in [
+			"https://releases.example/2.60.0/schema.sql",
+			&format!("{DEFAULT_CANOPY_URL}//releases.example/schema.sql"),
+			"not a URL",
+		] {
+			assert!(!transport.holds(offered), "{offered}");
+		}
 	}
 
 	/// A path opening with `//` is an authority of its own, so it names canopy
