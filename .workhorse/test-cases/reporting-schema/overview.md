@@ -1,6 +1,6 @@
 # Reporting schema (CHK-RSC) — test sweep
 
-bestool#868, `feat/reporting-schema-apply` at `00950c07`. Spec:
+bestool#868, `feat/reporting-schema-apply` at `2091b98c`. Spec:
 `.workhorse/specs/tamanu/reporting-schema.md`.
 
 Suite state: `cargo test -p bestool-alertd --lib` is 482/482 against a populated
@@ -117,13 +117,17 @@ rather than a different assertion.
 - The apply, the facility apply and the lock-contention behaviour were exercised by
   hand against throwaway copies of the local central and facility databases using the
   real `v2.60.2` standard build, before the tests existed. All three are now covered.
-- **TEST_1 is blocked on enrollment, not on effort.** `bestool canopy register` takes
-  an encrypted enrollment ticket whose `api_url` must be `https`, and the client's
-  base URL comes from the registration with no override, so a local plain-HTTP canopy
-  cannot be enrolled against. Two ways through: stand up canopy locally behind TLS
-  with a certificate the host trusts and mint a ticket, or register a machine against
-  production canopy in a test group. The second mutates production and is a human
-  decision.
+- **Enrollment cannot be faked locally.** `bestool canopy register` takes an encrypted
+  ticket whose `api_url` must be `https`, and the client's base URL comes from the
+  registration with no override, so a plain-HTTP local canopy cannot be enrolled
+  against. That is why the grading half was run on already-enrolled demo servers
+  instead.
+- **TEST_1 is staged up to the apply.** Both demo servers carry a branch build at
+  `/tmp/bestool-rsc`, the central's schema is captured, and the grading half is proven.
+  What remains is registering a held artifact for exactly 2.54.14 against group
+  `0bc62657` with an admin credential, then running the branch build as the daemon
+  briefly so heal fires. The apply replaces the central's 241 views with the 2.54.x
+  build's 167, which is why it stops here for a human.
 
 ## Smoke run, 2026-09-22
 
@@ -133,9 +137,12 @@ dump with `TAMANU_DATABASE_URL` set. Re-run on the merged branch at bestool 2.2.
 
 - SMOKE_1 pass. The check is registered and returns a result, for both the central and
   the facility subject.
-- SMOKE_2 not runnable. The VM has no canopy registration, so the check skips
-  `canopy unreachable` rather than `none offered for this version`. The offline path is
-  exercised; the reachable-canopy branch waits on the same enrollment as TEST_1.
+- SMOKE_2 pass, against production canopy on a registered demo server rather than in
+  the VM. `none offered for this version` on a box running 2.54.14, for which canopy
+  does hold a `reporting-schema` artifact: the unscoped range one pointing at the
+  release bucket. That answer is only reachable because a schema canopy holds nothing
+  for is passed over, so it demonstrates the filter end to end on production data. In
+  the VM, with no registration, only the `canopy unreachable` path runs.
 - SMOKE_3 pass. Fixture A applies on Linux and Postgres 17, the stamp reads back, and
   the check publishes `reportingSchemaVersion` of `2.60.0` under the application's
   `detail`, carrying the version without the digest. A comment of `built by hand`
@@ -143,6 +150,26 @@ dump with `TAMANU_DATABASE_URL` set. Re-run on the merged branch at bestool 2.2.
 
 `--check reporting_schema` is refused with `needs the subject it reports for`, naming
 both subjects. A URL-only deployment resolves as `tamanuServerKind: central`.
+
+## Findings from the demo-server run, 2026-09-22
+
+Read-only baseline on `inventory-test-central` and `inventory-test-facility-a`, both
+Ubuntu 24.04 aarch64 on Tamanu 2.54.14, alertd live and enrolled.
+
+- **A one-shot `doctor` could not grade this check at all.** The local sweep passed no
+  canopy client, so it always skipped with `canopy unreachable`, on a correctly
+  registered server with canopy reachable. Only the daemon graded it, which meant the
+  only way to see a grade was to run a daemon and accept that it would also heal.
+  Fixed in `2091b98c`: the client is built once and shared with the severities fetch,
+  healing still off, so a local sweep only ever reads.
+- **The reporting role on 2.54 is `reporting`, not `tamanu_reporting`.** Tamanu owns
+  the newer roles from 2.60. A fixture granting to `tamanu_reporting` fails on a 2.54
+  box, and the real 2.54.x build grants to `reporting`.
+- **The central already carries a 241-view `reporting` schema with no comment**, so it
+  grades unstamped. The facility carries the schema with no views. The real 2.54.x
+  build produces 167 views, so applying it is a real change rather than a no-op. The
+  central's current definition is captured at `/tmp/reporting-before.sql` on the box
+  and locally in this session's scratchpad.
 
 ## QA document
 

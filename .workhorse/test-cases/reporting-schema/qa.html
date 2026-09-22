@@ -83,7 +83,7 @@ a{color:var(--accent)}
         <thead><tr><th>Flow</th><th>State</th><th>What was seen</th></tr></thead>
         <tbody>
           <tr><td><code>SMOKE_1</code></td><td>Pass</td><td>The check is registered and returns a result, for the central and the facility subject both.</td></tr>
-          <tr><td><code>SMOKE_2</code></td><td>Open</td><td>Only the offline path ran, skipping <code>canopy unreachable</code>. The <code>none offered</code> branch needs a server canopy can answer.</td></tr>
+          <tr><td><code>SMOKE_2</code></td><td>Pass</td><td>On a registered server that canopy answers: <code>none offered for this version</code>, correctly passing over an artifact of the right type that canopy holds no bytes for.</td></tr>
           <tr><td><code>SMOKE_3</code></td><td>Pass</td><td>Fixture A applied, the stamp read back, and <code>reportingSchemaVersion</code> published as <code>2.60.0</code>, version only. A comment of <code>built by hand</code> published no fact.</td></tr>
           <tr><td><code>TEST_1</code></td><td>Open</td><td>Needs a server enrolled against a canopy. This is the flow worth your time.</td></tr>
           <tr><td><code>TEST_2</code></td><td>Open</td><td>The mechanism is covered by tests against a real Postgres, including the lock timeout leaving the old schema intact. What is missing is real volume.</td></tr>
@@ -159,6 +159,7 @@ Get-Content -Wait (Get-ChildItem 'C:\ProgramData\bestool\logs' |
       <p class="label">Watch for</p>
       <ul>
         <li>The bare name may be refused with <code>needs the subject it reports for</code>, listing the subjects. That is the CLI asking you to qualify it, so use whichever subject it names for this server.</li>
+        <li>On a 2.54 or 2.57 server the role is <code>reporting</code>, not <code>tamanu_reporting</code>. Tamanu owns the newer roles from 2.60, so a fixture written for one line fails on the other at the grant. Read the roles off the server before picking a fixture.</li>
       </ul>
     </div>
   </div>

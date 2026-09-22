@@ -118,6 +118,26 @@ pub fn spawn_if_due<Cx: Send + 'static>(key: String, action: HealAction<Cx>, ctx
 	});
 }
 
+/// Wait for every attempt in flight to finish, or until `bound` elapses.
+///
+/// Attempts run detached, so a one-shot sweep would otherwise exit while a
+/// repair it asked for was still running. The daemon outlives its own attempts
+/// and needs none of this.
+pub async fn settle(bound: Duration) {
+	let until = Instant::now() + bound;
+	while Instant::now() < until && any_in_flight() {
+		tokio::time::sleep(Duration::from_millis(250)).await;
+	}
+}
+
+fn any_in_flight() -> bool {
+	registry()
+		.lock()
+		.expect("heal registry poisoned")
+		.values()
+		.any(|attempt| attempt.in_flight)
+}
+
 /// Reserve an attempt slot for `name`, returning whether the caller may run it.
 /// Returns false when an attempt is in flight or the backoff has not elapsed.
 fn try_begin(name: &str) -> bool {
@@ -153,6 +173,33 @@ fn finish(name: &str, outcome: HealOutcome, min_interval: Duration) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// A one-shot sweep waits for the repair it asked for, and returns straight
+	/// away when it asked for none.
+	#[tokio::test]
+	async fn settle_waits_for_an_attempt_in_flight() {
+		let name = "test_heal_settle";
+		assert!(try_begin(name));
+
+		let waiting = tokio::spawn(settle(Duration::from_secs(30)));
+		tokio::time::sleep(Duration::from_millis(400)).await;
+		assert!(
+			!waiting.is_finished(),
+			"settle returned while one was running"
+		);
+
+		finish(name, HealOutcome::Healed, DEFAULT_MIN_INTERVAL);
+		waiting
+			.await
+			.expect("settle returns once nothing is running");
+
+		let idle = std::time::Instant::now();
+		settle(Duration::from_secs(30)).await;
+		assert!(
+			idle.elapsed() < Duration::from_secs(1),
+			"settle waited on nothing"
+		);
+	}
 
 	#[test]
 	fn backoff_grows_and_caps() {

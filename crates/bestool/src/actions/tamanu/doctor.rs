@@ -71,7 +71,20 @@ pub struct DoctorArgs {
 	/// Combined with `--fresh` this is a no-op (a local sweep is always fresh).
 	#[arg(long)]
 	pub no_daemon: bool,
+
+	/// Run the self-heal action of every failing check in the selection.
+	///
+	/// A heal changes the system: it restarts services and, for the reporting
+	/// schema, replaces it. Narrow the run with `--check` to the one repair
+	/// intended. Implies `--no-daemon`, since a sweep the daemon computes is
+	/// side-effect free by design and the daemon heals on its own schedule.
+	#[arg(long)]
+	pub heal: bool,
 }
+
+/// Longest a `--heal` run waits for the repairs it asked for. The reporting
+/// schema's own apply is bounded well inside this.
+const HEAL_SETTLE_BOUND: Duration = Duration::from_secs(15 * 60);
 
 /// Where the displayed sweep came from.
 pub enum SweepSource {
@@ -102,7 +115,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 
 	let live_tty = !args.json && ansi && std::io::stdout().is_terminal();
 
-	let (sweep, source, interrupted) = if args.no_daemon {
+	let (sweep, source, interrupted) = if args.no_daemon || args.heal {
 		let outcome = run_local_sweep(targets.clone(), http_client.clone(), &args, live_tty).await?;
 		(outcome.sweep, SweepSource::Local, outcome.interrupted)
 	} else if args.fresh {
@@ -160,8 +173,9 @@ async fn run_local_sweep(
 	let sweep_args_only = args.only.clone();
 	let sweep_args_skip = args.skip.clone();
 	// A check that grades what canopy says about this deployment needs the client
-	// to say anything at all. Healing stays off, so the sweep only ever reads.
+	// to say anything at all, and its heal needs it to fetch what it applies.
 	let canopy = canopy_client().await.map(Arc::new);
+	let enable_heal = args.heal;
 	let sweep_handle = tokio::spawn(async move {
 		// The checks take their connection from a pool the same way the daemon's
 		// sweep does. `None` when there's no database to get a URL from, or when
@@ -190,7 +204,7 @@ async fn run_local_sweep(
 			None,
 			progress,
 			canopy,
-			false,
+			enable_heal,
 			pg_pool,
 		)
 		.await
@@ -214,6 +228,9 @@ async fn run_local_sweep(
 	};
 
 	let mut sweep = sweep_handle.await.into_diagnostic()??;
+	if enable_heal {
+		bestool_alertd::heal::settle(HEAL_SETTLE_BOUND).await;
+	}
 	// Apply the mapping once it's back (the checks may well have finished first).
 	if let Some(severities) = severities_handle.await.ok().flatten() {
 		sweep.apply_severities(&SplitSeverities::flat(severities));
