@@ -720,10 +720,11 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 ///
 /// The terminator on the artifact's last statement is optional, so one goes on
 /// where it ends without: the stamp would otherwise run on into that statement
-/// and the whole batch fail to parse.
+/// and the whole batch fail to parse. On a line of its own, since SQL ending in
+/// a line comment would swallow one written on the end of it.
 fn stamped(mut sql: String, offered: &Offered) -> String {
 	if !sql.trim_end().ends_with(';') {
-		sql.push(';');
+		sql.push_str("\n;");
 	}
 
 	sql.push_str("\nCOMMENT ON SCHEMA reporting IS '");
@@ -1354,20 +1355,28 @@ mod tests {
 	/// whole batch fail to parse.
 	#[test]
 	fn a_schema_ending_without_a_terminator_is_still_stamped() {
-		let sql = stamped(
-			"CREATE SCHEMA reporting".to_owned(),
-			&built("2.60.0", "sha256-LCTbqpIiSOs="),
-		);
+		let stamp = |sql: &str| {
+			stamped(
+				sql.to_owned(),
+				&built(
+					"2.60.0",
+					"sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
+				),
+			)
+		};
+
+		let sql = stamp("CREATE SCHEMA reporting");
 		assert!(
-			sql.starts_with("CREATE SCHEMA reporting;\nCOMMENT"),
+			sql.starts_with("CREATE SCHEMA reporting\n;\nCOMMENT"),
 			"{sql}"
 		);
 
-		let sql = stamped(
-			"CREATE SCHEMA reporting;\n".to_owned(),
-			&built("2.60.0", "sha256-LCTbqpIiSOs="),
-		);
-		assert!(!sql.contains(";;"), "{sql}");
+		// A terminator written on the end of a line comment is inside it.
+		let sql = stamp("CREATE VIEW v AS SELECT 1 -- the last one");
+		assert!(sql.contains("-- the last one\n;\nCOMMENT"), "{sql}");
+
+		let sql = stamp("CREATE SCHEMA reporting;\n");
+		assert!(!sql.contains(";\n;"), "{sql}");
 	}
 
 	/// The digest is canopy's own string and rides into an SQL literal in a
