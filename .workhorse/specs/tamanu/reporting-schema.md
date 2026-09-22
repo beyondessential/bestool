@@ -32,6 +32,7 @@ Canopy is asked what it offers for the version this server runs, over the authen
 Canopy resolves which artifact a version is offered, so the schema in its answer is the one graded against.
 
 Only a schema whose bytes Canopy holds is taken as an offer, which is what its carrying a digest says.
+The digest has to be one bestool can check the bytes against, a sha256 SRI: an offer named with any other algorithm would grade the server as behind and then be refused on every apply.
 A schema artifact naming somewhere else to fetch from belongs to no group, is offered to every server in the fleet, and is passed over.
 The digest also names which build of a version a schema is: a group gets a new build of the version it already runs whenever its reports are fixed, so a server on an earlier build of the offered version is graded as needing the newer one.
 

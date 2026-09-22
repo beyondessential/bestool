@@ -182,10 +182,12 @@ fn stamp_of(comment: String) -> Option<(Version, Option<String>)> {
 /// Whether `text` is shaped like the Subresource Integrity digest canopy
 /// offers, e.g. `sha256-LCTbqp…`. Only the shape: what it digests is canopy's
 /// to say, and this check only ever compares one of these with another.
+///
+/// sha256 alone. SRI names other algorithms, and an offer carrying one of those
+/// is one the fetch could not check the bytes against, so it is never taken up.
 fn is_digest(text: &str) -> bool {
-	text.split_once('-').is_some_and(|(algorithm, encoded)| {
-		matches!(algorithm, "sha256" | "sha384" | "sha512")
-			&& !encoded.is_empty()
+	text.strip_prefix("sha256-").is_some_and(|encoded| {
+		!encoded.is_empty()
 			&& encoded
 				.bytes()
 				.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
@@ -327,8 +329,12 @@ async fn offered_schema(
 /// range, pointing at a release bucket, are offered to every machine in the
 /// fleet: a schema this check is willing to run against a server's database is
 /// one canopy built for that server's group and can vouch for.
+///
+/// One the fetch can check the bytes against, at that: an offer whose digest
+/// this check could never verify would grade the server as behind and then
+/// refuse its own bytes on every attempt.
 fn is_schema(artifact: &bestool_canopy::schema::Artifact) -> bool {
-	artifact.artifact_type == ARTIFACT_TYPE && artifact.digest.is_some()
+	artifact.artifact_type == ARTIFACT_TYPE && artifact.digest.as_deref().is_some_and(is_digest)
 }
 
 /// Whether canopy's answer means it offers nothing for this version, as
@@ -954,6 +960,24 @@ mod tests {
 	#[test]
 	fn another_artifact_type_is_not_a_schema() {
 		assert!(!is_schema(&artifact("installer")));
+	}
+
+	/// The fetch checks the bytes against a sha256 SRI, so an offer named with
+	/// any other algorithm is one it could never take up: grading against it
+	/// would fail the server and then refuse its own bytes on every attempt.
+	#[test]
+	fn a_schema_named_with_a_digest_this_check_cannot_verify_is_not_offered() {
+		for digest in [
+			"sha384-LCTbqpIiSOs=",
+			"sha512-LCTbqpIiSOs=",
+			"LCTbqpIiSOs=",
+			"sha256-",
+		] {
+			assert!(
+				!is_schema(&held_artifact("reporting-schema", Some(digest))),
+				"{digest:?}"
+			);
+		}
 	}
 
 	/// A version canopy has not published has no artifacts of any kind, which
