@@ -322,9 +322,9 @@ impl ReqwestTransport {
 	///
 	/// The device credential rides this request and the answer is trusted, so an
 	/// offer naming any origin but canopy's is refused rather than followed.
-	/// Only the path is taken from it: which endpoint holds the credential is
-	/// the transport's to decide, and over tailscale that is not canopy's own
-	/// origin.
+	/// Only the path and query are taken from it: which endpoint holds the
+	/// credential is the transport's to decide, and over tailscale that is not
+	/// canopy's own origin.
 	pub async fn download_artifact(&self, offered_url: &str) -> Result<reqwest::Response> {
 		let url = reqwest::Url::parse(offered_url)
 			.into_diagnostic()
@@ -333,8 +333,18 @@ impl ReqwestTransport {
 			bail!("the offered download URL {url} does not name canopy");
 		}
 
-		let path = url.path();
-		self.raw_get(&format!("/public{path}"), path).await
+		// A path of its own opening with `//` is an authority: resolved against
+		// the transport's base it names another host entirely, and the origin
+		// check above sees only canopy's.
+		if url.path().starts_with("//") {
+			bail!("the offered download URL {url} carries an authority in its path");
+		}
+
+		let path = match url.query() {
+			Some(query) => format!("{}?{query}", url.path()),
+			None => url.path().to_owned(),
+		};
+		self.raw_get(&format!("/public{path}"), &path).await
 	}
 
 	/// GET a path, routed via tailscale when available, returning the raw response.
@@ -838,6 +848,21 @@ mod tests {
 		assert!(err.to_string().contains("does not name canopy"), "{err}");
 	}
 
+	/// A path opening with `//` is an authority of its own, so it names canopy
+	/// to the origin check and another host once resolved against the base.
+	#[tokio::test]
+	async fn a_download_url_with_an_authority_in_its_path_is_refused() {
+		let transport = ReqwestTransport::mtls_for_tests(DEFAULT_CANOPY_URL);
+		let err = transport
+			.download_artifact(&format!("{DEFAULT_CANOPY_URL}//evil.example/x.sql"))
+			.await
+			.expect_err("an authority smuggled into the path is not followed");
+		assert!(
+			err.to_string().contains("carries an authority in its path"),
+			"{err}"
+		);
+	}
+
 	/// Canopy names its own origin in the offer, but which endpoint holds the
 	/// credential is the transport's to decide, so the offer is followed for
 	/// its path.
@@ -864,6 +889,30 @@ mod tests {
 			response.url().path(),
 			"/public/versions/2.60.0/artifacts/a/download"
 		);
+	}
+
+	/// Canopy addresses the artifact, and a parameter it puts on the offer is
+	/// part of that address: dropped, the fetch asks for something else.
+	#[tokio::test]
+	async fn a_download_url_keeps_the_query_canopy_named() {
+		let (canopy, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
+		let transport = ReqwestTransport {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: canopy.parse().unwrap(),
+			device_key: None,
+			make_builder: test_factory(),
+			state: RwLock::new(State::Tailscale(
+				build_probe_client("127.0.0.1", &[], &test_factory()).expect("a canopy client"),
+			)),
+		};
+
+		let response = transport
+			.download_artifact(&format!(
+				"{DEFAULT_CANOPY_URL}/versions/2.60.0/artifacts/a/download?platform=linux"
+			))
+			.await
+			.expect("canopy's own offer is followed");
+		assert_eq!(response.url().query(), Some("platform=linux"));
 	}
 
 	/// A raw GET's body reaches alertd as privileged DDL and the device
