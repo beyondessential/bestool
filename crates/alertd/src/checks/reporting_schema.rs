@@ -766,16 +766,20 @@ fn note_unstamped(artifact: &str) {
 
 /// A connection of the apply's own, with ceilings on it.
 ///
-/// The sweep's client is shared by every database-backed check and
-/// tokio-postgres serialises what is queued on a connection, so a whole-schema
-/// DDL batch on it holds up every other check for as long as the apply runs.
-/// Opened through `connect_one` like every other database open in the project,
-/// which is what selects TLS for a URL that asks for it. The timeouts bound a
-/// batch that cannot get its locks.
+/// The checks' pool is a handful of connections shared across a whole sweep,
+/// and an apply runs for as long as a whole-schema DDL batch takes, so holding
+/// one of them for it would leave other checks waiting on the pool. Opened
+/// through the pool's own path like every other database open in the project,
+/// which is what selects TLS for a URL that asks for it, and unattended: this
+/// runs in a daemon, where a prompt for a missing password has no terminal to
+/// go to. The timeouts bound a batch that cannot get its locks.
 async fn apply_connection(database_url: &str) -> Result<tokio_postgres::Client, miette::Report> {
-	let client =
-		bestool_postgres::pool::connect_one(database_url, "bestool-alertd-reporting-schema")
-			.await?;
+	let client = bestool_postgres::pool::connect_one_with(
+		database_url,
+		"bestool-alertd-reporting-schema",
+		bestool_postgres::pool::Prompt::Never,
+	)
+	.await?;
 	client
 		.batch_execute("SET statement_timeout = '5min'; SET lock_timeout = '30s'")
 		.await
