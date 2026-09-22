@@ -2192,6 +2192,9 @@ Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING, 130 on interrupt.
 * `--no-daemon` — Skip the alertd integration entirely and always compute locally.
 
    Combined with `--fresh` this is a no-op (a local sweep is always fresh).
+* `--heal` — Run the self-heal action of every failing check in the selection.
+
+   A heal changes the system: it restarts services and, for the reporting schema, replaces it. Narrow the run with `--check` to the one repair intended. Implies `--no-daemon`, since a sweep the daemon computes is side-effect free by design and the daemon heals on its own schedule.
 
 
 
