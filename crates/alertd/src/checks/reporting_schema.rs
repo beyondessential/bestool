@@ -9,8 +9,8 @@
 //! This check reads that stamp, compares it against the version canopy offers
 //! for the version the server runs, and reports the stamp as a top-level status
 //! fact so the fleet view can show which schema each server is on. Applying the
-//! offered schema is the check's heal action, so it happens only in the daemon
-//! and only when the drift has graded as a failure.
+//! offered schema is the check's heal action, so it happens only once the drift
+//! has graded as a failure.
 
 use std::sync::Arc;
 
@@ -605,8 +605,9 @@ fn past_dollar_quote(bytes: &[u8], at: usize) -> usize {
 /// Apply the schema canopy offers.
 ///
 /// Applying is the one thing on this host that writes to Tamanu's database, so
-/// it lives here rather than in the check: heal runs only in the daemon, only
-/// when the check graded a failure, and behind the shared backoff.
+/// it lives here rather than in the check: heal runs only when the check graded
+/// a failure, and behind the shared backoff, whether the daemon reaches it on
+/// its own schedule or an operator asks a local sweep for it.
 pub async fn heal(ctx: TamanuCx) -> HealOutcome {
 	// A heal that never returns holds the attempt slot for the life of the
 	// process, so self-heal stops for this check with nothing to say so.

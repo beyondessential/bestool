@@ -45,7 +45,7 @@ It skips where the database is unreachable. A host with no Tamanu carries no Tam
 
 ## Applying it
 
-Applying the offered schema is the check's self-heal action, so it runs only in the long-running daemon and only while the check is failing.
+Applying the offered schema is the check's self-heal action, so it runs only while the check is failing, and behind the same backoff every heal is: on the daemon's own schedule, or when an operator asks a local sweep to heal.
 
 The schema's own SQL drops the schema and recreates it, and is applied as one batch, so a statement that fails partway leaves the server the schema it already had.
 That holds only while the artifact carries no transaction control of its own: a `COMMIT` part-way through ends the batch's transaction, and a later failure then leaves the server with neither the schema it had nor the one offered.
