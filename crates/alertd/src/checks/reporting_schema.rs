@@ -179,19 +179,26 @@ fn stamp_of(comment: String) -> Option<(Version, Option<String>)> {
 	Some((Version::parse(version).ok()?, build))
 }
 
-/// Whether `text` is shaped like the Subresource Integrity digest canopy
-/// offers, e.g. `sha256-LCTbqp…`. Only the shape: what it digests is canopy's
-/// to say, and this check only ever compares one of these with another.
+/// The hash a Subresource Integrity digest names, e.g. `sha256-LCTbqp…`.
 ///
-/// sha256 alone. SRI names other algorithms, and an offer carrying one of those
-/// is one the fetch could not check the bytes against, so it is never taken up.
+/// sha256 alone, and only one the bytes can actually be checked against: SRI
+/// names other algorithms and other encodings, and an offer carrying one of
+/// those would grade the server as behind and then have its own bytes refused
+/// on every attempt.
+fn sha256_of(digest: &str) -> Option<Vec<u8>> {
+	let encoded = digest.trim().strip_prefix("sha256-")?;
+	let named = BASE64.decode(encoded).ok()?;
+	(named.len() == SHA256_BYTES).then_some(named)
+}
+
+/// Length of the hash a sha256 digest names.
+const SHA256_BYTES: usize = 32;
+
+/// Whether `text` names a hash this check could compare bytes against. What it
+/// digests is canopy's to say, and this check only ever compares one of these
+/// with another.
 fn is_digest(text: &str) -> bool {
-	text.strip_prefix("sha256-").is_some_and(|encoded| {
-		!encoded.is_empty()
-			&& encoded
-				.bytes()
-				.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
-	})
+	sha256_of(text).is_some()
 }
 
 /// What the stamp on the server says against what canopy offers.
@@ -430,11 +437,7 @@ async fn fetch_offered(
 /// and the apply stamps that digest on the schema as the build the server is on,
 /// so bytes that hash to anything else are not the schema offered.
 fn matches_digest(bytes: &[u8], digest: &str) -> bool {
-	digest
-		.trim()
-		.strip_prefix("sha256-")
-		.and_then(|encoded| BASE64.decode(encoded).ok())
-		.is_some_and(|named| named == Sha256::digest(bytes).as_slice())
+	sha256_of(digest).is_some_and(|named| named == Sha256::digest(bytes).as_slice())
 }
 
 /// What a reporting schema may be served as. Canopy hands back whatever media
@@ -934,7 +937,10 @@ mod tests {
 	}
 
 	fn artifact(kind: &str) -> bestool_canopy::schema::Artifact {
-		held_artifact(kind, Some("sha256-LCTbqpIiSOs="))
+		held_artifact(
+			kind,
+			Some("sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA="),
+		)
 	}
 
 	fn held_artifact(kind: &str, digest: Option<&str>) -> bestool_canopy::schema::Artifact {
@@ -977,10 +983,14 @@ mod tests {
 	#[test]
 	fn a_schema_named_with_a_digest_this_check_cannot_verify_is_not_offered() {
 		for digest in [
-			"sha384-LCTbqpIiSOs=",
-			"sha512-LCTbqpIiSOs=",
-			"LCTbqpIiSOs=",
+			"sha384-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
+			"sha512-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
+			"T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
 			"sha256-",
+			// Decodable and the wrong length, and the right length unpadded:
+			// neither is one the fetch would ever match bytes against.
+			"sha256-T7y23aRLQVux3IBQ",
+			"sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA",
 		] {
 			assert!(
 				!is_schema(&held_artifact("reporting-schema", Some(digest))),
@@ -1020,7 +1030,7 @@ mod tests {
 			version: v(version),
 			id: "cccccccc-cccc-cccc-cccc-cccccccccccc".to_string(),
 			download_url: "https://canopy.example/artifacts/schema.sql".to_string(),
-			digest: "sha256-LCTbqpIiSOs=".to_string(),
+			digest: "sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=".to_string(),
 		}
 	}
 
@@ -1138,8 +1148,11 @@ mod tests {
 	#[test]
 	fn only_a_digest_shaped_build_is_carried() {
 		assert_eq!(
-			stamp_of("2.60.0 sha256-LCTbqpIiSOs=".to_owned()),
-			Some((v("2.60.0"), Some("sha256-LCTbqpIiSOs=".to_owned())))
+			stamp_of("2.60.0 sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=".to_owned()),
+			Some((
+				v("2.60.0"),
+				Some("sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=".to_owned())
+			))
 		);
 		assert_eq!(stamp_of("2.60.0 built-by-hand".to_owned()), None);
 		assert_eq!(stamp_of("2.60.0 sha256-".to_owned()), None);
@@ -1290,8 +1303,14 @@ mod tests {
 	#[test]
 	fn the_offered_build_passes() {
 		let check = grade(
-			&applied_build("2.60.0", "sha256-LCTbqpIiSOs="),
-			&built("2.60.0", "sha256-LCTbqpIiSOs="),
+			&applied_build(
+				"2.60.0",
+				"sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
+			),
+			&built(
+				"2.60.0",
+				"sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
+			),
 		);
 		assert!(
 			matches!(check.status, CheckStatus::Pass),
@@ -1306,7 +1325,10 @@ mod tests {
 	#[test]
 	fn an_earlier_build_of_the_offered_version_fails() {
 		let check = grade(
-			&applied_build("2.60.0", "sha256-LCTbqpIiSOs="),
+			&applied_build(
+				"2.60.0",
+				"sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
+			),
 			&built(
 				"2.60.0",
 				"sha256-ujw9dykwmiegt+dMTirjNmjYuieQjjSl2U/Y+f9Mn3A=",
@@ -1325,7 +1347,13 @@ mod tests {
 	/// one cannot be shown to have the build canopy offers.
 	#[test]
 	fn a_stamp_naming_no_build_fails_against_an_offered_one() {
-		let check = grade(&applied("2.60.0"), &built("2.60.0", "sha256-LCTbqpIiSOs="));
+		let check = grade(
+			&applied("2.60.0"),
+			&built(
+				"2.60.0",
+				"sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
+			),
+		);
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
 		assert!(
 			check.summary.contains("a newer build offered"),
@@ -1341,11 +1369,16 @@ mod tests {
 	fn the_applied_build_is_stamped_on_the_schema() {
 		let sql = stamped(
 			"CREATE SCHEMA reporting;".to_owned(),
-			&built("2.60.0", "sha256-LCTbqpIiSOs="),
+			&built(
+				"2.60.0",
+				"sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
+			),
 		);
 		assert!(sql.starts_with("CREATE SCHEMA reporting;"), "{sql}");
 		assert!(
-			sql.contains("COMMENT ON SCHEMA reporting IS '2.60.0 sha256-LCTbqpIiSOs='"),
+			sql.contains(
+				"COMMENT ON SCHEMA reporting IS '2.60.0 sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA='"
+			),
 			"{sql}"
 		);
 	}
@@ -1401,7 +1434,10 @@ mod tests {
 	fn a_rebuild_is_not_held_back_by_the_build_it_replaces() {
 		let failed = Offered {
 			id: "1dd4b8f6-0f57-4a3f-9a2e-5d1c0b7e6a41".to_owned(),
-			..built("2.60.0", "sha256-LCTbqpIiSOs=")
+			..built(
+				"2.60.0",
+				"sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
+			)
 		};
 		let rebuilt = Offered {
 			digest: "sha256-ujw9dykwmiegt+dMTirjNmjYuieQjjSl2U/Y+f9Mn3A=".to_owned(),
@@ -1613,7 +1649,7 @@ mod tests {
 			&serde_json::json!([{
 				"artifact_type": ARTIFACT_TYPE,
 				"download_url": format!("{base}/artifacts/{id}/download"),
-				"digest": "sha256-LCTbqpIiSOs=",
+				"digest": "sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
 				"id": id,
 				"platform": "any",
 			}])
@@ -1687,7 +1723,7 @@ mod tests {
 				&serde_json::json!([{
 					"artifact_type": ARTIFACT_TYPE,
 					"download_url": format!("https://releases.example/{ID}.sql"),
-					"digest": "sha256-LCTbqpIiSOs=",
+					"digest": "sha256-T7y23aRLQVux3IBQsF3Zmki/m85yg2uqo5IeYDaiiKA=",
 					"id": ID,
 					"platform": "any",
 				}])
