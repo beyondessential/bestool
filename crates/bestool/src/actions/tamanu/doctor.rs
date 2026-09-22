@@ -165,16 +165,25 @@ async fn run_local_sweep(
 	validate_check_selection(&args.only, &args.skip)?;
 	let (progress, tui_handle) = setup_progress(live_tty, SweepSource::Local);
 
-	// Fetch canopy's effective-severity ceilings concurrently with the checks.
-	// Soft-fail throughout (see `fetch_check_severities`): the mapping only ever
-	// lowers a verdict, so its absence just leaves the raw sweep.
-	let severities_handle = tokio::spawn(fetch_check_severities());
+	// A check that grades what canopy says about this deployment needs the client
+	// to say anything at all, and its heal needs it to fetch what it applies.
+	// Building one probes the tailnet, so it is bounded: the progress view is
+	// already up, and a tailnet that is not answering must not hold the sweep
+	// behind it for however long the probe takes to give up.
+	let canopy = tokio::time::timeout(CANOPY_CLIENT_TIMEOUT, canopy_client())
+		.await
+		.ok()
+		.flatten()
+		.map(Arc::new);
+
+	// Fetch canopy's effective-severity ceilings concurrently with the checks,
+	// on the client already built rather than one of its own. Soft-fail
+	// throughout (see `fetch_check_severities`): the mapping only ever lowers a
+	// verdict, so its absence just leaves the raw sweep.
+	let severities_handle = tokio::spawn(fetch_check_severities(canopy.clone()));
 
 	let sweep_args_only = args.only.clone();
 	let sweep_args_skip = args.skip.clone();
-	// A check that grades what canopy says about this deployment needs the client
-	// to say anything at all, and its heal needs it to fetch what it applies.
-	let canopy = canopy_client().await.map(Arc::new);
 	let enable_heal = args.heal;
 	let sweep_handle = tokio::spawn(async move {
 		// The checks take their connection from a pool the same way the daemon's
@@ -244,9 +253,11 @@ async fn run_local_sweep(
 /// server id, a timeout, or any request/parse error — resolves to `None` ("no
 /// mapping") rather than an error, so a doctor run never fails or stalls on
 /// canopy being unreachable. Bounded by an overall timeout for the same reason.
-async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
+async fn fetch_check_severities(
+	canopy: Option<Arc<bestool_canopy::CanopyClient>>,
+) -> Option<HashMap<String, CheckSeverity>> {
+	let client = canopy?;
 	tokio::time::timeout(Duration::from_secs(10), async {
-		let client = canopy_client().await?;
 		let machine_id = bestool_tamanu::server_info::get_or_create_machine_id()
 			.await
 			.ok()?;
@@ -257,10 +268,17 @@ async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
 	.flatten()
 }
 
+/// Longest a sweep waits for a canopy client before going without one.
+///
+/// Building one probes the tailnet, and the probe has bounds of its own, so this
+/// is the backstop rather than the usual wait.
+const CANOPY_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// A canopy client for this host, where its registration gives one.
 ///
-/// Every failure path resolves to `None`, so nothing here fails or stalls a
-/// doctor run on canopy being unreachable.
+/// Every failure path resolves to `None`, so nothing here fails a doctor run on
+/// canopy being unreachable. Constructing one probes the tailnet, so a caller
+/// with a person waiting on it bounds the wait.
 async fn canopy_client() -> Option<bestool_canopy::CanopyClient> {
 	let reg = bestool_canopy::registration::load().await.ok().flatten()?;
 	let device_key = reg.device_key.as_deref()?;
