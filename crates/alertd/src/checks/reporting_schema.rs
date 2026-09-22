@@ -668,7 +668,7 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 	// does not need to be made so here. The build goes on in the same batch: a
 	// schema recorded as a build it is not would be graded as current and never
 	// replaced.
-	if let Err(err) = apply.batch_execute(&stamped(&sql, &offered)).await {
+	if let Err(err) = apply.batch_execute(&stamped(sql, &offered)).await {
 		tracing::warn!(version = %offered.version, "applying the reporting schema failed: {err}");
 		return HealOutcome::Failed;
 	}
@@ -707,11 +707,19 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 /// The builder stamps the version, which is what says the SQL came from the
 /// pipeline at all. Which build of that version it is, canopy alone knows, so
 /// the check records it here and grades against it afterwards.
-fn stamped(sql: &str, offered: &Offered) -> String {
-	format!(
-		"{sql}\nCOMMENT ON SCHEMA reporting IS '{}';",
-		quoted(&format!("{} {}", offered.version, offered.digest))
-	)
+///
+/// The terminator on the artifact's last statement is optional, so one goes on
+/// where it ends without: the stamp would otherwise run on into that statement
+/// and the whole batch fail to parse.
+fn stamped(mut sql: String, offered: &Offered) -> String {
+	if !sql.trim_end().ends_with(';') {
+		sql.push(';');
+	}
+
+	sql.push_str("\nCOMMENT ON SCHEMA reporting IS '");
+	sql.push_str(&quoted(&format!("{} {}", offered.version, offered.digest)));
+	sql.push_str("';");
+	sql
 }
 
 /// A string as the body of an SQL literal.
@@ -1292,7 +1300,7 @@ mod tests {
 	#[test]
 	fn the_applied_build_is_stamped_on_the_schema() {
 		let sql = stamped(
-			"CREATE SCHEMA reporting;",
+			"CREATE SCHEMA reporting;".to_owned(),
 			&built("2.60.0", "sha256-LCTbqpIiSOs="),
 		);
 		assert!(sql.starts_with("CREATE SCHEMA reporting;"), "{sql}");
@@ -1302,13 +1310,37 @@ mod tests {
 		);
 	}
 
+	/// The terminator on a statement is optional, so the stamp appended to an
+	/// artifact ending without one would make the two a single statement and the
+	/// whole batch fail to parse.
+	#[test]
+	fn a_schema_ending_without_a_terminator_is_still_stamped() {
+		let sql = stamped(
+			"CREATE SCHEMA reporting".to_owned(),
+			&built("2.60.0", "sha256-LCTbqpIiSOs="),
+		);
+		assert!(
+			sql.starts_with("CREATE SCHEMA reporting;\nCOMMENT"),
+			"{sql}"
+		);
+
+		let sql = stamped(
+			"CREATE SCHEMA reporting;\n".to_owned(),
+			&built("2.60.0", "sha256-LCTbqpIiSOs="),
+		);
+		assert!(!sql.contains(";;"), "{sql}");
+	}
+
 	/// The digest is canopy's own string and rides into an SQL literal in a
 	/// batch that runs as DDL, so an apostrophe in it must not close the
 	/// literal.
 	#[test]
 	fn an_apostrophe_in_the_stamp_cannot_close_the_literal() {
 		assert_eq!(quoted("it's"), "it''s");
-		let sql = stamped("CREATE SCHEMA reporting;", &built("2.60.0", "sha256-a'b"));
+		let sql = stamped(
+			"CREATE SCHEMA reporting;".to_owned(),
+			&built("2.60.0", "sha256-a'b"),
+		);
 		assert!(sql.contains("IS '2.60.0 sha256-a''b';"), "{sql}");
 	}
 
