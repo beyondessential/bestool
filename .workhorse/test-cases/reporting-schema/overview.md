@@ -1,11 +1,11 @@
 # Reporting schema (CHK-RSC) — test sweep
 
-bestool#868, `feat/reporting-schema-apply` at `1502132f`. Spec:
+bestool#868, `feat/reporting-schema-apply` at `0360e74d`. Spec:
 `.workhorse/specs/tamanu/reporting-schema.md`.
 
-Suite state: `cargo test -p bestool-alertd --lib` is 485/485 against a populated
-`tamanu-central`, of which 40 are this check's. `cargo test -p bestool-canopy
---all-features` is 64/64. `cargo test -p bestool --lib canopy_contract -- --ignored`
+Suite state: `cargo test -p bestool-alertd --lib` is 486/486 against a populated
+`tamanu-central`, of which 41 are this check's. `cargo test -p bestool-canopy
+--all-features` is 65/65. `cargo test -p bestool --lib canopy_contract -- --ignored`
 is 15/15.
 
 `tamanu-central` has to exist and carry a real Tamanu schema or five unrelated
@@ -33,8 +33,8 @@ Grading and the stamp:
 What canopy offers:
 
 - [x] Only an artifact of type `reporting-schema` is taken as the schema — CHK-RSC
-- [x] An artifact of that type that canopy does not hold, carrying no digest, is
-      passed over, as is one named with a digest the fetch could not check the bytes
+- [x] An artifact of that type resting anywhere but canopy is passed over, carrying a
+      digest or not, as is one named with a digest the fetch could not check the bytes
       against — CHK-RSC
 - [x] A 404 is nothing offered; 401, 403 and 5xx are the ask failing — CHK-RSC
 - [x] 5xx and transport errors are canopy being out; 401, 403, 404 and a body that
@@ -82,8 +82,18 @@ Fetching and applying:
       filter every server on a published version would have graded fail, tried to
       heal, and had the fetch refused for naming a non-canopy origin: a permanently
       red check fleet-wide. Closed by taking only an artifact canopy holds, which is
-      what a digest says. The legacy artifacts are still in canopy and are now passed
-      over rather than acted on.
+      the offer naming canopy itself: canopy's own `ART#digests` has an unscoped
+      artifact carrying a digest for whoever fetches it to check, so a digest says
+      nothing about where the bytes rest. The legacy artifacts are still in canopy and
+      are now passed over rather than acted on.
+- [x] **The group-scoped answer holds on the tailscale path too.** The `/public` mount
+      names where the public routes are mounted inside the private-server, not an
+      unauthenticated surface: the tailscale ingress terminates client TLS, so canopy
+      resolves the caller's tailnet address to a node identity and keys that into
+      `devices.tailscale_node_id`, and the group follows from the device's machine as
+      it does under mTLS (`commons-servers/src/device_auth/mod.rs`). A caller it
+      cannot resolve is offered the unscoped artifacts alone rather than another
+      group's, and those are now passed over.
 - [x] **The read-back mismatch branch is now unreachable through the apply.** The
       stamp is appended to the artifact's SQL in the same atomic batch, so a batch
       that succeeds always leaves a matching stamp. The `unstamped` registry behind it
