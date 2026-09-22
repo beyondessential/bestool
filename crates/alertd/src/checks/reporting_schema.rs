@@ -621,7 +621,7 @@ pub async fn heal(ctx: TamanuCx) -> HealOutcome {
 const HEAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
-	let (Some(db), Some(canopy)) = (ctx.db().await, ctx.canopy.as_ref()) else {
+	let Some(canopy) = ctx.canopy.as_ref() else {
 		return HealOutcome::Deferred;
 	};
 
@@ -683,7 +683,7 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 	// A heal reported as healed clears the backoff, so an apply that leaves
 	// the schema stamped as anything else has to report a failure: otherwise
 	// the schema is dropped and rebuilt on every interval, forever.
-	match read_stamp(&db).await {
+	match read_stamp(&apply).await {
 		Ok(Stamp::Applied { version, build })
 			if version == offered.version && build.as_deref() == Some(&offered.digest) =>
 		{
