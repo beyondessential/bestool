@@ -211,10 +211,15 @@ fn grade(running: &Stamp, offered: &Offered) -> Check {
 			Some(build) if build == &offered.digest => {
 				Check::pass(NAME, format!("reporting schema {version}"))
 			}
-			_ => Check::fail(
+			Some(_) => Check::fail(
 				NAME,
 				format!("reporting schema {version}, a newer build offered"),
 				"the server's reports read from an earlier build of this version's schema",
+			),
+			None => Check::fail(
+				NAME,
+				format!("reporting schema {version}, build unknown"),
+				"the server's schema names no build, so it cannot be shown to be the one offered",
 			),
 		},
 		Stamp::Applied { version, .. } => Check::fail(
@@ -406,6 +411,9 @@ async fn fetch_offered(
 		.and_then(|v| v.to_str().ok())
 		.map(|v| v.split(';').next().unwrap_or(v).trim().to_ascii_lowercase())
 		.unwrap_or_default();
+	if media_type.is_empty() {
+		bail!("the offered reporting schema has no content type");
+	}
 	if !SCHEMA_MEDIA_TYPES.contains(&media_type.as_str()) {
 		bail!("the offered reporting schema is {media_type}, not SQL");
 	}
@@ -1375,11 +1383,7 @@ mod tests {
 			),
 		);
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
-		assert!(
-			check.summary.contains("a newer build offered"),
-			"{}",
-			check.summary
-		);
+		assert!(check.summary.contains("build unknown"), "{}", check.summary);
 	}
 
 	/// The builder stamps the version, and which build of that version this is
