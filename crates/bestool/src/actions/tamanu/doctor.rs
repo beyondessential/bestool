@@ -83,8 +83,7 @@ pub struct DoctorArgs {
 	pub heal: bool,
 }
 
-/// Longest a `--heal` run waits for the repairs it asked for. The reporting
-/// schema's own apply is bounded well inside this.
+/// Longest a `--heal` run waits for the repairs it asked for.
 const HEAL_SETTLE_BOUND: Duration = Duration::from_secs(15 * 60);
 
 /// Where the displayed sweep came from.
@@ -274,17 +273,10 @@ async fn fetch_check_severities(
 	.flatten()
 }
 
-/// Longest a sweep waits for a canopy client before going without one.
-///
-/// Building one probes the tailnet, and the probe has bounds of its own, so this
-/// is the backstop rather than the usual wait.
+/// Backstop on building a canopy client; the tailnet probe has bounds of its own.
 const CANOPY_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// A canopy client for this host, where its registration gives one.
-///
-/// Every failure path resolves to `None`, so nothing here fails a doctor run on
-/// canopy being unreachable. Constructing one probes the tailnet, so a caller
-/// with a person waiting on it bounds the wait.
+/// A canopy client for this host, or `None` on any failure.
 async fn canopy_client() -> Option<bestool_canopy::CanopyClient> {
 	let reg = bestool_canopy::registration::load().await.ok().flatten()?;
 	let device_key = reg.device_key.as_deref()?;

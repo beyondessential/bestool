@@ -118,11 +118,8 @@ pub fn spawn_if_due<Cx: Send + 'static>(key: String, action: HealAction<Cx>, ctx
 	});
 }
 
-/// Wait for every attempt in flight to finish, or until `bound` elapses.
-///
-/// Attempts run detached, so a one-shot sweep would otherwise exit while a
-/// repair it asked for was still running. The daemon outlives its own attempts
-/// and needs none of this.
+/// Wait for every attempt in flight to finish, or until `bound` elapses, so a
+/// one-shot sweep doesn't exit mid-repair.
 pub async fn settle(bound: Duration) {
 	let until = Instant::now() + bound;
 	while Instant::now() < until && any_in_flight() {
@@ -174,8 +171,6 @@ fn finish(name: &str, outcome: HealOutcome, min_interval: Duration) {
 mod tests {
 	use super::*;
 
-	/// A one-shot sweep waits for the repair it asked for, and returns straight
-	/// away when it asked for none.
 	#[tokio::test]
 	async fn settle_waits_for_an_attempt_in_flight() {
 		let name = "test_heal_settle";

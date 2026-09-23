@@ -1,16 +1,5 @@
-//! Whether this server has the reporting schema canopy offers it.
-//!
-//! A reporting schema is the set of views a server's reports read from. Half of
-//! it follows from the Tamanu version's schema and half from the group's own
-//! configuration, so it is built centrally, against a replica of the group's
-//! data at that version, and offered back per group.
-//!
-//! What a server has is stamped into the schema itself by the SQL that built it.
-//! This check reads that stamp, compares it against the version canopy offers
-//! for the version the server runs, and reports the stamp as a top-level status
-//! fact so the fleet view can show which schema each server is on. Applying the
-//! offered schema is the check's heal action, so it happens only once the drift
-//! has graded as a failure.
+//! Whether this server has the reporting schema canopy offers it, and the heal
+//! that applies it.
 
 use std::sync::Arc;
 
@@ -25,15 +14,10 @@ use crate::{check::Check, heal::HealOutcome};
 
 const NAME: &str = "reporting_schema";
 
-/// The status fact canopy reads to show which schema a server is on.
 const VERSION_FACT: &str = "reportingSchemaVersion";
 
-/// The artifact type a reporting schema is published under.
 const ARTIFACT_TYPE: &str = "reporting-schema";
 
-/// Reads the version the built schema stamped on itself. The schema is dropped
-/// and recreated wholesale by the SQL that builds it, so the stamp goes with it
-/// and can never outlive the schema it describes.
 const STAMP_SQL: &str = "SELECT obj_description(oid, 'pg_namespace') AS stamp \
 	FROM pg_namespace WHERE nspname = 'reporting'";
 
@@ -57,8 +41,6 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	};
 
 	let Some(canopy) = ctx.canopy.as_ref() else {
-		// Offline: say what the server has and grade nothing. Whether it is the
-		// right one is canopy's to answer, and canopy is not reachable.
 		return with_version(
 			Check::skip(
 				NAME,
@@ -94,8 +76,6 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	};
 
 	let Some(offered) = offered else {
-		// Canopy offers none for this version. The pair has not been built yet,
-		// which is canopy's own finding to raise, not this server's fault.
 		return with_version(
 			Check::skip(
 				NAME,
@@ -109,57 +89,32 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	with_version(grade(&running, &offered), &running)
 }
 
-/// What the server's `reporting` schema says about itself.
-///
-/// A schema with no comment on it is not the same as no schema: something built
-/// it that was not this pipeline, so the operator is replacing a schema rather
-/// than applying a first one, and whatever reports read from it are reading
-/// something nobody can name.
 #[derive(Debug, PartialEq, Eq)]
 enum Stamp {
 	NoSchema,
 	Unstamped,
 	Applied {
 		version: Version,
-		/// The digest canopy offered for the build that was applied, where the
-		/// schema was applied by this check. A schema built for a version says
-		/// nothing about which build of it this is, and a group gets a new
-		/// build of the version it already runs whenever its reports are fixed.
+		/// The offered digest, present only where this check applied the schema.
 		build: Option<String>,
 	},
 }
 
-/// Longest a stamp may be and still be one. The comment is arbitrary text that
-/// anyone with COMMENT rights on the schema can set, and it is published to
-/// canopy as a status fact, so what is not plausibly a stamp is read as none
-/// rather than carried. A version and an SRI digest is 60-odd characters.
+/// The comment is settable by anyone with COMMENT rights and is sent to canopy.
 const MAX_STAMP_LEN: usize = 128;
 
-/// Read what the server's `reporting` schema stamped on itself.
 async fn read_stamp(db: &tokio_postgres::Client) -> Result<Stamp, tokio_postgres::Error> {
 	Ok(match db.query_opt(STAMP_SQL, &[]).await? {
 		Some(row) => match row.get::<_, Option<String>>("stamp").map(stamp_of) {
 			Some(Some((version, build))) => Stamp::Applied { version, build },
 			Some(None) | None => Stamp::Unstamped,
 		},
-		// No `reporting` schema at all. Not an error: a server that has never
-		// had one applied is exactly what this check exists to surface.
 		None => Stamp::NoSchema,
 	})
 }
 
-/// The version a schema comment names, and the build it names after it.
-///
-/// The parsed version is what is kept, not the text: `v2.60.0` and `2.60.0`
-/// name the same schema, and a stamp compared as text would fail a server that
-/// has exactly the right one. The build is kept as written, since it is
-/// canopy's own digest string and is only ever compared with another of those.
-///
-/// A schema the builder stamped and nothing has applied yet carries the version
-/// alone, so the build is optional. Anything after the version that is not a
-/// digest makes the whole comment no stamp: it is arbitrary text anyone with
-/// COMMENT rights can set and it rides to canopy as a status fact, so what is
-/// carried is only ever what this check wrote.
+/// Parses `<version> [<sha256 digest>]`. Anything else after the version makes
+/// the whole comment no stamp, so only what this check wrote is sent to canopy.
 fn stamp_of(comment: String) -> Option<(Version, Option<String>)> {
 	let trimmed = comment.trim();
 	if trimmed.is_empty() || trimmed.len() > MAX_STAMP_LEN {
@@ -179,32 +134,20 @@ fn stamp_of(comment: String) -> Option<(Version, Option<String>)> {
 	Some((Version::parse(version).ok()?, build))
 }
 
-/// The hash a Subresource Integrity digest names, e.g. `sha256-LCTbqp…`.
-///
-/// sha256 alone, and only one the bytes can actually be checked against: SRI
-/// names other algorithms and other encodings, and an offer carrying one of
-/// those would grade the server as behind and then have its own bytes refused
-/// on every attempt.
+/// The hash a `sha256-<base64>` SRI digest names. Other algorithms are
+/// unsupported: an offer carrying one could never be verified.
 fn sha256_of(digest: &str) -> Option<Vec<u8>> {
 	let encoded = digest.trim().strip_prefix("sha256-")?;
 	let named = BASE64.decode(encoded).ok()?;
 	(named.len() == SHA256_BYTES).then_some(named)
 }
 
-/// Length of the hash a sha256 digest names.
 const SHA256_BYTES: usize = 32;
 
-/// Whether `text` names a hash this check could compare bytes against. What it
-/// digests is canopy's to say, and this check only ever compares one of these
-/// with another.
 fn is_digest(text: &str) -> bool {
 	sha256_of(text).is_some()
 }
 
-/// What the stamp on the server says against what canopy offers.
-///
-/// Separated from the sweep because this is the whole judgement the check
-/// makes, and it is worth being able to state it without a database.
 fn grade(running: &Stamp, offered: &Offered) -> Check {
 	match running {
 		Stamp::Applied { version, build } if version == &offered.version => match build {
@@ -241,12 +184,8 @@ fn grade(running: &Stamp, offered: &Offered) -> Check {
 	}
 }
 
-/// Carry the stamp as a top-level status fact, so the fleet view can show which
-/// schema a server is on without reading into the check's own detail.
 fn with_version(check: Check, running: &Stamp) -> Check {
 	match running {
-		// The version alone: which build of it a server has is this check's to
-		// grade, and canopy shows this fact as the schema a server is on.
 		Stamp::Applied { version, .. } => {
 			check.with_payload_extra(VERSION_FACT, serde_json::Value::from(version.to_string()))
 		}
@@ -254,30 +193,20 @@ fn with_version(check: Check, running: &Stamp) -> Check {
 	}
 }
 
-/// A reporting schema canopy offers, and the version it was built for.
 #[derive(Clone)]
 struct Offered {
 	version: Version,
 	id: String,
 	download_url: String,
-	/// Canopy's digest of the bytes it holds. A rebuild of a pair re-registers
-	/// under the same artifact id, so this is what tells two builds of one
-	/// version apart.
+	/// A rebuild re-registers under the same artifact id, so this is what tells
+	/// two builds of one version apart.
 	digest: String,
 }
 
-/// How long an answer from canopy about what is offered is reused for.
-///
-/// What canopy offers for one exact Tamanu version changes only when a build
-/// publishes a new schema, so asking every sweep is a request per server per
-/// minute for the same answer. The window bounds how long the fleet can go on
-/// grading against a schema that has just been replaced.
 const OFFER_TTL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// The answers canopy has given, and when. Keyed by version so an upgrade asks
-/// afresh rather than grading against the schema of the version it left, and
-/// one entry per version because a host carrying a central and a facility on
-/// versions of their own would otherwise turn every lookup into a miss.
+/// One entry per version, since a host can carry a central and a facility on
+/// different versions.
 static OFFER: std::sync::Mutex<Vec<(Version, std::time::Instant, Option<Offered>)>> =
 	std::sync::Mutex::new(Vec::new());
 
@@ -294,12 +223,8 @@ fn cache_offer(version: &Version, offered: &Option<Offered>) {
 	held.push((version.clone(), std::time::Instant::now(), offered.clone()));
 }
 
-/// Ask canopy which reporting schema this server is offered.
-///
-/// The call is authenticated, which is what makes it a group-scoped answer:
-/// canopy resolves the caller to its machine and its group and offers that
-/// group's schema. The same call unauthenticated would only ever see the
-/// artifacts that belong to no group.
+/// Canopy answers for the caller's group, so this must go over the
+/// authenticated client.
 async fn offered_schema(
 	canopy: &Arc<CanopyClient>,
 	version: &Version,
@@ -334,62 +259,28 @@ async fn offered_schema(
 	Ok(offered)
 }
 
-/// Whether an artifact is the reporting schema canopy offers this version.
-///
-/// Canopy resolves a version's artifacts before answering, keeping the most
-/// specific of a type, so the schema in the answer is the one to grade against.
-///
-/// A schema this check is willing to run against a server's database is one
-/// canopy built for that server's group and can vouch for, which is what it
-/// holding the bytes says. An artifact canopy records a location for rests
-/// wherever its registration named, belongs to no group, and is offered to
-/// every machine in the fleet; a digest may be registered alongside either, so
-/// what is checked here is the offer naming canopy itself, not that it carries
-/// one. Whether the offer is canopy's own is the transport's to say.
-///
-/// A digest the fetch can check the bytes against, at that: an offer this check
-/// could never verify would grade the server as behind and then refuse its own
-/// bytes on every attempt.
+/// Only artifacts canopy holds itself are group-scoped; one it records a
+/// location for is offered fleet-wide, so the caller also checks `holds`.
 fn is_schema(artifact: &bestool_canopy::schema::Artifact) -> bool {
 	artifact.artifact_type == ARTIFACT_TYPE && artifact.digest.as_deref().is_some_and(is_digest)
 }
 
-/// Whether canopy's answer means it offers nothing for this version, as
-/// against the ask itself having failed.
-///
-/// Canopy answers the artifacts of a version it holds no published, ready
-/// release for with a 404, which is the ordinary case for a server on a
-/// version canopy has not published. A pair canopy has not built is canopy's
-/// own finding to raise rather than this server's fault, so it grades as
-/// nothing offered rather than as a warning against the server.
+/// Canopy answers 404 for a version it has no published release for.
 fn offers_nothing(err: &bestool_canopy::Error) -> bool {
 	err.status() == Some(bestool_canopy::http::StatusCode::NOT_FOUND)
 }
 
-/// Whether the ask failed for canopy's own reasons rather than this server's:
-/// the request never landed, or canopy answered with a fault of its own. There
-/// is nothing an operator on this server can do about either, and grading them
-/// raises the same finding on every server in the fleet for the length of a
-/// canopy outage.
+/// A decode failure is deliberately not included, so a change in canopy's
+/// shape shows up as a warning.
 fn canopy_is_out(err: &bestool_canopy::Error) -> bool {
 	match err {
-		// The request never landed.
 		bestool_canopy::Error::Transport(_) => true,
-		// Anything else that carries no status — an answer that would not
-		// decode, above all — is canopy's shape having moved, which has to be
-		// visible rather than skipped past.
 		other => other
 			.status()
 			.is_some_and(|status| status.is_server_error()),
 	}
 }
 
-/// Fetch the bytes of the schema canopy offers.
-///
-/// Canopy holds a group-scoped artifact itself and serves it only to a caller
-/// it is offered to, so the fetch has to carry the device credential the ask
-/// carried. An unauthenticated GET of the same URL is answered as a missing
-/// artifact, not as a refusal.
 async fn fetch_offered(
 	canopy: &Arc<CanopyClient>,
 	offered: &Offered,
@@ -402,9 +293,6 @@ async fn fetch_offered(
 		.error_for_status()
 		.into_diagnostic()?;
 
-	// A 2xx is not on its own a schema: an HTML page from something between
-	// here and canopy would be executed as SQL, and the schema's own SQL drops
-	// itself first, so a wrong body destroys what it does not replace.
 	let media_type = response
 		.headers()
 		.get(reqwest::header::CONTENT_TYPE)
@@ -425,9 +313,6 @@ async fn fetch_offered(
 		bail!("the offered reporting schema is larger than {max_bytes} bytes");
 	}
 
-	// Sized from what the answer declares, which the ceiling above has already
-	// bounded, so a schema is read into one allocation rather than regrown
-	// through it. The loop still counts, since a declared length is a claim.
 	let mut sql = Vec::with_capacity(declared.unwrap_or(0) as usize);
 	while let Some(chunk) = response.chunk().await.into_diagnostic()? {
 		if sql.len() + chunk.len() > max_bytes {
@@ -446,36 +331,20 @@ async fn fetch_offered(
 	String::from_utf8(sql).into_diagnostic()
 }
 
-/// Whether bytes are the ones canopy's digest names.
-///
-/// Canopy names an artifact's bytes with a sha256 Subresource Integrity digest,
-/// and the apply stamps that digest on the schema as the build the server is on,
-/// so bytes that hash to anything else are not the schema offered.
 fn matches_digest(bytes: &[u8], digest: &str) -> bool {
 	sha256_of(digest).is_some_and(|named| named == Sha256::digest(bytes).as_slice())
 }
 
-/// What a reporting schema may be served as. Canopy hands back whatever media
-/// type the registration named, and a schema is SQL text.
 const SCHEMA_MEDIA_TYPES: &[&str] = &["application/sql", "text/plain", "application/octet-stream"];
 
-/// Ceiling on a schema, matching what canopy will hold for one.
+/// Matches what canopy will hold for one.
 const MAX_SCHEMA_BYTES: usize = 32 * 1024 * 1024;
 
-/// What a schema artifact may not carry, the apply being one transaction.
 const TRANSACTION_CONTROL: [&str; 6] = ["begin", "start", "commit", "end", "rollback", "abort"];
 
-/// The transaction control the SQL carries, where it carries any.
-///
-/// The schema goes to the server as one batch, so a statement that fails partway
-/// rolls back the drop the schema opens with. A `BEGIN`, `COMMIT` or `ROLLBACK`
-/// of the artifact's own ends that transaction, and a failure after it leaves
-/// the server neither the schema it had nor the one offered. Postgres takes
-/// `START TRANSACTION`, `END` and `ABORT` for the same three.
-///
-/// Only a keyword standing as a statement counts. The same word is ordinary text
-/// in an identifier, a literal, a comment or a dollar-quoted body, and a schema
-/// refused over one is a server left on whatever it already has.
+/// The apply is one implicit transaction, and transaction control of the
+/// artifact's own would let a later failure leave the server with no schema.
+/// Only a keyword standing as a statement counts.
 fn transaction_control(sql: &str) -> Option<&str> {
 	let bytes = sql.as_bytes();
 	let mut at = 0;
@@ -524,9 +393,7 @@ fn transaction_control(sql: &str) -> Option<&str> {
 			}
 			after_begin = word.eq_ignore_ascii_case("begin");
 
-			// `E'…'`, `B'…'` and the like: the quote belongs to the word before it
-			// rather than opening a literal of its own, and only `E` takes
-			// backslash escapes.
+			// `E'…'`, `B'…'` and the like; only `E` takes backslash escapes.
 			at = match bytes.get(end) {
 				Some(b'\'') => past_string(bytes, end, word.eq_ignore_ascii_case("e")),
 				_ => end,
@@ -566,7 +433,7 @@ fn past_line_comment(bytes: &[u8], at: usize) -> usize {
 	at
 }
 
-/// Block comments nest, so the first `*/` need not be the one that closes.
+/// Block comments nest.
 fn past_block_comment(bytes: &[u8], at: usize) -> usize {
 	let mut at = at + 2;
 	let mut depth = 1usize;
@@ -611,8 +478,7 @@ fn past_quoted_name(bytes: &[u8], at: usize) -> usize {
 	at.min(bytes.len())
 }
 
-/// Past a dollar-quoted body, or past the `$` where none opens here: a tag may
-/// not start with a digit, which is what keeps `$1` a parameter.
+/// A tag may not start with a digit, which keeps `$1` a parameter.
 fn past_dollar_quote(bytes: &[u8], at: usize) -> usize {
 	let tag_end = word_end(bytes, at + 1);
 	if bytes.get(tag_end) != Some(&b'$') || bytes.get(at + 1).is_some_and(u8::is_ascii_digit) {
@@ -630,15 +496,8 @@ fn past_dollar_quote(bytes: &[u8], at: usize) -> usize {
 	bytes.len()
 }
 
-/// Apply the schema canopy offers.
-///
-/// Applying is the one thing on this host that writes to Tamanu's database, so
-/// it lives here rather than in the check: heal runs only when the check graded
-/// a failure, and behind the shared backoff, whether the daemon reaches it on
-/// its own schedule or an operator asks a local sweep for it.
 pub async fn heal(ctx: TamanuCx) -> HealOutcome {
-	// A heal that never returns holds the attempt slot for the life of the
-	// process, so self-heal stops for this check with nothing to say so.
+	// A heal that never returns holds the attempt slot for the life of the process.
 	match tokio::time::timeout(HEAL_DEADLINE, apply_offered(ctx)).await {
 		Ok(outcome) => outcome,
 		Err(_) => {
@@ -648,7 +507,6 @@ pub async fn heal(ctx: TamanuCx) -> HealOutcome {
 	}
 }
 
-/// Longest one apply may take before the attempt is abandoned.
 const HEAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
@@ -665,10 +523,8 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 		}
 	};
 
-	// Applying drops the schema before it recreates it, so an artifact that has
-	// already been applied and did not leave the stamp it should is not applied
-	// again. Retrying it rebuilds the schema on every backoff step, forever,
-	// with reports broken through each rebuild.
+	// Retrying a build that did not stamp would drop and rebuild the schema on
+	// every backoff step.
 	if applied_without_stamping(&applied_key(&offered)) {
 		tracing::warn!(
 			artifact = %offered.id,
@@ -702,18 +558,12 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 		}
 	};
 
-	// The schema's own SQL drops and recreates it, so this is not additive and
-	// does not need to be made so here. The build goes on in the same batch: a
-	// schema recorded as a build it is not would be graded as current and never
-	// replaced.
 	if let Err(err) = apply.batch_execute(&stamped(sql, &offered)).await {
 		tracing::warn!(version = %offered.version, "applying the reporting schema failed: {err}");
 		return HealOutcome::Failed;
 	}
 
-	// A heal reported as healed clears the backoff, so an apply that leaves
-	// the schema stamped as anything else has to report a failure: otherwise
-	// the schema is dropped and rebuilt on every interval, forever.
+	// Healed clears the backoff, so anything but the offered stamp is a failure.
 	match read_stamp(&apply).await {
 		Ok(Stamp::Applied { version, build })
 			if version == offered.version && build.as_deref() == Some(&offered.digest) =>
@@ -740,16 +590,9 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 	}
 }
 
-/// The schema's SQL with the build canopy offered stamped on the end.
-///
-/// The builder stamps the version, which is what says the SQL came from the
-/// pipeline at all. Which build of that version it is, canopy alone knows, so
-/// the check records it here and grades against it afterwards.
-///
-/// The terminator on the artifact's last statement is optional, so one goes on
-/// where it ends without: the stamp would otherwise run on into that statement
-/// and the whole batch fail to parse. On a line of its own, since SQL ending in
-/// a line comment would swallow one written on the end of it.
+/// Appends the offered build to the builder's version stamp, in the same batch.
+/// The stamp goes on a line of its own after a terminator, since the artifact
+/// may end without one or in a line comment.
 fn stamped(mut sql: String, offered: &Offered) -> String {
 	if !sql.trim_end().ends_with(';') {
 		sql.push_str("\n;");
@@ -761,21 +604,14 @@ fn stamped(mut sql: String, offered: &Offered) -> String {
 	sql
 }
 
-/// A string as the body of an SQL literal.
 fn quoted(value: &str) -> String {
 	value.replace('\'', "''")
 }
 
-/// What a build is remembered as, where it applied without stamping.
-///
-/// The digest and not the artifact id alone: a rebuild of a pair re-registers
-/// under the id the artifact already has, and a build that failed to stamp says
-/// nothing about the one that replaces it.
 fn applied_key(offered: &Offered) -> String {
 	format!("{} {}", offered.id, offered.digest)
 }
 
-/// Artifacts this process has applied that did not leave the stamp they should.
 fn unstamped() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
 	static IDS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
 		std::sync::OnceLock::new();
@@ -796,15 +632,8 @@ fn note_unstamped(artifact: &str) {
 		.insert(artifact.to_owned());
 }
 
-/// A connection of the apply's own, with ceilings on it.
-///
-/// The checks' pool is a handful of connections shared across a whole sweep,
-/// and an apply runs for as long as a whole-schema DDL batch takes, so holding
-/// one of them for it would leave other checks waiting on the pool. Opened
-/// through the pool's own path like every other database open in the project,
-/// which is what selects TLS for a URL that asks for it, and unattended: this
-/// runs in a daemon, where a prompt for a missing password has no terminal to
-/// go to. The timeouts bound a batch that cannot get its locks.
+/// Its own connection, so a long DDL batch doesn't hold one of the sweep's
+/// pooled ones, and never prompting, since it runs in the daemon.
 async fn apply_connection(database_url: &str) -> Result<tokio_postgres::Client, miette::Report> {
 	let client = bestool_postgres::pool::connect_one_with(
 		database_url,

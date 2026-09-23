@@ -256,9 +256,6 @@ pub async fn connect_one(url: &str, application_name: &str) -> Result<tokio_post
 }
 
 /// [`connect_one`] for a caller that says whether a password may be asked for.
-///
-/// A daemon asks for [`Prompt::Never`]: see that variant for what prompting
-/// does to one.
 pub async fn connect_one_with(
 	url: &str,
 	application_name: &str,

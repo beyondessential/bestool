@@ -57,12 +57,8 @@ pub const CERT_RENEW_AFTER: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 /// Timeout for the tailscale availability probe.
 const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Timeout for a raw GET, which covers reading the body as well as the answer.
-///
-/// The tailscale client is the probe client, bounded to a few seconds so a
-/// wedged tailnet does not stall discovery. A raw GET fetches an artifact, so
-/// it needs a bound sized for bytes rather than for reachability, set per
-/// request so the probe's own bound is untouched.
+/// Per-request timeout for a raw GET, overriding the tailscale probe client's
+/// few seconds, since it covers downloading an artifact's body.
 const RAW_GET_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Timeout for the tailscale DNS lookup (against 100.100.100.100).
@@ -318,23 +314,16 @@ impl ReqwestTransport {
 		self.raw_get(tailscale_path, mtls_path).await
 	}
 
-	/// Download an artifact canopy offers, at the URL the offer names.
-	///
-	/// The device credential rides this request and the answer is trusted, so an
-	/// offer naming any origin but canopy's is refused rather than followed.
-	/// Only the path and query are taken from it: which endpoint holds the
-	/// credential is the transport's to decide, and over tailscale that is not
-	/// canopy's own origin.
+	/// Download an artifact canopy offers. The device credential rides this
+	/// request, so an offer naming any origin but canopy's is refused, and only
+	/// its path and query are used.
 	pub async fn download_artifact(&self, offered_url: &str) -> Result<reqwest::Response> {
 		let path = self.own_path(offered_url)?;
 		self.raw_get(&format!("/public{path}"), &path).await
 	}
 
-	/// Whether an offered URL is one canopy serves itself.
-	///
-	/// Canopy records where an artifact it does not hold rests, and hands that
-	/// location back as the offer. This transport fetches only what canopy
-	/// holds, so an offer resting elsewhere is one it will not take up.
+	/// Whether an offered URL is one canopy serves itself, as against a location
+	/// it records for an artifact held elsewhere.
 	pub fn holds(&self, offered_url: &str) -> bool {
 		self.own_path(offered_url).is_ok()
 	}
@@ -348,9 +337,7 @@ impl ReqwestTransport {
 			bail!("the offered download URL {url} does not name canopy");
 		}
 
-		// A path of its own opening with `//` is an authority: resolved against
-		// the transport's base it names another host entirely, and the origin
-		// check above sees only canopy's.
+		// A path opening with `//` names another host once joined to the base.
 		if url.path().starts_with("//") {
 			bail!("the offered download URL {url} carries an authority in its path");
 		}
@@ -392,8 +379,7 @@ impl ReqwestTransport {
 			.into_diagnostic()
 			.wrap_err("GET via canopy")?;
 
-		// The device credential rides this request, and its body reaches alertd
-		// as DDL.
+		// The device credential rides this request, and alertd runs its body as DDL.
 		if response.status().is_redirection() {
 			bail!("canopy GET {url} was redirected, not answered");
 		}

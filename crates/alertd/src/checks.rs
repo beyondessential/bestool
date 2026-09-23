@@ -567,10 +567,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("version", db_version::run, postgres, off_wire),
 		entry!("migrations", migrations::run, tamanu_app),
 		entry!("reporting_roles", reporting_roles::run, tamanu_app),
-		// Its heal applies the schema canopy offers, the one write any check makes
-		// to Tamanu's database. A facility serves reports of its own and carries
-		// the reporting roles, so it is offered and applies the group's schema
-		// like the central does.
+		// Its heal is the one write any check makes to Tamanu's database.
 		entry!(
 			"reporting_schema",
 			reporting_schema::run,
