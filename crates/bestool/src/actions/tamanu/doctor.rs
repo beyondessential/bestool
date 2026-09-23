@@ -7,6 +7,7 @@ use std::{
 
 use bestool_canopy::schema::{CheckResult, CheckSeverity, HealthCheck, StatusPayload};
 use clap::Parser;
+use futures::FutureExt as _;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -165,22 +166,24 @@ async fn run_local_sweep(
 	validate_check_selection(&args.only, &args.skip)?;
 	let (progress, tui_handle) = setup_progress(live_tty, SweepSource::Local);
 
-	// A check that grades what canopy says about this deployment needs the client
-	// to say anything at all, and its heal needs it to fetch what it applies.
-	// Building one probes the tailnet, so it is bounded: the progress view is
-	// already up, and a tailnet that is not answering must not hold the sweep
-	// behind it for however long the probe takes to give up.
-	let canopy = tokio::time::timeout(CANOPY_CLIENT_TIMEOUT, canopy_client())
-		.await
-		.ok()
-		.flatten()
-		.map(Arc::new);
+	// Built alongside the pool rather than ahead of it: the probe can take
+	// seconds on a tailnet that is not answering.
+	let canopy = async {
+		tokio::time::timeout(CANOPY_CLIENT_TIMEOUT, canopy_client())
+			.await
+			.ok()
+			.flatten()
+			.map(Arc::new)
+	}
+	.boxed()
+	.shared();
 
-	// Fetch canopy's effective-severity ceilings concurrently with the checks,
-	// on the client already built rather than one of its own. Soft-fail
-	// throughout (see `fetch_check_severities`): the mapping only ever lowers a
-	// verdict, so its absence just leaves the raw sweep.
-	let severities_handle = tokio::spawn(fetch_check_severities(canopy.clone()));
+	// Soft-fail throughout (see `fetch_check_severities`): the mapping only ever
+	// lowers a verdict, so its absence just leaves the raw sweep.
+	let severities_handle = tokio::spawn({
+		let canopy = canopy.clone();
+		async move { fetch_check_severities(canopy.await).await }
+	});
 
 	let sweep_args_only = args.only.clone();
 	let sweep_args_skip = args.skip.clone();
@@ -190,19 +193,22 @@ async fn run_local_sweep(
 		// sweep does. `None` when there's no database to get a URL from, or when
 		// the database is unreachable — the DB checks skip either way, and
 		// `db_connect` opens its own connection to report why.
-		let pg_pool = match targets.as_ref() {
-			Some(t) => bestool_postgres::pool::create_pool_sized(
-				&t.database_url,
-				"bestool-tamanu-doctor",
-				bestool_alertd::checks::POOL_SIZE,
-				// A person is watching this one.
-				bestool_postgres::pool::Prompt::Allowed,
-			)
-			.await
+		let pg_pool = async {
+			match targets.as_ref() {
+				Some(t) => bestool_postgres::pool::create_pool_sized(
+					&t.database_url,
+					"bestool-tamanu-doctor",
+					bestool_alertd::checks::POOL_SIZE,
+					// A person is watching this one.
+					bestool_postgres::pool::Prompt::Allowed,
+				)
+				.await
 				.inspect_err(|err| debug!(%err, "no DB pool for this sweep; DB checks will skip"))
 				.ok(),
-			None => None,
+				None => None,
+			}
 		};
+		let (pg_pool, canopy) = tokio::join!(pg_pool, canopy);
 
 		perform_sweep(
 			env!("CARGO_PKG_VERSION"),
