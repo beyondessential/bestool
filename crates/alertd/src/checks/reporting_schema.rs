@@ -10,7 +10,11 @@ use node_semver::Version;
 use sha2::{Digest as _, Sha256};
 
 use super::{TamanuCx, fmt_db_error};
-use crate::{check::Check, heal::HealOutcome};
+use crate::{
+	check::Check,
+	heal::HealOutcome,
+	runtime::{Duty, ServiceRuntime, TamanuDuty},
+};
 
 const NAME: &str = "reporting_schema";
 
@@ -514,6 +518,11 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 		return HealOutcome::Deferred;
 	};
 
+	if let Err(reason) = settled(&ctx).await {
+		tracing::info!("not applying the reporting schema: {reason}");
+		return HealOutcome::Deferred;
+	}
+
 	let offered = match offered_schema(canopy, &ctx.version).await {
 		Ok(Some(offered)) => offered,
 		Ok(None) => return HealOutcome::Deferred,
@@ -588,6 +597,47 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 			HealOutcome::Failed
 		}
 	}
+}
+
+/// Upgrades drop `reporting` before migrating while alertd keeps running, and
+/// views put back mid-upgrade block the migration's DDL. Tamanu records the
+/// version only once its migrations have run, and upgrades stop the API first.
+async fn settled(ctx: &TamanuCx) -> Result<(), &'static str> {
+	let Some(db) = ctx.db().await else {
+		return Err("the database is unreachable");
+	};
+	if !migrated_to(&db, &ctx.version).await {
+		return Err("the database is not migrated to the installed version");
+	}
+	drop(db);
+
+	if !api_up(ctx.runtime.as_ref()).await {
+		return Err("the Tamanu API is not running");
+	}
+	Ok(())
+}
+
+async fn migrated_to(db: &tokio_postgres::Client, version: &Version) -> bool {
+	bestool_tamanu::versions::current_version(db)
+		.await
+		.is_some_and(|recorded| &recorded == version)
+}
+
+async fn api_up(runtime: &dyn ServiceRuntime) -> bool {
+	let Ok(services) = runtime.services().await else {
+		return false;
+	};
+	for service in services {
+		if service.duty == Duty::Tamanu(TamanuDuty::Api)
+			&& runtime
+				.service_facts(&service.id)
+				.await
+				.is_ok_and(|facts| facts.up)
+		{
+			return true;
+		}
+	}
+	false
 }
 
 /// Appends the offered build to the builder's version stamp, in the same batch.
@@ -1627,10 +1677,49 @@ mod tests {
 		.ok()
 	}
 
+	fn api(up: bool) -> crate::runtime::fake::FakeRuntime {
+		crate::runtime::fake::FakeRuntime::empty().with(
+			crate::runtime::Service {
+				id: crate::runtime::ServiceId::new("tamanu-api"),
+				duty: Duty::Tamanu(TamanuDuty::Api),
+				slot: None,
+				scheduled: true,
+			},
+			crate::runtime::ServiceFacts {
+				up,
+				..Default::default()
+			},
+		)
+	}
+
+	#[tokio::test]
+	async fn the_api_is_up_only_when_an_api_service_is() {
+		use crate::runtime::{Service, ServiceFacts, ServiceId, fake::FakeRuntime};
+
+		assert!(api_up(&api(true)).await);
+		assert!(!api_up(&api(false)).await);
+		assert!(!api_up(&FakeRuntime::empty()).await);
+		assert!(!api_up(&FakeRuntime::unavailable("pm2 did not answer")).await);
+
+		let tasks_only = FakeRuntime::empty().with(
+			Service {
+				id: ServiceId::new("tamanu-tasks"),
+				duty: Duty::Tamanu(TamanuDuty::Tasks),
+				slot: None,
+				scheduled: true,
+			},
+			ServiceFacts {
+				up: true,
+				..Default::default()
+			},
+		);
+		assert!(!api_up(&tasks_only).await);
+	}
+
 	/// A context on a database of the test's own, so an apply that drops and
 	/// recreates the `reporting` schema cannot touch the one the borrowed
-	/// database holds.
-	async fn probe_ctx(database: &str) -> Option<TamanuCx> {
+	/// database holds. It records `migrated` as Tamanu's current version.
+	async fn probe_ctx(database: &str, migrated: &str) -> Option<TamanuCx> {
 		let borrowed = central_ctx().await?;
 		let admin = admin_connection().await?;
 		admin
@@ -1645,6 +1734,15 @@ mod tests {
 			.ok()?;
 
 		let database_url = format!("postgresql://localhost/{database}");
+		bestool_postgres::pool::connect_one(&database_url, "bestool-alertd-test")
+			.await
+			.ok()?
+			.batch_execute(&format!(
+				"CREATE TABLE local_system_facts (key text PRIMARY KEY, value text); \
+				 INSERT INTO local_system_facts VALUES ('currentVersion', '{migrated}')"
+			))
+			.await
+			.ok()?;
 		let pool = bestool_postgres::pool::create_pool_sized(
 			&database_url,
 			"bestool-alertd-test",
@@ -1657,6 +1755,7 @@ mod tests {
 		Some(TamanuCx {
 			database_url,
 			pool: Some(pool),
+			runtime: Arc::new(api(true)),
 			..borrowed
 		})
 	}
@@ -1680,7 +1779,7 @@ mod tests {
 		const SQL: &str = "DROP SCHEMA IF EXISTS reporting CASCADE;\nCREATE SCHEMA reporting;\n";
 
 		let _turn = one_at_a_time().await;
-		let Some(ctx) = probe_ctx(DATABASE).await else {
+		let Some(ctx) = probe_ctx(DATABASE, "9.62.0").await else {
 			return;
 		};
 
@@ -1713,6 +1812,56 @@ mod tests {
 				build: Some(offered.digest),
 			}
 		);
+	}
+
+	/// Mid-upgrade the database is still on the version it is leaving, or the
+	/// API is stopped, and views put back then block the migration.
+	// spec: CHK-RSC
+	#[tokio::test]
+	async fn an_apply_waits_for_a_migrated_running_tamanu() {
+		const DATABASE: &str = "bestool-alertd-rsc-unsettled";
+		const SQL: &str = "DROP SCHEMA IF EXISTS reporting CASCADE;\nCREATE SCHEMA reporting;\n";
+
+		let _turn = one_at_a_time().await;
+		let Some(ctx) = probe_ctx(DATABASE, "9.61.4").await else {
+			return;
+		};
+
+		let version = v("9.62.0");
+		let (base, asked) = serve(|_| vec![answer("application/sql", SQL)]);
+		cache_offer(
+			&version,
+			&Some(Offered {
+				version: version.clone(),
+				id: "5c1e8a90-2f4b-4d7e-8a61-0e9b3c2d4f15".to_owned(),
+				download_url: format!("{base}/artifacts/schema/download"),
+				digest: sri(SQL.as_bytes()),
+			}),
+		);
+		let canopy = Some(canopy_at(&base).await);
+
+		let unmigrated = apply_offered(TamanuCx {
+			version: version.clone(),
+			canopy: canopy.clone(),
+			..ctx.clone()
+		})
+		.await;
+		let stopped = apply_offered(TamanuCx {
+			version: v("9.61.4"),
+			canopy,
+			runtime: Arc::new(api(false)),
+			..ctx.clone()
+		})
+		.await;
+		let stamp = read_stamp(&ctx.db().await.expect("the probe database")).await;
+
+		drop(ctx);
+		drop_probe(DATABASE).await;
+
+		assert_eq!(unmigrated, HealOutcome::Deferred);
+		assert_eq!(stopped, HealOutcome::Deferred);
+		assert_eq!(stamp.expect("the stamp reads back"), Stamp::NoSchema);
+		assert!(asked.lock().unwrap().is_empty(), "nothing was fetched");
 	}
 
 	/// The checks' pool is shared across a whole sweep, so the apply takes a

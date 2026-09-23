@@ -47,6 +47,10 @@ It skips where the database is unreachable. A host with no Tamanu carries no Tam
 
 Applying the offered schema is the check's self-heal action, so it runs only while the check is failing, and behind the same backoff every heal is: on the daemon's own schedule, or when an operator asks a local sweep to heal.
 
+An upgrade drops the schema before it migrates, and views put back before the migration has run block its DDL.
+The heal therefore waits until Tamanu's API is running and the database records the installed version as its current one, which Tamanu writes only once that version's migrations have run.
+An upgrade that drops the schema has to stop the API first.
+
 The schema's own SQL drops the schema and recreates it, and is applied as one batch, so a statement that fails partway leaves the server the schema it already had.
 That holds only while the artifact carries no transaction control of its own: a `COMMIT` part-way through ends the batch's transaction, and a later failure then leaves the server with neither the schema it had nor the one offered.
 A schema artifact therefore carries no `BEGIN`, `COMMIT` or `ROLLBACK`, nor the `START TRANSACTION`, `END` and `ABORT` Postgres takes for the same three, and one that does is refused rather than applied.
