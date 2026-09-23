@@ -472,6 +472,8 @@ fn transaction_control(sql: &str) -> Option<&str> {
 	let bytes = sql.as_bytes();
 	let mut at = 0;
 	let mut starts_statement = true;
+	let mut after_begin = false;
+	let mut in_atomic_body = false;
 
 	while at < bytes.len() {
 		let byte = bytes[at];
@@ -498,13 +500,21 @@ fn transaction_control(sql: &str) -> Option<&str> {
 			let end = word_end(bytes, at);
 			let word = &sql[at..end];
 
-			if starts_statement
+			// A `BEGIN ATOMIC` function body is closed by an `END` standing as
+			// a statement of its own.
+			if after_begin && word.eq_ignore_ascii_case("atomic") {
+				in_atomic_body = true;
+			} else if in_atomic_body && starts_statement && word.eq_ignore_ascii_case("end") {
+				in_atomic_body = false;
+			} else if starts_statement
+				&& !in_atomic_body
 				&& TRANSACTION_CONTROL
 					.iter()
 					.any(|keyword| word.eq_ignore_ascii_case(keyword))
 			{
 				return Some(word);
 			}
+			after_begin = word.eq_ignore_ascii_case("begin");
 
 			// `E'…'`, `B'…'` and the like: the quote belongs to the word before it
 			// rather than opening a literal of its own, and only `E` takes
@@ -1216,6 +1226,7 @@ mod tests {
 			"START TRANSACTION; CREATE SCHEMA reporting;",
 			"CREATE SCHEMA reporting;\nEND;",
 			"CREATE SCHEMA reporting;\n  abort;\n",
+			"CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END; COMMIT;",
 		] {
 			assert!(transaction_control(sql).is_some(), "{sql:?}");
 		}
@@ -1245,6 +1256,8 @@ mod tests {
 			"CREATE VIEW v AS SELECT end_date, start_date FROM t;",
 			"CREATE VIEW v AS SELECT CASE WHEN a THEN 1 ELSE 2 END AS x FROM t;",
 			"CREATE TABLE t (\"end\" int, \"abort\" int);",
+			"CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END;",
+			"CREATE FUNCTION f() RETURNS int LANGUAGE sql\nBEGIN ATOMIC\n  SELECT 1;\n  SELECT 2;\nEND;\nCREATE SCHEMA reporting;",
 		] {
 			assert_eq!(transaction_control(sql), None, "{sql:?}");
 		}
