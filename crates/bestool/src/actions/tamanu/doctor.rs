@@ -76,10 +76,10 @@ pub struct DoctorArgs {
 	/// Run the self-heal action of every failing check in the selection.
 	///
 	/// A heal changes the system: it restarts services and, for the reporting
-	/// schema, replaces it. Narrow the run with `--check` to the one repair
-	/// intended. Implies `--no-daemon`, since a sweep the daemon computes is
-	/// side-effect free by design and the daemon heals on its own schedule.
-	#[arg(long)]
+	/// schema, replaces it, so it needs `--check` naming the repair intended.
+	/// Implies `--no-daemon`, since a sweep the daemon computes is side-effect
+	/// free by design and the daemon heals on its own schedule.
+	#[arg(long, requires = "only")]
 	pub heal: bool,
 }
 
