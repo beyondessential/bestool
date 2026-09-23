@@ -628,7 +628,13 @@ async fn api_up(runtime: &dyn ServiceRuntime) -> bool {
 		return false;
 	};
 	for service in services {
-		if service.duty == Duty::Tamanu(TamanuDuty::Api)
+		// A low-memory facility serves the API from pm2's single `tamanu-all`.
+		let serves_api = match &service.duty {
+			Duty::Tamanu(TamanuDuty::Api) => true,
+			Duty::Other(name) => name == "tamanu-all",
+			_ => false,
+		};
+		if serves_api
 			&& runtime
 				.service_facts(&service.id)
 				.await
@@ -1714,6 +1720,20 @@ mod tests {
 			},
 		);
 		assert!(!api_up(&tasks_only).await);
+
+		let all_in_one = FakeRuntime::empty().with(
+			Service {
+				id: ServiceId::new("tamanu-all"),
+				duty: Duty::from_tamanu_service_name("tamanu-all"),
+				slot: None,
+				scheduled: true,
+			},
+			ServiceFacts {
+				up: true,
+				..Default::default()
+			},
+		);
+		assert!(api_up(&all_in_one).await);
 	}
 
 	/// A context on a database of the test's own, so an apply that drops and
