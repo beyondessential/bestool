@@ -31,8 +31,11 @@ impl Advertisement {
 	}
 
 	#[zbus(property)]
-	fn service_data(&self) -> HashMap<String, Vec<u8>> {
-		self.service_data.clone()
+	fn service_data(&self) -> HashMap<String, zbus::zvariant::Value<'static>> {
+		self.service_data
+			.iter()
+			.map(|(uuid, data)| (uuid.clone(), zbus::zvariant::Value::from(data.clone())))
+			.collect()
 	}
 
 	#[zbus(property)]
