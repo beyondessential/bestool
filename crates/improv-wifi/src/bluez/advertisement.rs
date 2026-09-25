@@ -24,7 +24,8 @@ impl Advertisement {
 		&self.advertisement_type
 	}
 
-	#[zbus(property)]
+	// NOTE: property name is case sensitive
+	#[zbus(property, name = "ServiceUUIDs")]
 	fn service_uuids(&self) -> Vec<String> {
 		self.service_uuids.clone()
 	}
