@@ -14,7 +14,7 @@ use hickory_resolver::{
 	config::{ConnectionConfig, NameServerConfig, ResolverConfig},
 	net::runtime::TokioRuntimeProvider,
 };
-use miette::{IntoDiagnostic, Result, WrapErr};
+use miette::{IntoDiagnostic, Result, WrapErr, bail};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use reqwest::Url;
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -57,6 +57,10 @@ pub const CERT_RENEW_AFTER: Duration = Duration::from_secs(5 * 24 * 60 * 60);
 /// Timeout for the tailscale availability probe.
 const TAILSCALE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Per-request timeout for a raw GET, overriding the tailscale probe client's
+/// few seconds, since it covers downloading an artifact's body.
+const RAW_GET_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Timeout for the tailscale DNS lookup (against 100.100.100.100).
 ///
 /// Bounds the lookup so a wedged tailscale DNS server can't stall discovery;
@@ -77,7 +81,7 @@ const PROBE_CACHE_TTL: Duration = Duration::from_secs(60);
 /// (`SSLKEYLOGFILE`, proxies, …). Canopy invokes it whenever it needs to build or
 /// rebuild a client — at probe time, on mTLS cert renewal, and on reload — then
 /// layers its own concerns (its [`user_agent`], mTLS identity, DNS overrides,
-/// timeouts) on top.
+/// timeouts, and its no-redirect policy) on top.
 pub type ClientBuilderFactory = Arc<dyn Fn() -> reqwest::ClientBuilder + Send + Sync>;
 
 /// User-agent set on every canopy request, e.g.
@@ -302,8 +306,53 @@ impl ReqwestTransport {
 	/// Escape hatch behind the generated endpoint methods; needs the `raw-requests`
 	/// feature. In tailscale mode the request goes to `{tailscale_url}{tailscale_path}`
 	/// (typically `/public/...`); in mTLS mode to `{base_url}{mtls_path}`.
+	///
+	/// Redirects are not followed: a redirect, or an answer from any origin but
+	/// the one addressed, is refused rather than returned.
 	#[cfg(feature = "raw-requests")]
 	pub async fn get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
+		self.raw_get(tailscale_path, mtls_path).await
+	}
+
+	/// Download an artifact canopy offers. The device credential rides this
+	/// request, so an offer naming any origin but canopy's is refused, and only
+	/// its path and query are used.
+	pub async fn download_artifact(&self, offered_url: &str) -> Result<reqwest::Response> {
+		let path = self.own_path(offered_url)?;
+		self.raw_get(&format!("/public{path}"), &path).await
+	}
+
+	/// Whether an offered URL is one canopy serves itself, as against a location
+	/// it records for an artifact held elsewhere.
+	pub fn holds(&self, offered_url: &str) -> bool {
+		self.own_path(offered_url).is_ok()
+	}
+
+	/// The path and query to ask canopy for, from a URL canopy named.
+	fn own_path(&self, offered_url: &str) -> Result<String> {
+		let url = reqwest::Url::parse(offered_url)
+			.into_diagnostic()
+			.wrap_err("parsing the offered download URL")?;
+		if url.origin() != self.base_url.origin() {
+			bail!("the offered download URL {url} does not name canopy");
+		}
+
+		// A path opening with `//` names another host once joined to the base.
+		if url.path().starts_with("//") {
+			bail!("the offered download URL {url} carries an authority in its path");
+		}
+
+		Ok(match url.query() {
+			Some(query) => format!("{}?{query}", url.path()),
+			None => url.path().to_owned(),
+		})
+	}
+
+	/// GET a path, routed via tailscale when available, returning the raw response.
+	///
+	/// Redirects are not followed: a redirect, or an answer from any origin but
+	/// the one addressed, is refused rather than returned.
+	async fn raw_get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
 		let (http, url) = {
 			let state = self.state.read().await;
 			let url = match &*state {
@@ -322,11 +371,23 @@ impl ReqwestTransport {
 		};
 
 		debug!(%url, "GET via canopy");
-		http.get(url)
+		let response = http
+			.get(url.clone())
+			.timeout(RAW_GET_TIMEOUT)
 			.send()
 			.await
 			.into_diagnostic()
-			.wrap_err("GET via canopy")
+			.wrap_err("GET via canopy")?;
+
+		// The device credential rides this request, and alertd runs its body as DDL.
+		if response.status().is_redirection() {
+			bail!("canopy GET {url} was redirected, not answered");
+		}
+		if response.url().origin() != url.origin() {
+			bail!("canopy GET {url} was answered from {}", response.url());
+		}
+
+		Ok(response)
 	}
 
 	/// Start a request to an arbitrary canopy endpoint on the current auth path.
@@ -483,6 +544,7 @@ fn build_probe_client(
 ) -> Option<reqwest::Client> {
 	let mut builder = make_builder()
 		.user_agent(user_agent())
+		.redirect(reqwest::redirect::Policy::none())
 		.timeout(TAILSCALE_PROBE_TIMEOUT);
 	if !addrs.is_empty() {
 		builder = builder.resolve_to_addrs(host, addrs);
@@ -659,6 +721,7 @@ fn build_mtls_http(
 	make_builder()
 		.user_agent(user_agent())
 		.identity(identity)
+		.redirect(reqwest::redirect::Policy::none())
 		.use_rustls_tls()
 		.timeout(Duration::from_secs(30))
 		.build()
@@ -770,6 +833,153 @@ mod tests {
 		};
 		transport.renew().await.expect("renew should be a no-op");
 		assert!(transport.is_tailscale().await);
+	}
+
+	/// The offer names where to fetch a schema and the device credential rides
+	/// the request, so an offer naming any other origin is refused before it is
+	/// followed.
+	#[tokio::test]
+	async fn a_download_url_off_canopy_is_refused() {
+		let transport = ReqwestTransport::mtls_for_tests(DEFAULT_CANOPY_URL);
+		let err = transport
+			.download_artifact("https://evil.example/versions/2.60.0/artifacts/a/download")
+			.await
+			.expect_err("an offer off canopy is not followed");
+		assert!(err.to_string().contains("does not name canopy"), "{err}");
+	}
+
+	/// Canopy records where an artifact it does not hold rests and hands that
+	/// location back as the offer, so what says canopy will serve the bytes
+	/// itself is the offer naming canopy.
+	#[test]
+	fn an_offer_resting_elsewhere_is_not_one_canopy_holds() {
+		let transport = ReqwestTransport::mtls_for_tests(DEFAULT_CANOPY_URL);
+
+		assert!(transport.holds(&format!(
+			"{DEFAULT_CANOPY_URL}/versions/2.60.0/artifacts/a/download"
+		)));
+
+		for offered in [
+			"https://releases.example/2.60.0/schema.sql",
+			&format!("{DEFAULT_CANOPY_URL}//releases.example/schema.sql"),
+			"not a URL",
+		] {
+			assert!(!transport.holds(offered), "{offered}");
+		}
+	}
+
+	/// A path opening with `//` is an authority of its own, so it names canopy
+	/// to the origin check and another host once resolved against the base.
+	#[tokio::test]
+	async fn a_download_url_with_an_authority_in_its_path_is_refused() {
+		let transport = ReqwestTransport::mtls_for_tests(DEFAULT_CANOPY_URL);
+		let err = transport
+			.download_artifact(&format!("{DEFAULT_CANOPY_URL}//evil.example/x.sql"))
+			.await
+			.expect_err("an authority smuggled into the path is not followed");
+		assert!(
+			err.to_string().contains("carries an authority in its path"),
+			"{err}"
+		);
+	}
+
+	/// Canopy names its own origin in the offer, but which endpoint holds the
+	/// credential is the transport's to decide, so the offer is followed for
+	/// its path.
+	#[tokio::test]
+	async fn a_download_url_on_canopy_is_followed_by_path() {
+		let (canopy, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
+		let transport = ReqwestTransport {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: canopy.parse().unwrap(),
+			device_key: None,
+			make_builder: test_factory(),
+			state: RwLock::new(State::Tailscale(
+				build_probe_client("127.0.0.1", &[], &test_factory()).expect("a canopy client"),
+			)),
+		};
+
+		let response = transport
+			.download_artifact(&format!(
+				"{DEFAULT_CANOPY_URL}/versions/2.60.0/artifacts/a/download"
+			))
+			.await
+			.expect("canopy's own offer is followed");
+		assert_eq!(
+			response.url().path(),
+			"/public/versions/2.60.0/artifacts/a/download"
+		);
+	}
+
+	/// Canopy addresses the artifact, and a parameter it puts on the offer is
+	/// part of that address: dropped, the fetch asks for something else.
+	#[tokio::test]
+	async fn a_download_url_keeps_the_query_canopy_named() {
+		let (canopy, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
+		let transport = ReqwestTransport {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: canopy.parse().unwrap(),
+			device_key: None,
+			make_builder: test_factory(),
+			state: RwLock::new(State::Tailscale(
+				build_probe_client("127.0.0.1", &[], &test_factory()).expect("a canopy client"),
+			)),
+		};
+
+		let response = transport
+			.download_artifact(&format!(
+				"{DEFAULT_CANOPY_URL}/versions/2.60.0/artifacts/a/download?platform=linux"
+			))
+			.await
+			.expect("canopy's own offer is followed");
+		assert_eq!(response.url().query(), Some("platform=linux"));
+	}
+
+	/// A raw GET's body reaches alertd as privileged DDL and the device
+	/// credential rides the request, so a hop off canopy's origin is refused.
+	#[cfg(feature = "raw-requests")]
+	#[tokio::test]
+	async fn a_redirect_off_canopy_is_refused() {
+		let (canopy, _canopy_server) = serve_once(
+			"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/x\r\nContent-Length: 0\r\n\r\n",
+		);
+
+		let transport = ReqwestTransport {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: canopy.parse().unwrap(),
+			device_key: None,
+			make_builder: test_factory(),
+			state: RwLock::new(State::Tailscale(
+				build_probe_client("127.0.0.1", &[], &test_factory()).expect("a canopy client"),
+			)),
+		};
+
+		let err = transport
+			.get("/public/x", "/x")
+			.await
+			.expect_err("a redirect is not canopy's answer");
+		assert!(err.to_string().contains("redirected"), "{err}");
+	}
+
+	#[cfg(feature = "raw-requests")]
+	#[tokio::test]
+	async fn a_get_canopy_answers_itself_comes_back() {
+		let (canopy, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
+		let transport = ReqwestTransport {
+			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
+			tailscale_url: canopy.parse().unwrap(),
+			device_key: None,
+			make_builder: test_factory(),
+			state: RwLock::new(State::Tailscale(
+				build_probe_client("127.0.0.1", &[], &test_factory()).expect("a canopy client"),
+			)),
+		};
+
+		let response = transport
+			.get("/public/x", "/x")
+			.await
+			.expect("canopy answered");
+		assert_eq!(response.text().await.unwrap(), "SELECT 1;");
 	}
 
 	#[tokio::test]

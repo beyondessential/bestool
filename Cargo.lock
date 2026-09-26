@@ -587,9 +587,9 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 
 [[package]]
 name = "bes-canopy-api"
-version = "1.0.0"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3838cef18b44940a09c08ea7bf68cbe681a25765a1d6db2f70f276673f4cd95"
+checksum = "9ac482b69e522e01ed55663672be96d790626eb636743d31d9b18e1678af9143"
 dependencies = [
  "async-trait",
  "bon",
@@ -699,6 +699,7 @@ name = "bestool-alertd"
 version = "28.2.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "bestool-canopy",
  "bestool-postgres",
  "bestool-tamanu",
@@ -717,6 +718,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sysinfo",
  "tempfile",
  "time",
@@ -2984,7 +2986,7 @@ dependencies = [
  "libc",
  "log",
  "rustversion",
- "windows-link 0.2.1",
+ "windows-link 0.1.3",
  "windows-result 0.4.1",
 ]
 
@@ -7527,7 +7529,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

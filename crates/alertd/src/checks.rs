@@ -60,6 +60,7 @@ pub mod pg_checksums;
 pub mod pg_tuning;
 pub mod report_errors;
 pub mod reporting_roles;
+pub mod reporting_schema;
 pub mod service_resources;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
@@ -566,6 +567,14 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("version", db_version::run, postgres, off_wire),
 		entry!("migrations", migrations::run, tamanu_app),
 		entry!("reporting_roles", reporting_roles::run, tamanu_app),
+		// Its heal is the one write any check makes to Tamanu's database.
+		entry!(
+			"reporting_schema",
+			reporting_schema::run,
+			tamanu_app,
+			(|ctx| Box::pin(reporting_schema::heal(ctx))),
+			(heal::DEFAULT_MIN_INTERVAL)
+		),
 		// An application check that still reads the machine's total memory for its
 		// denominator. Interim, and not an oversight: the substrate work replaces
 		// that reading with the Postgres service's own declared ceiling.
@@ -1026,6 +1035,7 @@ mod tests {
 			);
 		}
 		assert_eq!(arm_of("fhir_workers"), Arm::Tamanu(TamanuScope::Central));
+		assert_eq!(arm_of("reporting_schema"), Arm::Tamanu(TamanuScope::Any));
 	}
 
 	/// A context describes the deployment it was built for, so the role it
