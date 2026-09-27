@@ -814,6 +814,24 @@ mod tests {
 		drop(writer);
 	}
 
+	#[cfg(unix)]
+	#[test]
+	fn a_shared_directory_that_was_already_there_is_made_private() {
+		use std::os::unix::fs::PermissionsExt as _;
+
+		let dir = tempfile::tempdir().unwrap();
+		let store = dir.path().join("store");
+		std::fs::create_dir(&store).unwrap();
+		std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+		let mut writer = Writer::new(&store);
+		writer.query(&context(), "select 1;".into(), QuerySource::Typed);
+
+		let mode = std::fs::metadata(&store).unwrap().permissions().mode() & 0o777;
+		assert_eq!(mode, 0o700);
+		drop(writer);
+	}
+
 	#[test]
 	fn a_session_that_records_nothing_leaves_no_segment() {
 		let dir = tempfile::tempdir().unwrap();

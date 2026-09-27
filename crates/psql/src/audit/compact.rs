@@ -322,7 +322,7 @@ fn fold(dir: &Path, date: Date) -> Result<usize> {
 		}
 	}
 
-	info!(%date, consumed, records = records.len(), "folded audit segments into a day file");
+	debug!(%date, consumed, records = records.len(), "folded audit segments into a day file");
 	Ok(consumed)
 }
 
