@@ -81,6 +81,8 @@ super::subcommands! {
 	#[cfg(all(windows, feature = "tamanu-pgtune"))]
 	#[clap(alias = "pgtune")]
 	pg_tune => PgTune(PgTuneArgs),
+	#[cfg(feature = "tamanu-pre-upgrade")]
+	pre_upgrade => PreUpgrade(PreUpgradeArgs),
 	#[cfg(feature = "tamanu-psql")]
 	#[clap(aliases = ["p", "pg", "sql"])]
 	psql => Psql(PsqlArgs),
