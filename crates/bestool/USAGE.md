@@ -2307,7 +2307,7 @@ Prepare this server for upgrading Tamanu to a new version.
 
 Downloads the target release if it isn't installed yet and works out which of its migrations this database hasn't run. If there are any, drops the reporting schema, whose views block migrations that alter the columns they read.
 
-A reporting schema stamped by alertd is dropped as is: alertd reapplies it once the new version has migrated. Any other reporting schema is only dropped with `--yes`, because nothing rebuilds it afterwards.
+A reporting schema stamped by alertd is dropped as is: alertd reapplies it once the new version has migrated. Any other reporting schema is only dropped with `--yes`, and has to be reinstalled by hand after the upgrade.
 
 **Usage:** `bestool tamanu pre-upgrade [OPTIONS] <VERSION>`
 

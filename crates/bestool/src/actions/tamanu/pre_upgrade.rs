@@ -35,7 +35,7 @@ const MIGRATION_DIRS: &[&str] = &[
 ///
 /// A reporting schema stamped by alertd is dropped as is: alertd reapplies it once
 /// the new version has migrated. Any other reporting schema is only dropped with
-/// `--yes`, because nothing rebuilds it afterwards.
+/// `--yes`, and has to be reinstalled by hand after the upgrade.
 #[derive(Debug, Clone, Parser)]
 pub struct PreUpgradeArgs {
 	/// Version being upgraded to.
@@ -131,15 +131,16 @@ pub async fn run(args: PreUpgradeArgs, ctx: Context) -> Result<()> {
 
 	if !managed && !args.yes {
 		bail!(
-			"the reporting schema wasn't applied by alertd, so nothing will rebuild it after the \
-			 upgrade; rerun with --yes to drop it anyway"
+			"the reporting schema wasn't applied by alertd, so nothing will reinstall it after the \
+			 upgrade; rerun with --yes to drop it anyway, then reinstall it by hand once the \
+			 upgrade has migrated"
 		);
 	}
 
 	let aftermath = if managed {
 		"alertd reapplies it once the upgrade has migrated"
 	} else {
-		"it will need rebuilding after the upgrade"
+		"nothing reinstalls it automatically, so reinstall it by hand once the upgrade has migrated"
 	};
 	if args.dry_run {
 		println!("would drop the reporting schema; {aftermath}");
