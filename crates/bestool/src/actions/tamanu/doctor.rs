@@ -468,9 +468,9 @@ async fn fetch_daemon_latest(http: &reqwest::Client) -> Result<(SweepResult, jif
 }
 
 /// Reconstruct per-check entries from the daemon's wire payload so the cached
-/// path can render the check list and accurate result-line counts. The wire
-/// format drops summaries and reasons, so reconstructed entries have empty
-/// strings for those fields.
+/// path can render the check list and accurate result-line counts. Each entry's
+/// summary and reason ride in its extra keys; one that lacks them (an older
+/// daemon) is read with empty strings. Details are not reconstructed.
 ///
 /// Every grain is read: the machine's checks, each application's, and the
 /// ungrouped array, each tagged with the subject it was filed against so the
@@ -524,19 +524,27 @@ fn results_from_wire(payload: &StatusPayload) -> Vec<CheckOutcome> {
 			let Some(result) = entry.result.as_ref() else {
 				continue;
 			};
+			let text = |key: &str| {
+				entry
+					.extra
+					.get(key)
+					.and_then(Value::as_str)
+					.unwrap_or_default()
+					.to_string()
+			};
 			let status = match result {
 				CheckResult::Passed => CheckStatus::Pass,
-				CheckResult::Skipped => CheckStatus::Skip(String::new()),
-				CheckResult::Warning => CheckStatus::Warning(String::new()),
-				CheckResult::Failed => CheckStatus::Fail(String::new()),
-				CheckResult::Broken => CheckStatus::Broken(String::new()),
+				CheckResult::Skipped => CheckStatus::Skip(text("reason")),
+				CheckResult::Warning => CheckStatus::Warning(text("reason")),
+				CheckResult::Failed => CheckStatus::Fail(text("reason")),
+				CheckResult::Broken => CheckStatus::Broken(text("reason")),
 			};
 			results.push(CheckOutcome {
 				subject: subject.clone(),
 				check: Check {
 					name,
 					status,
-					summary: String::new(),
+					summary: text("summary"),
 					details: serde_json::Map::new(),
 					payload_extras: serde_json::Map::new(),
 					stats: Vec::new(),
@@ -738,6 +746,39 @@ mod tests {
 		assert_eq!(results[0].check.name, "disk_free");
 		assert_eq!(results[0].subject, Subject::Machine);
 		assert!(matches!(results[0].check.status, CheckStatus::Pass));
+	}
+
+	#[test]
+	fn results_from_wire_keeps_summary_and_reason() {
+		// The cached path is what a bare `doctor` renders, so the wire entry's
+		// summary and reason are all an operator has to go on.
+		let payload: StatusPayload = serde_json::from_value(serde_json::json!({
+			"health": [],
+			"machine": {
+				"detail": {},
+				"health": [
+					{
+						"check": "time_sync",
+						"result": "warning",
+						"summary": "clock drifting",
+						"reason": "offset 3s from NTP",
+					},
+					{ "check": "disk_free", "result": "passed", "summary": "42% free" },
+				],
+			},
+		}))
+		.unwrap();
+		let results = results_from_wire(&payload);
+		let by_name = |name: &str| results.iter().find(|o| o.check.name == name).unwrap();
+
+		let time_sync = &by_name("time_sync").check;
+		assert_eq!(time_sync.summary, "clock drifting");
+		assert!(
+			matches!(&time_sync.status, CheckStatus::Warning(r) if r == "offset 3s from NTP"),
+			"{:?}",
+			time_sync.status
+		);
+		assert_eq!(by_name("disk_free").check.summary, "42% free");
 	}
 
 	#[test]

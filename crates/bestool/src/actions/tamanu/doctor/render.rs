@@ -60,15 +60,13 @@ pub fn write_check_line<W: Write>(
 		width = name_width,
 		summary = check.summary,
 	)?;
-	if let CheckStatus::Skip(r)
-	| CheckStatus::Warning(r)
-	| CheckStatus::Fail(r)
-	| CheckStatus::Broken(r) = &check.status
+	if let Some(r) = check.status.reason()
+		&& !r.is_empty()
 	{
 		let dim = if use_colours {
 			format!("{}", r.dimmed())
 		} else {
-			r.clone()
+			r.to_string()
 		};
 		writeln!(
 			out,
@@ -298,6 +296,27 @@ mod tests {
 		render_plain(&mut buf, &sorted, false, overall, &SweepSource::Local, false).unwrap();
 		let out = String::from_utf8(buf).unwrap();
 		assert!(out.contains("computed locally"));
+	}
+
+	#[test]
+	fn check_line_shows_summary_and_reason() {
+		let outcome = on(Check::warning("time_sync", "clock drifting", "offset 3s"));
+		let mut buf = Vec::new();
+		write_check_line(&mut buf, &outcome, "machine:time_sync", 17, false).unwrap();
+		let out = String::from_utf8(buf).unwrap();
+		let lines: Vec<&str> = out.lines().collect();
+		assert_eq!(lines.len(), 2, "{out}");
+		assert!(lines[0].contains("clock drifting"), "{out}");
+		assert!(lines[1].trim() == "offset 3s", "{out}");
+	}
+
+	#[test]
+	fn check_line_omits_an_empty_reason() {
+		let outcome = on(Check::warning("time_sync", "clock drifting", ""));
+		let mut buf = Vec::new();
+		write_check_line(&mut buf, &outcome, "machine:time_sync", 17, false).unwrap();
+		let out = String::from_utf8(buf).unwrap();
+		assert_eq!(out.lines().count(), 1, "{out}");
 	}
 
 	#[test]
