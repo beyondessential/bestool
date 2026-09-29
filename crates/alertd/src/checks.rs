@@ -88,9 +88,10 @@ pub mod version_drift;
 /// spec: SUBJ
 #[derive(Clone, bon::Builder)]
 pub struct MachineCx {
-	/// Shared across checks and across the daemon's other consumers so TCP/TLS
-	/// connections stay warm between ticks; HTTP checks apply per-request
-	/// timeouts via `RequestBuilder::timeout`.
+	/// Shared across checks and across the daemon's other consumers, for
+	/// requests off this machine; HTTP checks apply per-request timeouts via
+	/// `RequestBuilder::timeout`. Services on this machine are reached through
+	/// [`local_http`](crate::local_http) instead.
 	pub http: reqwest::Client,
 	/// Shared canopy client for checks that reach canopy during a sweep — a
 	/// self-heal action that recovers state from canopy, in particular. `None`
@@ -163,10 +164,6 @@ pub struct TamanuCx {
 	/// The database pool this deployment's checks draw from, when the database
 	/// could be reached at all. Take a connection with [`TamanuCx::db`].
 	pub pool: Option<PgPool>,
-	/// Shared across checks and across the daemon's other consumers so TCP/TLS
-	/// connections stay warm between ticks; HTTP checks apply per-request
-	/// timeouts via `RequestBuilder::timeout`.
-	pub http: reqwest::Client,
 	/// Shared canopy client, for a check that grades what canopy says about this
 	/// deployment. `None` on a one-shot local sweep with no canopy connectivity,
 	/// where such a check skips.
@@ -755,7 +752,6 @@ pub mod test_support {
 			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://localhost/tamanu-central".into(),
 			pool: Some(pool),
-			http: reqwest::Client::new(),
 			canopy: None,
 			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
 			runtime: Arc::new(FakeRuntime::empty()),
@@ -774,7 +770,6 @@ pub mod test_support {
 			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://localhost/tamanu-facility".into(),
 			pool: None,
-			http: reqwest::Client::new(),
 			canopy: None,
 			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
 			runtime: Arc::new(FakeRuntime::empty()),
@@ -884,7 +879,6 @@ mod tests {
 			install_root: None,
 			database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
 			pool: None,
-			http: reqwest::Client::new(),
 			canopy: None,
 			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
 			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),

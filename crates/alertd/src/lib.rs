@@ -4,6 +4,7 @@ pub use bestool_canopy::Redacted;
 pub mod check;
 pub mod checks;
 pub mod heal;
+pub mod local_http;
 pub mod progress;
 pub mod runtime;
 pub mod server_info;

@@ -55,9 +55,9 @@ impl SweepCache {
 		Self::default()
 	}
 
-	pub async fn caddy_config(&self, http: &reqwest::Client) -> Option<Arc<Value>> {
+	pub async fn caddy_config(&self) -> Option<Arc<Value>> {
 		self.caddy_config
-			.get_or_init(|| async { caddy::fetch_admin_config(http).await.map(Arc::new) })
+			.get_or_init(|| async { caddy::fetch_admin_config().await.map(Arc::new) })
 			.await
 			.clone()
 	}
@@ -71,10 +71,10 @@ impl SweepCache {
 	/// for.
 	///
 	/// spec: CHK-CCO#which-names-it-grades
-	pub async fn caddy_subjects(&self, http: &reqwest::Client) -> Option<Arc<BTreeSet<String>>> {
+	pub async fn caddy_subjects(&self) -> Option<Arc<BTreeSet<String>>> {
 		self.caddy_subjects
 			.get_or_init(|| async {
-				let config = self.caddy_config(http).await?;
+				let config = self.caddy_config().await?;
 				Some(Arc::new(caddy::active_subjects(&config)))
 			})
 			.await
@@ -212,11 +212,10 @@ mod tests {
 		});
 
 		let cache = SweepCache::new();
-		let http = reqwest::Client::new();
-		assert!(cache.caddy_config(&http).await.is_some());
-		let subjects = cache.caddy_subjects(&http).await.unwrap();
+		assert!(cache.caddy_config().await.is_some());
+		let subjects = cache.caddy_subjects().await.unwrap();
 		assert!(subjects.contains("app.example.com"));
-		assert!(cache.caddy_subjects(&http).await.is_some());
+		assert!(cache.caddy_subjects().await.is_some());
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
 	}
 

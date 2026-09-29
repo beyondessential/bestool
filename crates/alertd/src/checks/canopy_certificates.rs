@@ -96,7 +96,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		);
 	}
 
-	let subjects = match ctx.sweep.caddy_subjects(&ctx.http).await {
+	let subjects = match ctx.sweep.caddy_subjects().await {
 		Some(subjects) => subjects,
 		None => {
 			return Check::skip(
