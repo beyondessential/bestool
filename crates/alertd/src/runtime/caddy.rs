@@ -36,7 +36,7 @@ use x509_parser::prelude::*;
 use super::{
 	Certificate, CertificateSource, HttpRuntime, TrafficCounters, TrafficSource, Unavailable,
 };
-use crate::{checks::fmt_chain, sweep_cache::SweepCache};
+use crate::{checks::fmt_chain, local_http, sweep_cache::SweepCache};
 
 const METRICS_URL: &str = "http://localhost:2019/metrics";
 const CONFIG_URL: &str = "http://localhost:2019/config/apps/http";
@@ -65,8 +65,6 @@ const HANDSHAKE_BUDGET: Duration = Duration::from_secs(30);
 
 /// The Caddy serving a deployment on the machine this process is on.
 pub struct CaddyRuntime {
-	/// Shared with the checks so TCP connections stay warm between ticks.
-	http: reqwest::Client,
 	/// The sweep's shared readings. Caddy's configuration and the collected
 	/// chains are the machine's, and one of these exists per application, so
 	/// without this a two-application host fetches and parses both twice.
@@ -74,8 +72,8 @@ pub struct CaddyRuntime {
 }
 
 impl CaddyRuntime {
-	pub fn new(http: reqwest::Client, sweep: Arc<SweepCache>) -> Self {
-		Self { http, sweep }
+	pub fn new(sweep: Arc<SweepCache>) -> Self {
+		Self { sweep }
 	}
 
 	/// Caddy's own view of whether it counts requests.
@@ -84,7 +82,12 @@ impl CaddyRuntime {
 	/// server or one not counting, and the two are a reading and the absence of
 	/// one.
 	async fn instrumented(&self) -> Result<bool, Unavailable> {
-		let config = match self.http.get(CONFIG_URL).timeout(TIMEOUT).send().await {
+		let config = match local_http::client()
+			.get(CONFIG_URL)
+			.timeout(TIMEOUT)
+			.send()
+			.await
+		{
 			Ok(resp) if resp.status().is_success() => resp.json::<Value>().await,
 			Ok(resp) => {
 				debug!(status = %resp.status(), "caddy config endpoint refused");
@@ -114,7 +117,12 @@ impl CaddyRuntime {
 #[async_trait]
 impl HttpRuntime for CaddyRuntime {
 	async fn http_counters(&self) -> Result<TrafficCounters, Unavailable> {
-		let body = match self.http.get(METRICS_URL).timeout(TIMEOUT).send().await {
+		let body = match local_http::client()
+			.get(METRICS_URL)
+			.timeout(TIMEOUT)
+			.send()
+			.await
+		{
 			Ok(resp) if resp.status().is_success() => resp.text().await.map_err(|err| {
 				Unavailable::new(format!(
 					"caddy /metrics body read failed: {}",
@@ -151,7 +159,7 @@ impl HttpRuntime for CaddyRuntime {
 	}
 
 	async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable> {
-		read_certificates(&self.http, &self.sweep).await
+		read_certificates(&self.sweep).await
 	}
 }
 
@@ -162,11 +170,8 @@ impl HttpRuntime for CaddyRuntime {
 /// those would have a check alert on something nothing serves. So the config is
 /// read first, then only managed certificates whose subjects are still active,
 /// plus any the config loads by hand.
-async fn read_certificates(
-	client: &reqwest::Client,
-	sweep: &SweepCache,
-) -> Result<Vec<Certificate>, Unavailable> {
-	let Some(config) = sweep.caddy_config(client).await else {
+async fn read_certificates(sweep: &SweepCache) -> Result<Vec<Certificate>, Unavailable> {
+	let Some(config) = sweep.caddy_config().await else {
 		return Err(Unavailable::new(
 			"could not read the caddy admin API at localhost:2019",
 		));
@@ -583,8 +588,8 @@ pub(crate) fn parse_cert(pem: &[u8]) -> Option<DiskCert> {
 /// Fetch caddy's live config from the local admin API. `None` on any error
 /// (admin API disabled, unreachable, or non-2xx) — the caller then skips, since
 /// without the config it can't tell which certs are still in use.
-pub(crate) async fn fetch_admin_config(client: &reqwest::Client) -> Option<serde_json::Value> {
-	let resp = client
+pub(crate) async fn fetch_admin_config() -> Option<serde_json::Value> {
+	let resp = local_http::client()
 		.get("http://localhost:2019/config/")
 		.timeout(Duration::from_secs(3))
 		.send()

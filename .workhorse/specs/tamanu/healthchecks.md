@@ -38,6 +38,13 @@ The same check run alone and run as part of a full sweep reports durations in th
 
 A check that errors so severely that it produces no result at all is reported as broken, for that check alone, and the rest of the sweep completes and reports normally.
 
+## Services on this machine
+
+A check that reaches a service on its own machine over HTTP, such as Tamanu's API or Caddy's admin interface, opens a new connection for every request.
+It never sends a request on a connection left open by an earlier sweep.
+Some hosts drop a connection that sits idle between sweeps without closing it, and a request sent on one waits out its timeout even though the service is answering.
+Opening a new connection each time means the result reflects whether the service answers now, so a healthy service does not read as failing on alternate sweeps.
+
 ## Self-healing
 
 A check may declare a self-heal action: a repair the daemon attempts, while the check is failing, to recover the condition the check grades without operator action.

@@ -364,7 +364,6 @@ fn tamanu_context(
 	targets: &SweepTargets,
 	tamanu: &Option<ResolvedTamanu>,
 	pool: &Option<bestool_postgres::pool::PgPool>,
-	http: &reqwest::Client,
 	canopy: &Option<Arc<CanopyClient>>,
 	sweep: &Arc<SweepCache>,
 ) -> checks::TamanuCx {
@@ -379,13 +378,9 @@ fn tamanu_context(
 		install_root: tamanu.and_then(|t| t.root.clone()),
 		database_url: targets.database_url.clone(),
 		pool: pool.clone(),
-		http: http.clone(),
 		canopy: canopy.clone(),
 		runtime: tamanu_runtime(app, &version),
-		traffic: Arc::new(runtime::caddy::CaddyRuntime::new(
-			http.clone(),
-			sweep.clone(),
-		)),
+		traffic: Arc::new(runtime::caddy::CaddyRuntime::new(sweep.clone())),
 		sweep: sweep.clone(),
 		store: Arc::new(store::FileStore::for_subject(&Subject::Application(
 			app.clone(),
@@ -911,15 +906,7 @@ pub async fn perform_sweep(
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
 				pg_cxs.insert(app.clone(), cx);
 			} else {
-				let cx = tamanu_context(
-					app,
-					targets,
-					&tamanu,
-					&check_pool,
-					&http_client,
-					&canopy,
-					&sweep_cache,
-				);
+				let cx = tamanu_context(app, targets, &tamanu, &check_pool, &canopy, &sweep_cache);
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
 				tamanu_cxs.insert(app.clone(), cx);
 			}
@@ -1604,7 +1591,6 @@ mod tests {
 			kind: bestool_tamanu::ApiServerKind::Central,
 			root: Some(PathBuf::from("/opt/tamanu")),
 		});
-		let http = reqwest::Client::new();
 
 		// A cluster's context has no field for a version, an install root or a
 		// deployment configuration, so this asserts what it does carry: the
@@ -1620,7 +1606,6 @@ mod tests {
 			&targets,
 			&tamanu,
 			&None,
-			&http,
 			&None,
 			&Arc::new(SweepCache::new()),
 		);

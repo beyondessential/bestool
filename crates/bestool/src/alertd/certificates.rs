@@ -381,7 +381,7 @@ impl CertificateState {
 		}
 		*self.stood_down.write().await = None;
 
-		let names = self.target_names(ctx, &entitlement).await;
+		let names = self.target_names(&entitlement).await;
 
 		self.prune_orders(&names).await;
 
@@ -474,13 +474,11 @@ impl CertificateState {
 	/// issuance.
 	///
 	/// spec: TLS#which-names-are-certified
-	async fn target_names(&self, ctx: &TaskContext, entitlement: &Entitlement) -> Vec<String> {
-		let mut names: BTreeSet<String> = delivery::caddy_subjects(&ctx.http_client)
-			.await
-			.unwrap_or_else(|err| {
-				debug!(%err, "could not read Caddy's active subjects");
-				BTreeSet::new()
-			});
+	async fn target_names(&self, entitlement: &Entitlement) -> Vec<String> {
+		let mut names: BTreeSet<String> = delivery::caddy_subjects().await.unwrap_or_else(|err| {
+			debug!(%err, "could not read Caddy's active subjects");
+			BTreeSet::new()
+		});
 		// A name is recorded during a handshake before any entitlement has been
 		// asked for, so the test is applied here rather than there — and a name
 		// this entitlement will never order for is dropped from the record as
@@ -1179,12 +1177,7 @@ mod tests {
 		assert!(state.pass_due().await);
 
 		let entitlement = state.entitlement.read().await.clone().unwrap();
-		assert!(
-			state
-				.target_names(&detached_ctx(), &entitlement)
-				.await
-				.is_empty()
-		);
+		assert!(state.target_names(&entitlement).await.is_empty());
 
 		// Nothing is waiting on a pass any more, so the steady interval governs
 		// again rather than every tick making one due.
@@ -1203,7 +1196,7 @@ mod tests {
 		state.note_wanted("app.example.com").await;
 
 		let entitlement = state.entitlement.read().await.clone().unwrap();
-		let names = state.target_names(&detached_ctx(), &entitlement).await;
+		let names = state.target_names(&entitlement).await;
 		assert_eq!(names, vec!["app.example.com".to_string()]);
 	}
 
@@ -1409,7 +1402,7 @@ mod tests {
 		// Caddy's admin API is not running under the test, so the set a handshake
 		// feeds is the whole of the target list.
 		state.note_wanted("app.example.com").await;
-		let targets = state.target_names(&detached_ctx(), &entitlement).await;
+		let targets = state.target_names(&entitlement).await;
 		assert_eq!(targets, vec!["app.example.com".to_string()]);
 		state.prune_orders(&targets).await;
 
@@ -1497,22 +1490,12 @@ mod tests {
 		// Caddy's admin API is not running under this test, so the subjects it
 		// would contribute are empty: a name the entitlement covers that Caddy
 		// does not serve produces no order.
-		assert!(
-			state
-				.target_names(&detached_ctx(), &entitlement)
-				.await
-				.is_empty()
-		);
+		assert!(state.target_names(&entitlement).await.is_empty());
 
 		// And a subject the entitlement does not cover is dropped even when it
 		// reaches the task by the one route a test can drive.
 		state.note_wanted("app.elsewhere.test").await;
-		assert!(
-			state
-				.target_names(&detached_ctx(), &entitlement)
-				.await
-				.is_empty()
-		);
+		assert!(state.target_names(&entitlement).await.is_empty());
 	}
 
 	#[tokio::test]

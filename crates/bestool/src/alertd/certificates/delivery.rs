@@ -142,8 +142,8 @@ const CONFIG_TIMEOUT: Duration = Duration::from_secs(3);
 /// needed rather than while a client waits.
 ///
 /// spec: TLS#which-names-are-certified
-pub async fn caddy_subjects(client: &reqwest::Client) -> Result<BTreeSet<String>> {
-	let response = client
+pub async fn caddy_subjects() -> Result<BTreeSet<String>> {
+	let response = bestool_alertd::local_http::client()
 		.get(CONFIG_URL)
 		.timeout(CONFIG_TIMEOUT)
 		.send()
