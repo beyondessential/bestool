@@ -33,9 +33,9 @@ const MIGRATION_DIRS: &[&str] = &[
 /// its migrations this database hasn't run. If there are any, drops the reporting
 /// schema, whose views block migrations that alter the columns they read.
 ///
-/// A reporting schema stamped by alertd is dropped as is: alertd reapplies it once
-/// the new version has migrated. Any other reporting schema is only dropped with
-/// `--yes`, and has to be reinstalled by hand after the upgrade.
+/// A reporting schema alertd did not stamp may be hand-built, so it is only dropped
+/// with `--yes`. Once the new version has migrated, alertd applies the schema canopy
+/// publishes for it; where canopy publishes none, reinstall the schema by hand.
 #[derive(Debug, Clone, Parser)]
 pub struct PreUpgradeArgs {
 	/// Version being upgraded to.
@@ -131,17 +131,15 @@ pub async fn run(args: PreUpgradeArgs, ctx: Context) -> Result<()> {
 
 	if !managed && !args.yes {
 		bail!(
-			"the reporting schema wasn't applied by alertd, so nothing will reinstall it after the \
-			 upgrade; rerun with --yes to drop it anyway, then reinstall it by hand once the \
-			 upgrade has migrated"
+			"the reporting schema wasn't applied by alertd and may be hand-built; rerun with --yes \
+			 to drop it anyway"
 		);
 	}
 
-	let aftermath = if managed {
-		"alertd reapplies it once the upgrade has migrated"
-	} else {
-		"nothing reinstalls it automatically, so reinstall it by hand once the upgrade has migrated"
-	};
+	let aftermath = format!(
+		"once {target} has migrated, alertd applies the schema canopy publishes for it; if \
+		 canopy publishes none, reinstall it by hand"
+	);
 	if args.dry_run {
 		println!("would drop the reporting schema; {aftermath}");
 		return Ok(());
