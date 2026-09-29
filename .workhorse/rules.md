@@ -13,6 +13,9 @@ It is read by someone deciding whether the implementation is correct, or re-impl
 Specs are written in markdown prose with each sentence on its own line and no hard-wrapping, rather than the checkbox acceptance-criteria style shown in `spec-format.md`.
 This balances ease of writing and diff parseability.
 
+Non-normative text, such as the rationale behind a requirement or the circumstance that motivates it, goes in a `> [!NOTE]` block, still one sentence per line.
+Everything outside a note is a requirement.
+
 ## Cross-references
 
 Specs reference each other with markdown links under the target's id, e.g. `[BAK](backup.md)`.
