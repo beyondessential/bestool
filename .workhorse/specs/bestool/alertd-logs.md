@@ -19,7 +19,9 @@ On Linux the command reads the system journal entries recorded under the `bestoo
 When no daemon logs exist at all, the command exits with an error naming where it looked.
 
 Reading the logs requires privileges an operator may not hold.
-The command acquires the privileges it needs before reading, and a log it still cannot read is an error, so an unreadable log cannot be mistaken for a quiet one.
+On Linux the command acquires the privileges it needs before reading.
+On Windows a log it cannot read for lack of privileges is an error directing the operator to an elevated shell, since elevating would open a separate console.
+Either way an unreadable log is an error, so it cannot be mistaken for a quiet one.
 
 ## Output
 
