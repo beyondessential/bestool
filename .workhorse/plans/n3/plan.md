@@ -18,19 +18,20 @@ The daemon also keeps only the version that failed, not why, so the reason never
   - Windows: reads the service's JSON log files directly under `%ProgramData%\bestool\logs`, so it still works when the daemon is down or crash-looping.
   - Linux: shows the journal for the `bestool-alertd` identifier.
   - Prints entries as text on both platforms, with no JSON option.
-- The Windows service writes its log files as text, not JSON, so the files and `alertd logs` read the same as the daemon's terminal output.
+  - On Windows it renders the service's JSON log lines into the terminal format; on Linux the journal is already text.
   - `-n`/`--lines` sets how many recent entries to show first, defaulting to 50.
   - Follows by default, whether or not stdout is a terminal; `--no-follow` prints and exits.
+- The Windows service keeps writing JSON log files.
+  JSON escapes newlines, so every entry is one line, which keeps counting the last N entries and merging files by timestamp simple.
+  Switching to text would have needed a lloggs change (its `setup` always uses JSON with `--log-file`) or a bestool-owned subscriber, a transition for old JSON files, and grouping of multi-line entries.
 
 ## Notes
 
 - On Windows, lloggs starts a new file prefix at each process start (`bestool.<start-time>.log.<date>`, rotated daily).
   "The last N entries" therefore means merging across files by timestamp, and following has to pick up the new series a restart creates.
   The entries just before a restart are usually the interesting ones.
-- lloggs's `setup` switches to its JSON formatter whenever `--log-file` is set, so writing text files needs either a lloggs option for the file format or bestool building that subscriber itself.
-- `alertd install` prints "Logs are stored in JSON format with timestamps"; that line changes with the format.
-- Hosts upgraded from a JSON-writing build keep JSON files until retention ages them out, so `alertd logs` will meet JSON lines in older files.
-  Decide whether it renders them as text, prints them raw, or skips files it can't parse as text.
+- The renderer handles tracing's JSON shape: `timestamp`, `level`, `target`, `fields` (with `message`), and `span`/`spans` when present.
+  A line that doesn't parse is printed as it is, so a partial line at the end of a file being written doesn't break the output.
 
 ## Privileges
 

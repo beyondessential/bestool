@@ -11,7 +11,7 @@ An operator runs the same command on every host regardless of platform.
 ## Log sources
 
 On Windows the command reads the service's log files in `%ProgramData%\bestool\logs`.
-The service writes these as text, one line per entry in the same form as the daemon's output when it runs in a terminal.
+The service writes these as JSON, one entry per line.
 The daemon starts a new series of files each time it starts and rotates each series daily, and the command reads across every retained file, so entries from before a restart or a rotation are included.
 
 On Linux the command reads the system journal entries recorded under the `bestool-alertd` identifier.
@@ -23,7 +23,8 @@ The command acquires the privileges it needs before reading, and a log it still 
 
 ## Output
 
-Each entry is printed as the daemon wrote it: its timestamp, level, and message, followed by its remaining fields.
+Each entry is printed as text in the same form as the daemon's output when it runs in a terminal: its timestamp, level, and message, followed by its remaining fields.
+On Windows the command renders each JSON entry into that form, so the output reads the same on every platform.
 Entries are printed oldest first, in order of their timestamps, across all of the files they were read from.
 
 ## Options
