@@ -376,26 +376,6 @@ async fn fetch_daemon_status(
 	response.json().await.ok()
 }
 
-/// Fetch the version, if any, that the daemon's self-update task last failed to
-/// install, via `/tasks/self-update/status`.
-#[cfg(all(windows, feature = "alertd"))]
-async fn fetch_update_failure(client: &reqwest::Client, base_url: &str) -> Option<String> {
-	use serde_json::Value;
-
-	let response = client
-		.get(format!("{base_url}/tasks/self-update/status"))
-		.send()
-		.await
-		.ok()?;
-	if !response.status().is_success() {
-		return None;
-	}
-	let body: Value = response.json().await.ok()?;
-	body.get("failed_version")
-		.and_then(Value::as_str)
-		.map(str::to_owned)
-}
-
 /// Whether a freshly-observed `/status` means the delegated update has landed:
 /// a changed `started_at` marks a fresh process. Without a baseline (the
 /// pre-update status couldn't be read) we fall back to the running version
@@ -436,11 +416,10 @@ async fn wait_for_daemon_restart(
 	loop {
 		// A recorded failure means the daemon we're polling stayed up and won't
 		// restart: surface it rather than waiting out the timeout.
-		if fetch_update_failure(client, base_url).await.as_deref() == Some(target) {
-			return Err(miette!(
-				"alert daemon reported that updating to {target} failed; \
-				check the daemon logs (`bestool alertd status`) for details"
-			));
+		if let Some(failure) = crate::alertd::commands::fetch_update_failure(client, base_url).await
+			&& failure.version == target
+		{
+			return Err(delegated_update_failed(&failure));
 		}
 
 		if let Some(status) = fetch_daemon_status(client, base_url).await
@@ -465,12 +444,30 @@ async fn wait_for_daemon_restart(
 		if Instant::now() >= deadline {
 			return Err(miette!(
 				"timed out after {}s waiting for the alert daemon to restart on the new version; \
-				check `bestool alertd status` and the daemon logs",
+				check `bestool alertd status` and `bestool alertd logs`",
 				TIMEOUT.as_secs()
 			));
 		}
 
 		tokio::time::sleep(POLL_INTERVAL).await;
+	}
+}
+
+/// The error for a delegated update the daemon reports as failed: the reason
+/// it recorded, when it recorded one, and where to look for the rest.
+///
+/// spec: UPD#delegation-to-the-running-daemon
+#[cfg(all(windows, feature = "alertd"))]
+fn delegated_update_failed(failure: &crate::alertd::commands::ReportedUpdateFailure) -> miette::Report {
+	let version = &failure.version;
+	match &failure.reason {
+		Some(reason) => miette!(
+			"alert daemon could not update to {version}: {reason}\n\
+			see `bestool alertd logs` for details"
+		),
+		None => miette!(
+			"alert daemon could not update to {version}; see `bestool alertd logs` for details"
+		),
 	}
 }
 

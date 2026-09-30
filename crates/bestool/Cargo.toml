@@ -132,6 +132,9 @@ alertd = [
 	"dep:node-semver",
 	"dep:axum",
 	"dep:tower-http",
+	# `alertd logs` colours its output and elevates to read the journal.
+	"dep:owo-colors",
+	"dep:privilege",
 	"dep:tokio-stream",
 	"dep:sd-notify",
 	"dep:win32job",
