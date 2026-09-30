@@ -1,7 +1,7 @@
 use miette::miette;
 use tracing::info;
 
-use super::try_connect_daemon;
+use super::{ReportedUpdateFailure, fetch_update_failure, try_connect_daemon};
 use crate::alertd::http_server::{HealthResponse, StatusResponse};
 
 /// Print the daemon's status. `local_version`, when given, is the version of the
@@ -46,6 +46,8 @@ pub async fn get_status(
 		.json()
 		.await
 		.map_err(|e| miette!("failed to parse health response: {e}"))?;
+
+	let update_failure = fetch_update_failure(&client, &url).await;
 
 	info!("connected to daemon at {url}");
 
@@ -117,11 +119,23 @@ pub async fn get_status(
 		}
 	}
 
+	if let Some(failure) = &update_failure {
+		println!("Update:    {}", describe_update_failure(failure));
+	}
+
 	if !healthy {
 		std::process::exit(1);
 	}
 
 	Ok(())
+}
+
+/// spec: UPD#update-failures
+fn describe_update_failure(failure: &ReportedUpdateFailure) -> String {
+	match &failure.reason {
+		Some(reason) => format!("{} failed to install: {reason}", failure.version),
+		None => format!("{} failed to install", failure.version),
+	}
 }
 
 fn format_duration(secs: i64) -> String {
@@ -161,6 +175,27 @@ mod tests {
 	use serde_json::json;
 
 	use super::*;
+
+	#[test]
+	fn update_failure_line_carries_the_reason() {
+		let failure = ReportedUpdateFailure {
+			version: "2.2.5".into(),
+			reason: Some("signature did not verify".into()),
+		};
+		assert_eq!(
+			describe_update_failure(&failure),
+			"2.2.5 failed to install: signature did not verify"
+		);
+	}
+
+	#[test]
+	fn update_failure_line_without_a_reason() {
+		let failure = ReportedUpdateFailure {
+			version: "2.2.5".into(),
+			reason: None,
+		};
+		assert_eq!(describe_update_failure(&failure), "2.2.5 failed to install");
+	}
 
 	#[test]
 	fn describe_latest_names_the_phase() {

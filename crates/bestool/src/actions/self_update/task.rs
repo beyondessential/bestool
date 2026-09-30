@@ -34,18 +34,55 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// hostname, so a given host's schedule is stable across restarts.
 const STAGGER_WINDOW: Duration = Duration::from_secs(60 * 60);
 
+/// The most recent version that failed to install, and why.
+///
+/// spec: UPD#update-failures
+#[derive(Debug, Clone)]
+struct UpdateFailure {
+	version: String,
+	reason: String,
+}
+
+impl UpdateFailure {
+	fn new(version: String, err: &miette::Report) -> Self {
+		Self {
+			version,
+			reason: describe_error(err),
+		}
+	}
+}
+
+/// Flatten an error and its causes into one line, so the reason survives being
+/// shown in a single status line or CLI error.
+fn describe_error(err: &miette::Report) -> String {
+	err.chain()
+		.map(ToString::to_string)
+		.collect::<Vec<_>>()
+		.join(": ")
+}
+
+type SharedFailure = Arc<Mutex<Option<UpdateFailure>>>;
+
 pub(crate) struct SelfUpdateTask {
 	/// A version that failed to install, so the same failure isn't reattempted
 	/// on every check. A newer version compares unequal and is still tried.
 	/// Shared with the on-demand endpoint handler.
-	failed_version: Arc<Mutex<Option<String>>>,
+	failed: SharedFailure,
 }
 
 impl SelfUpdateTask {
 	pub(crate) fn new() -> Self {
 		Self {
-			failed_version: Arc::new(Mutex::new(None)),
+			failed: Arc::new(Mutex::new(None)),
 		}
+	}
+
+	fn failed_version_is(&self, version: &str) -> bool {
+		self.failed
+			.lock()
+			.unwrap()
+			.as_ref()
+			.is_some_and(|failure| failure.version == version)
 	}
 
 	async fn check_and_update(&self, ctx: &TaskContext) {
@@ -63,7 +100,7 @@ impl SelfUpdateTask {
 			return;
 		}
 
-		if self.failed_version.lock().unwrap().as_deref() == Some(latest.as_str()) {
+		if self.failed_version_is(&latest) {
 			warn!(%latest, "self-update: skipping version that previously failed to install");
 			return;
 		}
@@ -77,7 +114,7 @@ impl SelfUpdateTask {
 			Ok(UpdateOutcome::AlreadyCurrent { .. }) => {}
 			Err(err) => {
 				warn!(%latest, "self-update failed; not retrying this version: {err}");
-				*self.failed_version.lock().unwrap() = Some(latest);
+				*self.failed.lock().unwrap() = Some(UpdateFailure::new(latest, &err));
 			}
 		}
 	}
@@ -126,8 +163,8 @@ impl BackgroundTask for SelfUpdateTask {
 	}
 
 	fn http_endpoints(&self) -> Vec<TaskEndpoint> {
-		let failed_for_update = self.failed_version.clone();
-		let failed_for_status = self.failed_version.clone();
+		let failed_for_update = self.failed.clone();
+		let failed_for_status = self.failed.clone();
 		vec![
 			TaskEndpoint::open(
 				"update",
@@ -141,13 +178,10 @@ impl BackgroundTask for SelfUpdateTask {
 			TaskEndpoint::open(
 				"status",
 				Arc::new(move |_ctx: TaskContext| {
-					let failed_version = failed_for_status.clone();
+					let failed = failed_for_status.clone();
 					Box::pin(async move {
-						let failed = failed_version.lock().unwrap().clone();
-						TaskEndpointResponse::Json(json!({
-							"current": env!("CARGO_PKG_VERSION"),
-							"failed_version": failed,
-						}))
+						let failed = failed.lock().unwrap().clone();
+						TaskEndpointResponse::Json(status_body(failed.as_ref()))
 					})
 				}),
 			),
@@ -155,12 +189,24 @@ impl BackgroundTask for SelfUpdateTask {
 	}
 }
 
+/// The `/tasks/self-update/status` body: the running version, and the version
+/// that last failed to install with the reason it failed.
+///
+/// spec: UPD#update-failures
+fn status_body(failed: Option<&UpdateFailure>) -> serde_json::Value {
+	json!({
+		"current": env!("CARGO_PKG_VERSION"),
+		"failed_version": failed.map(|f| &f.version),
+		"failed_reason": failed.map(|f| &f.reason),
+	})
+}
+
 /// Handle `/tasks/self-update/update`: decide whether an update is warranted and
 /// respond immediately, kicking off the download, install, and restart in the
 /// background so the response reaches the caller before the daemon exits.
 async fn on_demand_update(
 	ctx: TaskContext,
-	failed_version: Arc<Mutex<Option<String>>>,
+	failed: SharedFailure,
 ) -> TaskEndpointResponse {
 	let current = env!("CARGO_PKG_VERSION");
 
@@ -184,7 +230,8 @@ async fn on_demand_update(
 				}
 				Err(err) => {
 					warn!(from = %path.display(), "on-demand self-update from file failed: {err}");
-					*failed_version.lock().unwrap() = Some(format!("file:{}", path.display()));
+					*failed.lock().unwrap() =
+						Some(UpdateFailure::new(format!("file:{}", path.display()), &err));
 				}
 			}
 		});
@@ -240,7 +287,7 @@ async fn on_demand_update(
 			}
 			Err(err) => {
 				warn!(version = %resolved, "on-demand self-update failed: {err}");
-				*failed_version.lock().unwrap() = Some(resolved);
+				*failed.lock().unwrap() = Some(UpdateFailure::new(resolved, &err));
 			}
 		}
 	});
@@ -250,4 +297,30 @@ async fn on_demand_update(
 		"from": current,
 		"to": to,
 	}))
+}
+
+#[cfg(test)]
+mod tests {
+	use miette::miette;
+
+	use super::*;
+
+	#[test]
+	fn status_body_reports_version_and_reason() {
+		let err = miette!("signature did not verify").wrap_err("installing 2.2.5");
+		let failure = UpdateFailure::new("2.2.5".into(), &err);
+		let body = status_body(Some(&failure));
+		assert_eq!(body["failed_version"], "2.2.5");
+		assert_eq!(
+			body["failed_reason"],
+			"installing 2.2.5: signature did not verify"
+		);
+	}
+
+	#[test]
+	fn status_body_without_failure_reports_nulls() {
+		let body = status_body(None);
+		assert!(body["failed_version"].is_null());
+		assert!(body["failed_reason"].is_null());
+	}
 }

@@ -91,6 +91,14 @@ enum Command {
 		server_addr: Vec<SocketAddr>,
 	},
 
+	/// Show the daemon's log entries
+	///
+	/// Prints the most recent entries, then follows new ones as they're written
+	/// until interrupted. Reads from where the service writes its logs (the log
+	/// files under %ProgramData%\bestool\logs on Windows, the journal on Linux),
+	/// so it works while the daemon is down.
+	Logs(crate::alertd::commands::LogsArgs),
+
 	/// Reload a running daemon
 	///
 	/// Asks the daemon to re-register backup capabilities and pick up changes
@@ -150,6 +158,7 @@ pub async fn run(args: AlertdArgs, ctx: Context) -> Result<()> {
 			};
 			crate::alertd::commands::get_status(&addrs, Some(env!("CARGO_PKG_VERSION"))).await
 		}
+		Command::Logs(args) => crate::alertd::commands::show_logs(args).await,
 		Command::Reload { server_addr } => {
 			let addrs = if server_addr.is_empty() {
 				crate::alertd::commands::default_server_addrs()

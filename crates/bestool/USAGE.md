@@ -8,6 +8,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool alertd`↴](#bestool-alertd)
 * [`bestool alertd run`↴](#bestool-alertd-run)
 * [`bestool alertd status`↴](#bestool-alertd-status)
+* [`bestool alertd logs`↴](#bestool-alertd-logs)
 * [`bestool alertd reload`↴](#bestool-alertd-reload)
 * [`bestool alertd restart`↴](#bestool-alertd-restart)
 * [`bestool audit-psql`↴](#bestool-audit-psql)
@@ -80,6 +81,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu alertd`↴](#bestool-tamanu-alertd)
 * [`bestool tamanu alertd run`↴](#bestool-tamanu-alertd-run)
 * [`bestool tamanu alertd status`↴](#bestool-tamanu-alertd-status)
+* [`bestool tamanu alertd logs`↴](#bestool-tamanu-alertd-logs)
 * [`bestool tamanu alertd reload`↴](#bestool-tamanu-alertd-reload)
 * [`bestool tamanu alertd restart`↴](#bestool-tamanu-alertd-restart)
 * [`bestool tamanu artifacts`↴](#bestool-tamanu-artifacts)
@@ -181,6 +183,7 @@ sweeps, with every Tamanu-dependent check skipped.
 
 * `run` — Run the healthcheck daemon
 * `status` — Show status and health of a running daemon
+* `logs` — Show the daemon's log entries
 * `reload` — Reload a running daemon
 * `restart` — Restart a running daemon
 
@@ -230,6 +233,23 @@ Connects to the running daemon's HTTP API and displays version, uptime, health, 
 * `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
 
    Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+
+
+
+## `bestool alertd logs`
+
+Show the daemon's log entries
+
+Prints the most recent entries, then follows new ones as they're written until interrupted. Reads from where the service writes its logs (the log files under %ProgramData%\bestool\logs on Windows, the journal on Linux), so it works while the daemon is down.
+
+**Usage:** `bestool alertd logs [OPTIONS]`
+
+###### **Options:**
+
+* `-n`, `--lines <LINES>` — How many recent entries to print before following
+
+  Default value: `50`
+* `--no-follow` — Print the recent entries and exit, instead of following new ones
 
 
 
@@ -1765,6 +1785,7 @@ sweeps, with every Tamanu-dependent check skipped.
 
 * `run` — Run the healthcheck daemon
 * `status` — Show status and health of a running daemon
+* `logs` — Show the daemon's log entries
 * `reload` — Reload a running daemon
 * `restart` — Restart a running daemon
 
@@ -1814,6 +1835,23 @@ Connects to the running daemon's HTTP API and displays version, uptime, health, 
 * `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
 
    Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+
+
+
+## `bestool tamanu alertd logs`
+
+Show the daemon's log entries
+
+Prints the most recent entries, then follows new ones as they're written until interrupted. Reads from where the service writes its logs (the log files under %ProgramData%\bestool\logs on Windows, the journal on Linux), so it works while the daemon is down.
+
+**Usage:** `bestool tamanu alertd logs [OPTIONS]`
+
+###### **Options:**
+
+* `-n`, `--lines <LINES>` — How many recent entries to print before following
+
+  Default value: `50`
+* `--no-follow` — Print the recent entries and exit, instead of following new ones
 
 
 
