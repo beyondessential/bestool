@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
 
 use super::MachineCx;
@@ -11,13 +13,14 @@ const FAIL_PER_CORE: f64 = 4.0;
 /// is treated as a warning.
 const WARN_PER_CORE: f64 = 1.5;
 
+/// How long CPU usage is sampled for where there is no load average.
+const CPU_SAMPLE: Duration = Duration::from_secs(5);
+/// CPU usage, as a percentage of every core, at or above which the check warns.
+const WARN_CPU_PCT: f32 = 90.0;
+
 pub async fn run(_ctx: MachineCx) -> Check {
 	if cfg!(target_os = "windows") {
-		return Check::skip(
-			"load",
-			"not available on Windows",
-			"sysinfo does not report load average on Windows",
-		);
+		return cpu_usage().await;
 	}
 
 	let sys =
@@ -73,6 +76,38 @@ pub async fn run(_ctx: MachineCx) -> Check {
 		.with_stat(Stat::gauge("cores", cores as f64).help("Logical CPU cores"))
 }
 
+/// Windows has no load average, so the check samples CPU usage instead.
+async fn cpu_usage() -> Check {
+	let mut sys = System::new_with_specifics(
+		RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
+	);
+	tokio::time::sleep(CPU_SAMPLE.max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL)).await;
+	sys.refresh_cpu_usage();
+
+	let cores = sys.cpus().len().max(1);
+	let used = sys.global_cpu_usage();
+	let summary = format!(
+		"cpu usage: {used:.1}% over {}s ({cores} cores)",
+		CPU_SAMPLE.as_secs()
+	);
+
+	let check = if used >= WARN_CPU_PCT {
+		Check::warning(
+			"load",
+			summary,
+			format!("cpu usage at or over {WARN_CPU_PCT}%"),
+		)
+	} else {
+		Check::pass("load", summary)
+	};
+
+	check
+		.with_detail("cpu_pct", used)
+		.with_detail("cores", cores)
+		.with_stat(Stat::gauge("cpu_pct", used as f64).help("CPU usage across all cores"))
+		.with_stat(Stat::gauge("cores", cores as f64).help("Logical CPU cores"))
+}
+
 /// Tier the 5-minute load average against the logical core count.
 fn tier(five: f64, cores: usize) -> CheckStatus {
 	let cores = cores as f64;
@@ -95,6 +130,14 @@ mod tests {
 		assert!(matches!(tier(6.1, 4), CheckStatus::Warning(_)));
 		assert!(matches!(tier(15.9, 4), CheckStatus::Warning(_)));
 		assert!(matches!(tier(16.1, 4), CheckStatus::Fail(_)));
+	}
+
+	#[tokio::test]
+	async fn cpu_usage_reports_a_percentage() {
+		let check = cpu_usage().await;
+		assert!(!matches!(check.status, CheckStatus::Skip(_)));
+		let pct = check.details["cpu_pct"].as_f64().unwrap();
+		assert!((0.0..=100.0).contains(&pct), "{pct}");
 	}
 
 	#[test]
