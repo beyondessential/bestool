@@ -71,6 +71,13 @@ pub async fn run(args: PreUpgradeArgs, ctx: Context) -> Result<()> {
 			.ok_or_else(|| miette!("no installed Tamanu older than {target} to upgrade from"))?,
 	};
 
+	if !holds_release(&current_root) {
+		bail!(
+			"{} holds no Tamanu release, so this is a container install: pre-upgrade only prepares installs that run Tamanu from a release folder, and a container upgrade drops the reporting schema itself",
+			current_root.display()
+		);
+	}
+
 	let config = load_config(&current_root, None)?;
 	let client =
 		bestool_postgres::pool::connect_one(&config.database_url(), "bestool-tamanu-pre-upgrade")
@@ -158,6 +165,10 @@ fn artifact_type(kind: ApiServerKind) -> &'static str {
 		ApiServerKind::Central => "central",
 		ApiServerKind::Facility => "facility",
 	}
+}
+
+fn holds_release(root: &Path) -> bool {
+	MIGRATION_DIRS.iter().any(|dir| root.join(dir).is_dir())
 }
 
 fn release_migrations(root: &Path) -> Result<Vec<String>> {
@@ -283,5 +294,16 @@ mod tests {
 		assert!(!is_managed_stamp(Some("2.64.2")));
 		assert!(!is_managed_stamp(Some("built by hand")));
 		assert!(!is_managed_stamp(Some("2.64.2 sha256-short=")));
+	}
+
+	#[test]
+	fn only_a_folder_with_migrations_holds_a_release() {
+		let config_only = tempfile::tempdir().unwrap();
+		std::fs::write(config_only.path().join("local.json5"), "{}").unwrap();
+		assert!(!holds_release(config_only.path()));
+
+		let release = tempfile::tempdir().unwrap();
+		std::fs::create_dir_all(release.path().join("packages/database/dist/migrations")).unwrap();
+		assert!(holds_release(release.path()));
 	}
 }
