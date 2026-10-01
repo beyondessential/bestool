@@ -1,11 +1,13 @@
 use std::{
 	collections::HashMap,
 	io::{IsTerminal as _, Write},
+	sync::Arc,
 	time::Duration,
 };
 
 use bestool_canopy::schema::{CheckResult, CheckSeverity, HealthCheck, StatusPayload};
 use clap::Parser;
+use futures::FutureExt as _;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -70,7 +72,19 @@ pub struct DoctorArgs {
 	/// Combined with `--fresh` this is a no-op (a local sweep is always fresh).
 	#[arg(long)]
 	pub no_daemon: bool,
+
+	/// Run the self-heal action of every failing check in the selection.
+	///
+	/// A heal changes the system: it restarts services and, for the reporting
+	/// schema, replaces it, so it needs `--check` naming the repair intended.
+	/// Implies `--no-daemon`, since a sweep the daemon computes is side-effect
+	/// free by design and the daemon heals on its own schedule.
+	#[arg(long, requires = "only")]
+	pub heal: bool,
 }
+
+/// Longest a `--heal` run waits for the repairs it asked for.
+const HEAL_SETTLE_BOUND: Duration = Duration::from_secs(15 * 60);
 
 /// Where the displayed sweep came from.
 pub enum SweepSource {
@@ -101,7 +115,7 @@ pub async fn run(args: DoctorArgs, ctx: Context) -> Result<()> {
 
 	let live_tty = !args.json && ansi && std::io::stdout().is_terminal();
 
-	let (sweep, source, interrupted) = if args.no_daemon {
+	let (sweep, source, interrupted) = if args.no_daemon || args.heal {
 		let outcome = run_local_sweep(targets.clone(), http_client.clone(), &args, live_tty).await?;
 		(outcome.sweep, SweepSource::Local, outcome.interrupted)
 	} else if args.fresh {
@@ -151,31 +165,49 @@ async fn run_local_sweep(
 	validate_check_selection(&args.only, &args.skip)?;
 	let (progress, tui_handle) = setup_progress(live_tty, SweepSource::Local);
 
-	// Fetch canopy's effective-severity ceilings concurrently with the checks.
+	// Built alongside the pool rather than ahead of it: the probe can take
+	// seconds on a tailnet that is not answering.
+	let canopy = async {
+		tokio::time::timeout(CANOPY_CLIENT_TIMEOUT, canopy_client())
+			.await
+			.ok()
+			.flatten()
+			.map(Arc::new)
+	}
+	.boxed()
+	.shared();
+
 	// Soft-fail throughout (see `fetch_check_severities`): the mapping only ever
 	// lowers a verdict, so its absence just leaves the raw sweep.
-	let severities_handle = tokio::spawn(fetch_check_severities());
+	let severities_handle = tokio::spawn({
+		let canopy = canopy.clone();
+		async move { fetch_check_severities(canopy.await).await }
+	});
 
 	let sweep_args_only = args.only.clone();
 	let sweep_args_skip = args.skip.clone();
+	let enable_heal = args.heal;
 	let sweep_handle = tokio::spawn(async move {
 		// The checks take their connection from a pool the same way the daemon's
 		// sweep does. `None` when there's no database to get a URL from, or when
 		// the database is unreachable — the DB checks skip either way, and
 		// `db_connect` opens its own connection to report why.
-		let pg_pool = match targets.as_ref() {
-			Some(t) => bestool_postgres::pool::create_pool_sized(
-				&t.database_url,
-				"bestool-tamanu-doctor",
-				bestool_alertd::checks::POOL_SIZE,
-				// A person is watching this one.
-				bestool_postgres::pool::Prompt::Allowed,
-			)
-			.await
+		let pg_pool = async {
+			match targets.as_ref() {
+				Some(t) => bestool_postgres::pool::create_pool_sized(
+					&t.database_url,
+					"bestool-tamanu-doctor",
+					bestool_alertd::checks::POOL_SIZE,
+					// A person is watching this one.
+					bestool_postgres::pool::Prompt::Allowed,
+				)
+				.await
 				.inspect_err(|err| debug!(%err, "no DB pool for this sweep; DB checks will skip"))
 				.ok(),
-			None => None,
+				None => None,
+			}
 		};
+		let (pg_pool, canopy) = tokio::join!(pg_pool, canopy);
 
 		perform_sweep(
 			env!("CARGO_PKG_VERSION"),
@@ -185,8 +217,8 @@ async fn run_local_sweep(
 			&sweep_args_skip,
 			None,
 			progress,
-			None,
-			false,
+			canopy,
+			enable_heal,
 			pg_pool,
 		)
 		.await
@@ -210,6 +242,9 @@ async fn run_local_sweep(
 	};
 
 	let mut sweep = sweep_handle.await.into_diagnostic()??;
+	if enable_heal {
+		bestool_alertd::heal::settle(HEAL_SETTLE_BOUND).await;
+	}
 	// Apply the mapping once it's back (the checks may well have finished first).
 	if let Some(severities) = severities_handle.await.ok().flatten() {
 		sweep.apply_severities(&SplitSeverities::flat(severities));
@@ -223,26 +258,11 @@ async fn run_local_sweep(
 /// server id, a timeout, or any request/parse error — resolves to `None` ("no
 /// mapping") rather than an error, so a doctor run never fails or stalls on
 /// canopy being unreachable. Bounded by an overall timeout for the same reason.
-async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
+async fn fetch_check_severities(
+	canopy: Option<Arc<bestool_canopy::CanopyClient>>,
+) -> Option<HashMap<String, CheckSeverity>> {
+	let client = canopy?;
 	tokio::time::timeout(Duration::from_secs(10), async {
-		let reg = bestool_canopy::registration::load().await.ok().flatten()?;
-		let device_key = reg.device_key.as_deref()?;
-		let base_url = reg
-			.api_url
-			.as_deref()
-			.unwrap_or(bestool_canopy::DEFAULT_CANOPY_URL)
-			.parse()
-			.ok()?;
-		let tailscale_url = bestool_canopy::TAILSCALE_URL.parse().ok()?;
-		let client = bestool_canopy::connect_to(
-			base_url,
-			tailscale_url,
-			Some(device_key),
-			crate::http::client_builder,
-		)
-		.await
-		.ok()??;
-
 		let machine_id = bestool_tamanu::server_info::get_or_create_machine_id()
 			.await
 			.ok()?;
@@ -251,6 +271,30 @@ async fn fetch_check_severities() -> Option<HashMap<String, CheckSeverity>> {
 	.await
 	.ok()
 	.flatten()
+}
+
+/// Backstop on building a canopy client; the tailnet probe has bounds of its own.
+const CANOPY_CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A canopy client for this host, or `None` on any failure.
+async fn canopy_client() -> Option<bestool_canopy::CanopyClient> {
+	let reg = bestool_canopy::registration::load().await.ok().flatten()?;
+	let device_key = reg.device_key.as_deref()?;
+	let base_url = reg
+		.api_url
+		.as_deref()
+		.unwrap_or(bestool_canopy::DEFAULT_CANOPY_URL)
+		.parse()
+		.ok()?;
+	let tailscale_url = bestool_canopy::TAILSCALE_URL.parse().ok()?;
+	bestool_canopy::connect_to(
+		base_url,
+		tailscale_url,
+		Some(device_key),
+		crate::http::client_builder,
+	)
+	.await
+	.ok()?
 }
 
 /// Drive a fresh sweep on the daemon and stream the per-check results back.

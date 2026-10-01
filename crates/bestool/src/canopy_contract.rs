@@ -132,6 +132,9 @@ async fn status_request_matches_spec() {
 		],
 		"hostname": "test-host",
 		"pg_version": "16.4",
+		// Rides the free-form extras, so this catches canopy tightening
+		// `additionalProperties`.
+		"reportingSchemaVersion": "2.60.0",
 	});
 	assert_valid(
 		spec,
