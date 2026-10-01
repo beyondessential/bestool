@@ -705,6 +705,10 @@ pub fn validate_selection(
 	Ok(())
 }
 
+/// Longer than a check queueing for the sweep pool's slot and connecting, shorter than the
+/// daemon's default watchdog, so a hung check can't stop the sweep reporting.
+const CHECK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(240);
+
 /// Drive a set of checks concurrently, each on its own task.
 ///
 /// spec: CHK
@@ -715,6 +719,8 @@ pub fn validate_selection(
 /// (an `Instant` straddling an `.await` counts wall-clock spent unpolled). A
 /// panicking check surfaces as a `broken` result for that check alone rather
 /// than taking the whole sweep down.
+///
+/// spec: DOC
 async fn run_checks_concurrently(
 	checks: Vec<PreparedCheck>,
 	progress: Option<&ProgressSender>,
@@ -730,7 +736,20 @@ async fn run_checks_concurrently(
 	} in checks
 	{
 		let task = tokio::spawn(async move {
-			let result = fut.await;
+			let result = match tokio::time::timeout(CHECK_DEADLINE, fut).await {
+				Ok(result) => result,
+				Err(_) => {
+					warn!(
+						check = name,
+						"doctor check did not finish within its deadline"
+					);
+					Check::broken(
+						name,
+						"check did not finish",
+						format!("still running after {}s", CHECK_DEADLINE.as_secs()),
+					)
+				}
+			};
 			if let Some(spawn_heal) = heal
 				&& result.status.is_fatal()
 			{
@@ -1450,6 +1469,44 @@ mod tests {
 			latency < BLOCK_MS / 2,
 			"timed check reported {latency}ms latency — a blocking sibling inflated it (checks are not isolated)"
 		);
+	}
+
+	#[tokio::test(start_paused = true)]
+	async fn a_hung_check_is_broken_and_the_rest_still_report() {
+		let prepared = vec![
+			PreparedCheck {
+				idx: 0,
+				name: "hung",
+				subject: Subject::Machine,
+				on_wire: true,
+				fut: Box::pin(std::future::pending()),
+				heal: None,
+			},
+			PreparedCheck {
+				idx: 1,
+				name: "quick",
+				subject: Subject::Machine,
+				on_wire: true,
+				fut: Box::pin(async { Check::pass("quick", "ok") }),
+				heal: None,
+			},
+		];
+
+		let results = run_checks_concurrently(prepared, None).await;
+		let status_of = |idx: usize| {
+			&results
+				.iter()
+				.find(|(i, _)| *i == idx)
+				.expect("every check reports")
+				.1
+				.check
+				.status
+		};
+		assert!(matches!(status_of(0), crate::check::CheckStatus::Broken(_)));
+		assert!(!matches!(
+			status_of(1),
+			crate::check::CheckStatus::Broken(_)
+		));
 	}
 
 	#[tokio::test]

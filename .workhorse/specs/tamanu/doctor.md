@@ -13,6 +13,10 @@ This spec describes how the command selects checks, where the sweep data comes f
 The command runs a fixed registry of named checks, each reporting for the machine (disk, memory, time sync, and so on) or for an application on it (database, HTTP, services, certificates, sync state), as [SUBJ](subjects.md) describes.
 Each check resolves to exactly one of five outcomes: pass, skip, warning, broken, or fail.
 Every check produces a one-line summary; checks with a skip, warning, broken, or fail outcome also carry a reason.
+A check that has not finished within four minutes is abandoned and resolves to broken, so the sweep always completes and the other checks' results are still reported.
+
+> [!NOTE]
+> The deadline sits below the daemon's ten-minute watchdog, so one check hanging on an unresponsive database cannot keep the sweep from returning and get the daemon restarted into the same hang.
 
 The overall outcome of the sweep is failing if any check failed, degraded if any check warned or broke without any failing, and healthy otherwise.
 Skipped checks do not degrade the overall outcome.
