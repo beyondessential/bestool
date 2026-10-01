@@ -43,6 +43,7 @@ x509-parser = "0.18.1"
 rcgen.workspace = true
 tempfile = "3.21.0"
 time = "0.3.55"
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(unix)'.dependencies]
 # geteuid(), to tell whether we're root without reading /proc (which the
