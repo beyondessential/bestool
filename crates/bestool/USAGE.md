@@ -94,6 +94,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu download`↴](#bestool-tamanu-download)
 * [`bestool tamanu find`↴](#bestool-tamanu-find)
 * [`bestool tamanu logs`↴](#bestool-tamanu-logs)
+* [`bestool tamanu pre-upgrade`↴](#bestool-tamanu-pre-upgrade)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
 * [`bestool tamanu sync`↴](#bestool-tamanu-sync)
 * [`bestool tamanu tags`↴](#bestool-tamanu-tags)
@@ -1756,6 +1757,7 @@ Alias: t
 * `find` — Find Tamanu installations
 * `logs` — Tail logs for tamanu services and (optionally) the caddy and postgres
 pseudo-services.
+* `pre-upgrade` — Prepare this server for upgrading Tamanu to a new version
 * `psql` — Connect to Tamanu's database
 * `sync` — Trigger a manual sync on a facility server and watch it run.
 * `tags` — Fetch this device's tags from canopy.
@@ -2337,6 +2339,30 @@ on Windows it tails the `.log` files from the Postgres data directory.
 * `-v`, `--invert-match` — Invert the grep match — print lines that do NOT match. Only has an effect when combined with `--grep`. Mirrors `grep -v`.
 
    `journalctl` has no native inverse-match, so on Linux the filter is applied client-side when `-v` is in use; without `-v` the regex is still pushed down into `journalctl -g` for the kernel-side speedup.
+
+
+
+## `bestool tamanu pre-upgrade`
+
+Prepare this server for upgrading Tamanu to a new version.
+
+Downloads the target release if it isn't installed yet and works out which of its migrations this database hasn't run. If there are any, drops the reporting schema, whose views block migrations that alter the columns they read.
+
+A reporting schema alertd did not stamp may be hand-built, so it is only dropped with `--yes`. Once the new version has migrated, alertd applies the schema canopy publishes for it; where canopy publishes none, reinstall the schema by hand.
+
+**Usage:** `bestool tamanu pre-upgrade [OPTIONS] <VERSION>`
+
+###### **Arguments:**
+
+* `<VERSION>` — Version being upgraded to
+
+###### **Options:**
+
+* `--into <INTO>` — Where to download the release to
+
+  Default value: `.`
+* `--yes` — Also drop a reporting schema that alertd did not apply
+* `--dry-run` — Say what would be done without downloading or dropping anything
 
 
 
