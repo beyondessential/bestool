@@ -100,7 +100,9 @@ PrivateDevices=no
 # this allows that one type and no other. The container work still goes to the
 # remote rootful podman, so no other namespace is needed.
 RestrictNamespaces=user
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK: the canopy client lists interface addresses to find a tailscale
+# one; without it the daemon never tries the tailnet and falls back to mTLS.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallFilter=@system-service
 # @mount (mount/umount/mount_setattr/…): snapshot backups mount the snapshot
 # read-only for kopia and unmount it afterwards; without it mount() is EPERM.
