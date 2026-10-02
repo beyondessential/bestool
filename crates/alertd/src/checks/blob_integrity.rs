@@ -50,12 +50,15 @@ const RECENT_DROP_SECS: i64 = 24 * 60 * 60;
 /// Read separately from the blob registry: the rows these count are gone, which
 /// is the whole reason the count exists. Both are null on a server that has never
 /// dropped one, and on any Tamanu predating the counter.
+///
+/// `blobCacheFaultAt` is a server-local time with no offset, so recency comes from
+/// the counter row's `updated_at`, which every increment stamps.
 const CACHE_DROPS_SQL: &str = "\
 	SELECT \
 	(SELECT value::bigint FROM local_system_facts \
 	 WHERE key = 'blobCacheFaults' AND deleted_at IS NULL) AS dropped, \
-	extract(epoch FROM now() - (SELECT value::timestamp FROM local_system_facts \
-	 WHERE key = 'blobCacheFaultAt' AND deleted_at IS NULL))::bigint AS dropped_since";
+	(SELECT extract(epoch FROM now() - updated_at)::bigint FROM local_system_facts \
+	 WHERE key = 'blobCacheFaults' AND deleted_at IS NULL) AS dropped_since";
 
 const SQL: &str = "\
 	SELECT count(*) AS blobs, \
