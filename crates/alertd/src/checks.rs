@@ -682,7 +682,11 @@ pub fn all() -> Vec<CheckEntry> {
 		// blobs scrubs its own and reads its own media, and the quarantine record
 		// propagates to all of them.
 		entry!("blob_integrity", blob_integrity::run, tamanu_app),
-		entry!("blob_correction_rate", blob_correction_rate::run, tamanu_app),
+		entry!(
+			"blob_correction_rate",
+			blob_correction_rate::run,
+			tamanu_app
+		),
 		entry!("blob_antivirus", blob_antivirus::run, tamanu_app),
 	]
 }
