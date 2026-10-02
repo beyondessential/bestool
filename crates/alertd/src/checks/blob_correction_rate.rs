@@ -143,7 +143,7 @@ fn classify(corrected_24h: i64, corrected_7d: i64) -> Verdict {
 mod tests {
 	use super::*;
 	use crate::check::CheckStatus;
-	use crate::checks::test_support::{BLOB_STORE, facility_ctx, scratch_db};
+	use crate::checks::test_support::{BLOB_STORE, ScratchDb, facility_ctx, scratch_db};
 
 	fn verdict(corrected_24h: i64, corrected_7d: i64) -> &'static str {
 		match classify(corrected_24h, corrected_7d) {
@@ -228,5 +228,186 @@ mod tests {
 	async fn skips_without_a_database() {
 		let check = super::run(facility_ctx()).await;
 		assert!(check.status.is_skip());
+	}
+
+	/// A scratch blob store seeded with `(correction_count, last_corrected_at,
+	/// deleted_at)` rows, or `None` when there is no server to make one on.
+	async fn seeded(rows: &[&str]) -> Option<ScratchDb> {
+		let db = scratch_db(BLOB_STORE).await?;
+		if !rows.is_empty() {
+			db.central
+				.db()
+				.await
+				.expect("a scratch database carries a connection")
+				.batch_execute(&format!(
+					"INSERT INTO blobs (hash, size, correction_count, last_corrected_at, deleted_at) \
+					 SELECT 'sha256:' || gen_random_uuid(), 4096, c::int, at::timestamptz, del::timestamptz \
+					 FROM (VALUES {}) AS v(c, at, del)",
+					rows.join(", ")
+				))
+				.await
+				.expect("seeding blobs should succeed");
+		}
+		Some(db)
+	}
+
+	fn detail(check: &Check, key: &str) -> Value {
+		check.details.get(key).cloned().unwrap_or(Value::Null)
+	}
+
+	fn counts(check: &Check) -> [Value; 4] {
+		[
+			detail(check, "corrected_24h"),
+			detail(check, "corrected_7d"),
+			detail(check, "blobs_corrected"),
+			detail(check, "corrections_total"),
+		]
+	}
+
+	fn graded(check: &Check) -> (&'static str, Option<&str>) {
+		match &check.status {
+			CheckStatus::Pass => ("pass", None),
+			CheckStatus::Warning(r) => ("warn", Some(r)),
+			CheckStatus::Fail(r) => ("fail", Some(r)),
+			CheckStatus::Skip(r) => ("skip", Some(r)),
+			CheckStatus::Broken(r) => ("broken", Some(r)),
+		}
+	}
+
+	fn n(v: i64) -> Value {
+		Value::from(v)
+	}
+
+	#[tokio::test]
+	async fn counts_repeated_repair_of_one_blob_once() {
+		let Some(db) = seeded(&["(5, now(), NULL)"]).await else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert!(
+			matches!(check.status, CheckStatus::Pass),
+			"{:?}",
+			check.status
+		);
+		assert_eq!(check.details["blobs_corrected"], n(1));
+		assert_eq!(check.details["corrections_total"], n(5));
+		assert_eq!(check.details["corrected_24h"], n(1));
+		assert!(
+			check.details["most_recent"].is_string(),
+			"{:?}",
+			check.details
+		);
+	}
+
+	#[tokio::test]
+	async fn buckets_repairs_by_window() {
+		let Some(db) = seeded(&[
+			"(1, now() - interval '23 hours', NULL)",
+			"(1, now() - interval '25 hours', NULL)",
+			"(1, now() - interval '6 days', NULL)",
+			"(1, now() - interval '8 days', NULL)",
+		])
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_eq!(counts(&check), [n(1), n(3), n(4), n(4)]);
+		assert!(
+			matches!(check.status, CheckStatus::Warning(_)),
+			"{:?}",
+			check.status
+		);
+	}
+
+	#[tokio::test]
+	async fn ignores_deleted_and_unrepaired_blobs() {
+		let Some(db) = seeded(&["(1, now(), NULL)", "(7, now(), now())", "(0, now(), NULL)"]).await
+		else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_eq!(counts(&check), [n(1), n(1), n(1), n(1)]);
+	}
+
+	#[tokio::test]
+	async fn warns_on_spread_within_a_week() {
+		let Some(db) = seeded(&["(1, now() - interval '2 days', NULL)"; 3]).await else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_eq!(
+			graded(&check),
+			(
+				"warn",
+				Some("3 distinct blobs repaired from parity in the last 7 days")
+			)
+		);
+		assert_eq!(
+			check.summary,
+			"blobs repaired from parity: 0 in 24h, 3 in 7d, 3 in total over 3 repair(s)"
+		);
+	}
+
+	#[tokio::test]
+	async fn fails_on_a_high_daily_rate() {
+		let Some(db) = seeded(&["(1, now() - interval '1 hour', NULL)"; 10]).await else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_eq!(
+			graded(&check),
+			(
+				"fail",
+				Some("10 blobs repaired from parity in the last 24 hours")
+			)
+		);
+	}
+
+	#[tokio::test]
+	async fn fails_when_repair_accelerates() {
+		let Some(db) = seeded(&["(1, now() - interval '1 hour', NULL)"; 5]).await else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_eq!(
+			graded(&check),
+			(
+				"fail",
+				Some("repair is accelerating: 5 blobs in the last 24 hours against 5 over 7 days")
+			)
+		);
+	}
+
+	#[tokio::test]
+	async fn an_untouched_store_reports_nothing_recent() {
+		let Some(db) = seeded(&[]).await else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert!(
+			matches!(check.status, CheckStatus::Pass),
+			"{:?}",
+			check.status
+		);
+		assert_eq!(check.summary, "no blobs repaired from parity");
+		assert_eq!(counts(&check), [n(0), n(0), n(0), n(0)]);
+		assert!(
+			!check.details.contains_key("most_recent"),
+			"{:?}",
+			check.details
+		);
+	}
+
+	#[tokio::test]
+	async fn facility_grades_like_central() {
+		let Some(db) = seeded(&["(1, now() - interval '2 days', NULL)"; 3]).await else {
+			return;
+		};
+		let central = super::run(db.central.clone()).await;
+		let facility = super::run(db.facility.clone()).await;
+		assert_eq!(graded(&facility).0, "warn");
+		assert_eq!(graded(&facility), graded(&central));
+		assert_eq!(facility.summary, central.summary);
 	}
 }
