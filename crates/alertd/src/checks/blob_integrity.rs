@@ -271,7 +271,7 @@ fn classify(
 mod tests {
 	use super::*;
 	use crate::check::CheckStatus;
-	use crate::checks::test_support::{central_ctx, facility_ctx};
+	use crate::checks::test_support::{BLOB_STORE, facility_ctx, scratch_db};
 
 	fn verdict(durable: i64, replica: i64) -> &'static str {
 		grade(durable, replica, 100, Some(0))
@@ -388,10 +388,10 @@ mod tests {
 
 	#[tokio::test]
 	async fn runs_against_central() {
-		let Some(ctx) = central_ctx().await else {
+		let Some(db) = scratch_db(BLOB_STORE).await else {
 			return;
 		};
-		let check = super::run(ctx).await;
+		let check = super::run(db.central.clone()).await;
 		assert_eq!(check.name, "blob_integrity");
 		assert!(
 			!matches!(check.status, CheckStatus::Broken(_)),
@@ -400,23 +400,25 @@ mod tests {
 		);
 	}
 
-	/// Seed a corrupt blob and check the whole path grades it, taking the seed
-	/// back out afterwards so it leaves the database as it found it.
+	#[tokio::test]
+	async fn skips_without_a_blob_store() {
+		let Some(db) = scratch_db("").await else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert!(check.status.is_skip(), "{:?}", check.status);
+		assert_eq!(check.summary, "no blob store on this Tamanu");
+	}
+
 	#[tokio::test]
 	async fn grades_a_seeded_corrupt_blob_against_central() {
-		let Some(ctx) = central_ctx().await else {
+		let Some(db) = scratch_db(BLOB_STORE).await else {
 			return;
 		};
-		let Some(client) = ctx.db().await else {
-			return;
-		};
-		if !blob_store_present(&client).await {
-			return;
-		}
-
-		// The check draws its own connection from the pool, so a seed only reaches
-		// it once committed.
-		client
+		db.central
+			.db()
+			.await
+			.expect("a scratch database carries a connection")
 			.batch_execute(
 				"INSERT INTO blobs (hash, size, integrity_state) \
 				 VALUES ('sha256:0000000000000000000000000000000000000000000000000000000000000001', \
@@ -425,14 +427,7 @@ mod tests {
 			.await
 			.expect("seeding a corrupt blob should succeed");
 
-		let check = super::run(ctx).await;
-		let cleaned = client
-			.batch_execute(
-				"DELETE FROM blobs WHERE hash = \
-				 'sha256:0000000000000000000000000000000000000000000000000000000000000001'",
-			)
-			.await;
-
+		let check = super::run(db.central.clone()).await;
 		assert!(
 			matches!(check.status, CheckStatus::Fail(_)),
 			"an authoritative corrupt copy should fail: {:?} — {}",
@@ -444,16 +439,6 @@ mod tests {
 			"the seeded blob should be counted: {:?}",
 			check.details
 		);
-
-		cleaned.expect("removing the seeded blob should succeed");
-	}
-
-	async fn blob_store_present(client: &tokio_postgres::Client) -> bool {
-		client
-			.query_one("SELECT to_regclass('blobs') IS NOT NULL AS present", &[])
-			.await
-			.and_then(|row| row.try_get("present"))
-			.unwrap_or(false)
 	}
 
 	#[tokio::test]

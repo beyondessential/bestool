@@ -143,7 +143,7 @@ fn classify(corrected_24h: i64, corrected_7d: i64) -> Verdict {
 mod tests {
 	use super::*;
 	use crate::check::CheckStatus;
-	use crate::checks::test_support::{central_ctx, facility_ctx};
+	use crate::checks::test_support::{BLOB_STORE, facility_ctx, scratch_db};
 
 	fn verdict(corrected_24h: i64, corrected_7d: i64) -> &'static str {
 		match classify(corrected_24h, corrected_7d) {
@@ -202,16 +202,26 @@ mod tests {
 
 	#[tokio::test]
 	async fn runs_against_central() {
-		let Some(ctx) = central_ctx().await else {
+		let Some(db) = scratch_db(BLOB_STORE).await else {
 			return;
 		};
-		let check = super::run(ctx).await;
+		let check = super::run(db.central.clone()).await;
 		assert_eq!(check.name, "blob_correction_rate");
 		assert!(
 			!matches!(check.status, CheckStatus::Broken(_)),
 			"a Tamanu without the parity columns should skip, not break: {:?}",
 			check.to_wire()["result"]
 		);
+	}
+
+	#[tokio::test]
+	async fn skips_without_parity_columns() {
+		let Some(db) = scratch_db("").await else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert!(check.status.is_skip(), "{:?}", check.status);
+		assert_eq!(check.summary, "blob error correction not available");
 	}
 
 	#[tokio::test]
