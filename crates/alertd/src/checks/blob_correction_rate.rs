@@ -25,8 +25,8 @@ const RISING_MIN_24H: i64 = 5;
 const RISING_FACTOR: f64 = 3.0;
 
 const SQL: &str = "SELECT \
-	count(*) FILTER (WHERE last_corrected_at > now() - interval '24 hours') AS blobs_24h, \
-	count(*) FILTER (WHERE last_corrected_at > now() - interval '7 days') AS blobs_7d, \
+	count(*) FILTER (WHERE last_corrected_at > now() - interval '24 hours') AS corrected_24h, \
+	count(*) FILTER (WHERE last_corrected_at > now() - interval '7 days') AS corrected_7d, \
 	count(*) AS blobs_corrected, \
 	coalesce(sum(correction_count), 0) AS corrections_total, \
 	max(last_corrected_at)::text AS most_recent \
@@ -55,8 +55,8 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		}
 	};
 
-	let blobs_24h: i64 = row.try_get("blobs_24h").unwrap_or(0);
-	let blobs_7d: i64 = row.try_get("blobs_7d").unwrap_or(0);
+	let corrected_24h: i64 = row.try_get("corrected_24h").unwrap_or(0);
+	let corrected_7d: i64 = row.try_get("corrected_7d").unwrap_or(0);
 	let blobs_corrected: i64 = row.try_get("blobs_corrected").unwrap_or(0);
 	let corrections_total: i64 = row.try_get("corrections_total").unwrap_or(0);
 	let most_recent: Option<String> = row.try_get("most_recent").unwrap_or(None);
@@ -65,28 +65,28 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		"no blobs repaired from parity".to_string()
 	} else {
 		format!(
-			"blobs repaired from parity: {blobs_24h} in 24h, {blobs_7d} in 7d, \
+			"blobs repaired from parity: {corrected_24h} in 24h, {corrected_7d} in 7d, \
 			{blobs_corrected} in total over {corrections_total} repair(s)"
 		)
 	};
-	let check = match classify(blobs_24h, blobs_7d) {
+	let check = match classify(corrected_24h, corrected_7d) {
 		Verdict::Pass => Check::pass(NAME, summary),
 		Verdict::Warn(reason) => Check::warning(NAME, summary, reason),
 		Verdict::Fail(reason) => Check::fail(NAME, summary, reason),
 	};
 
 	let mut check = check
-		.with_detail("blobs_24h", blobs_24h)
-		.with_detail("blobs_7d", blobs_7d)
+		.with_detail("corrected_24h", corrected_24h)
+		.with_detail("corrected_7d", corrected_7d)
 		.with_detail("blobs_corrected", blobs_corrected)
 		.with_detail("corrections_total", corrections_total)
 		.with_stat(
-			Stat::gauge("blobs_24h", blobs_24h as f64)
+			Stat::gauge("corrected_24h", corrected_24h as f64)
 				.group("corrected")
 				.help("Blobs repaired from parity within the window"),
 		)
 		.with_stat(
-			Stat::gauge("blobs_7d", blobs_7d as f64)
+			Stat::gauge("corrected_7d", corrected_7d as f64)
 				.group("corrected")
 				.help("Blobs repaired from parity within the window"),
 		)
@@ -119,20 +119,20 @@ enum Verdict {
 /// The flat 24h threshold is what keeps a store that has already plateaued at a
 /// high repair rate failing, once the acceleration test has nothing left to see
 /// inside its own window.
-fn classify(blobs_24h: i64, blobs_7d: i64) -> Verdict {
-	if blobs_24h >= FAIL_BLOBS_24H {
+fn classify(corrected_24h: i64, corrected_7d: i64) -> Verdict {
+	if corrected_24h >= FAIL_BLOBS_24H {
 		Verdict::Fail(format!(
-			"{blobs_24h} blobs repaired from parity in the last 24 hours"
+			"{corrected_24h} blobs repaired from parity in the last 24 hours"
 		))
-	} else if blobs_24h >= RISING_MIN_24H
-		&& blobs_24h as f64 > RISING_FACTOR * blobs_7d as f64 / 7.0
+	} else if corrected_24h >= RISING_MIN_24H
+		&& corrected_24h as f64 > RISING_FACTOR * corrected_7d as f64 / 7.0
 	{
 		Verdict::Fail(format!(
-			"repair is accelerating: {blobs_24h} blobs in the last 24 hours against {blobs_7d} over 7 days"
+			"repair is accelerating: {corrected_24h} blobs in the last 24 hours against {corrected_7d} over 7 days"
 		))
-	} else if blobs_7d >= WARN_BLOBS_7D {
+	} else if corrected_7d >= WARN_BLOBS_7D {
 		Verdict::Warn(format!(
-			"{blobs_7d} distinct blobs repaired from parity in the last 7 days"
+			"{corrected_7d} distinct blobs repaired from parity in the last 7 days"
 		))
 	} else {
 		Verdict::Pass
@@ -145,8 +145,8 @@ mod tests {
 	use crate::check::CheckStatus;
 	use crate::checks::test_support::{central_ctx, facility_ctx};
 
-	fn verdict(blobs_24h: i64, blobs_7d: i64) -> &'static str {
-		match classify(blobs_24h, blobs_7d) {
+	fn verdict(corrected_24h: i64, corrected_7d: i64) -> &'static str {
+		match classify(corrected_24h, corrected_7d) {
 			Verdict::Pass => "pass",
 			Verdict::Warn(_) => "warn",
 			Verdict::Fail(_) => "fail",
