@@ -305,12 +305,22 @@ fn primary_facility(fact: Option<&str>, config: &TamanuConfig) -> Option<String>
 /// central holds every facility's settings alongside its own, so the other
 /// kind's scope is dropped rather than allowed to answer for this server. A
 /// facility server reads only its primary facility's rows.
+///
+/// Ordered so [`setting`] meets them in Tamanu's precedence: the server's own
+/// scope ahead of global, and within a scope the deeper key ahead of a parent
+/// object holding the same path.
 fn blob_settings(
 	rows: impl IntoIterator<Item = SettingRow>,
 	kind: ApiServerKind,
 	primary_facility: Option<&str>,
 ) -> Vec<(String, Value)> {
-	rows.into_iter()
+	let own_scope = if kind == ApiServerKind::Central {
+		"central"
+	} else {
+		"facility"
+	};
+	let mut rows: Vec<SettingRow> = rows
+		.into_iter()
 		.filter(|row| match row.scope.as_deref() {
 			Some("facility") => {
 				primary_facility.is_some_and(|id| row.facility_id.as_deref() == Some(id))
@@ -318,8 +328,14 @@ fn blob_settings(
 			Some("central") => kind == ApiServerKind::Central,
 			_ => true,
 		})
-		.map(|row| (row.key, row.value))
-		.collect()
+		.collect();
+	rows.sort_by_key(|row| {
+		(
+			row.scope.as_deref() != Some(own_scope),
+			std::cmp::Reverse(row.key.len()),
+		)
+	});
+	rows.into_iter().map(|row| (row.key, row.value)).collect()
 }
 
 /// Read one dotted setting path out of the stored rows.
@@ -488,6 +504,56 @@ mod tests {
 			scanner_for(rows, ApiServerKind::Facility, Some("facility-1")),
 			"clamd"
 		);
+	}
+
+	fn parent(scope: &str, facility_id: Option<&str>, antivirus: Value) -> SettingRow {
+		SettingRow {
+			key: "blobStorage".to_string(),
+			value: json!({ "antivirus": antivirus }),
+			scope: Some(scope.to_string()),
+			facility_id: facility_id.map(str::to_string),
+		}
+	}
+
+	#[test]
+	fn own_scope_outranks_global_whatever_the_row_order() {
+		let rows = vec![
+			row("global", None, "other"),
+			row("facility", Some("facility-1"), "clamd"),
+		];
+		assert_eq!(
+			scanner_for(rows, ApiServerKind::Facility, Some("facility-1")),
+			"clamd"
+		);
+		let rows = vec![row("global", None, "other"), row("central", None, "clamd")];
+		assert_eq!(scanner_for(rows, ApiServerKind::Central, None), "clamd");
+	}
+
+	#[test]
+	fn an_own_scope_parent_object_outranks_a_global_leaf() {
+		let rows = vec![
+			row("global", None, "other"),
+			parent("central", None, json!({ "scanner": "clamd" })),
+		];
+		assert_eq!(scanner_for(rows, ApiServerKind::Central, None), "clamd");
+	}
+
+	#[test]
+	fn a_leaf_outranks_its_parent_object_in_the_same_scope() {
+		let rows = vec![
+			parent("central", None, json!({ "scanner": "other" })),
+			row("central", None, "clamd"),
+		];
+		assert_eq!(scanner_for(rows, ApiServerKind::Central, None), "clamd");
+	}
+
+	#[test]
+	fn an_own_scope_parent_without_the_path_leaves_it_to_global() {
+		let rows = vec![
+			parent("central", None, json!({ "address": "localhost:3310" })),
+			row("global", None, "clamd"),
+		];
+		assert_eq!(scanner_for(rows, ApiServerKind::Central, None), "clamd");
 	}
 
 	fn config(extra: Value) -> TamanuConfig {
