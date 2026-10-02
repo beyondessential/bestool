@@ -52,7 +52,7 @@ const SQL: &str = "\
 	count(*) FILTER (WHERE scan_verdict IS NULL AND size > $1) AS unscannable, \
 	count(*) FILTER (WHERE scan_verdict = 'clean') AS clean, \
 	count(*) FILTER (WHERE scan_verdict = 'infected') AS infected, \
-	extract(epoch FROM now() - coalesce(max(scanned_at), \
+	extract(epoch FROM now() - greatest(max(scanned_at), \
 	min(created_at) FILTER (WHERE scan_verdict IS NULL AND size <= $1)))::bigint AS scan_idle_seconds \
 	FROM blobs WHERE deleted_at IS NULL AND integrity_state = 'verified'";
 
@@ -180,7 +180,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		check = check
 			.with_detail("scan_idle_seconds", idle)
 			.with_stat(Stat::gauge("scan_idle_seconds", idle as f64).help(
-				"Seconds since the scanner last recorded a verdict, or since the oldest unscanned blob was stored",
+				"Seconds since the scanner last recorded a verdict or the oldest unscanned blob was stored, whichever is later",
 			));
 	}
 	check
@@ -194,11 +194,12 @@ enum Verdict {
 
 /// Grade what the scanner has found and whether it is still being reached.
 ///
-/// `scan_idle_secs` is the age of the newest verdict, falling back to the age of
-/// the oldest blob still waiting for one, so a scanner just switched on is not
-/// read as stalled before its first pass is due. A store with no backlog records
-/// no new verdicts either, which is why the idle time is only graded alongside
-/// content waiting on it.
+/// `scan_idle_secs` is the younger of the newest verdict and the oldest blob
+/// still waiting for one, so a stall needs both the scanner silent and content
+/// left waiting past a pass it was due, and a quiet store that has just received
+/// an upload is not read as stalled. A store with no backlog records no new
+/// verdicts either, which is why the idle time is only graded alongside content
+/// waiting on it.
 fn classify(
 	scanning: bool,
 	unscanned: i64,
