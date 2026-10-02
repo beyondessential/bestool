@@ -18,6 +18,7 @@ use serde_json::Value;
 use tokio_postgres::error::SqlState;
 
 use bestool_tamanu::ApiServerKind;
+use bestool_tamanu::config::TamanuConfig;
 
 use super::util::humanise_age;
 use super::{TamanuCx, query_error_check};
@@ -44,7 +45,7 @@ const SCANNER_NONE: &str = "none";
 const POLICY_ONLY_KNOWN_GOOD: &str = "only-known-good";
 
 const SETTINGS_SQL: &str = "\
-	SELECT key, value, scope FROM settings \
+	SELECT key, value, scope, facility_id FROM settings \
 	WHERE (key = 'blobStorage' OR key LIKE 'blobStorage.%') AND deleted_at IS NULL";
 
 const SQL: &str = "\
@@ -57,6 +58,9 @@ const SQL: &str = "\
 	min(created_at) FILTER (WHERE scan_verdict IS NULL AND size <= $1)))::bigint AS scan_idle_seconds \
 	FROM blobs WHERE deleted_at IS NULL AND integrity_state = 'verified'";
 
+const FACILITY_IDS_FACT_SQL: &str =
+	"SELECT value FROM local_system_facts WHERE key = 'facilityIds'";
+
 const QUARANTINE_SQL: &str = "\
 	SELECT count(*) AS quarantined, \
 	count(*) FILTER (WHERE created_at > now() - interval '24 hours') AS quarantined_24h \
@@ -67,8 +71,30 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 
+	let kind = ctx.server_kind();
+	let primary = if kind == ApiServerKind::Facility {
+		let fact = match client.query_opt(FACILITY_IDS_FACT_SQL, &[]).await {
+			Ok(row) => row.and_then(|row| row.try_get::<_, Option<String>>("value").ok().flatten()),
+			Err(err) if is_missing_relation(&err) => None,
+			Err(err) => return query_error_check(NAME, &err),
+		};
+		primary_facility(fact.as_deref(), &ctx.config)
+	} else {
+		None
+	};
 	let settings = match client.query(SETTINGS_SQL, &[]).await {
-		Ok(rows) => blob_settings(&rows, ctx.server_kind()),
+		Ok(rows) => blob_settings(
+			rows.iter().filter_map(|row| {
+				Some(SettingRow {
+					key: row.try_get("key").ok()?,
+					value: row.try_get("value").ok()?,
+					scope: row.try_get("scope").ok().flatten(),
+					facility_id: row.try_get("facility_id").ok().flatten(),
+				})
+			}),
+			kind,
+			primary.as_deref(),
+		),
 		Err(err) if is_missing_relation(&err) => Vec::new(),
 		Err(err) => return query_error_check(NAME, &err),
 	};
@@ -252,28 +278,47 @@ fn classify(
 	}
 }
 
+struct SettingRow {
+	key: String,
+	value: Value,
+	scope: Option<String>,
+	facility_id: Option<String>,
+}
+
+/// The facility a facility server reads its antivirus settings for: the first
+/// of its facility ids, from the recorded fact ahead of the config file.
+fn primary_facility(fact: Option<&str>, config: &TamanuConfig) -> Option<String> {
+	match fact.and_then(|fact| serde_json::from_str::<Vec<String>>(fact).ok()) {
+		Some(ids) => ids.into_iter().next(),
+		None => config.server_facility_id.clone().or_else(|| {
+			config
+				.server_facility_ids
+				.as_ref()
+				.and_then(|ids| ids.first().cloned())
+		}),
+	}
+}
+
 /// The `blobStorage` settings that apply to this server, as key/value pairs.
 ///
 /// Central and facility carry the same setting names under their own scope, and
 /// central holds every facility's settings alongside its own, so the other
-/// kind's scope is dropped rather than allowed to answer for this server.
-fn blob_settings(rows: &[tokio_postgres::Row], kind: ApiServerKind) -> Vec<(String, Value)> {
-	let foreign_scope = if kind == ApiServerKind::Central {
-		"facility"
-	} else {
-		"central"
-	};
-	rows.iter()
-		.filter(|row| {
-			!row.try_get::<_, String>("scope")
-				.is_ok_and(|scope| scope == foreign_scope)
+/// kind's scope is dropped rather than allowed to answer for this server. A
+/// facility server reads only its primary facility's rows.
+fn blob_settings(
+	rows: impl IntoIterator<Item = SettingRow>,
+	kind: ApiServerKind,
+	primary_facility: Option<&str>,
+) -> Vec<(String, Value)> {
+	rows.into_iter()
+		.filter(|row| match row.scope.as_deref() {
+			Some("facility") => {
+				primary_facility.is_some_and(|id| row.facility_id.as_deref() == Some(id))
+			}
+			Some("central") => kind == ApiServerKind::Central,
+			_ => true,
 		})
-		.filter_map(|row| {
-			Some((
-				row.try_get::<_, String>("key").ok()?,
-				row.try_get::<_, Value>("value").ok()?,
-			))
-		})
+		.map(|row| (row.key, row.value))
 		.collect()
 }
 
@@ -385,6 +430,97 @@ mod tests {
 	#[test]
 	fn the_scan_cap_defaults_to_25_mb() {
 		assert_eq!(posture(&[]).max_scan_bytes, 25 * 1024 * 1024);
+	}
+
+	fn row(scope: &str, facility_id: Option<&str>, scanner: &str) -> SettingRow {
+		SettingRow {
+			key: SCANNER_KEY.to_string(),
+			value: json!(scanner),
+			scope: Some(scope.to_string()),
+			facility_id: facility_id.map(str::to_string),
+		}
+	}
+
+	fn scanner_for(rows: Vec<SettingRow>, kind: ApiServerKind, primary: Option<&str>) -> String {
+		let settings = blob_settings(rows, kind, primary);
+		posture(&settings).scanner
+	}
+
+	#[test]
+	fn a_facility_server_reads_its_primary_facility_only() {
+		let rows = vec![
+			row("facility", Some("facility-2"), "other"),
+			row("facility", Some("facility-1"), "clamd"),
+		];
+		assert_eq!(
+			scanner_for(rows, ApiServerKind::Facility, Some("facility-1")),
+			"clamd"
+		);
+	}
+
+	#[test]
+	fn a_facility_server_with_no_facility_reads_no_facility_rows() {
+		let rows = vec![row("facility", Some("facility-1"), "clamd")];
+		assert_eq!(
+			scanner_for(rows, ApiServerKind::Facility, None),
+			SCANNER_NONE
+		);
+	}
+
+	#[test]
+	fn central_reads_its_own_and_global_scope_only() {
+		let rows = vec![
+			row("facility", Some("facility-1"), "other"),
+			row("central", None, "clamd"),
+		];
+		assert_eq!(scanner_for(rows, ApiServerKind::Central, None), "clamd");
+		let rows = vec![
+			row("facility", Some("facility-1"), "other"),
+			row("global", None, "clamd"),
+		];
+		assert_eq!(scanner_for(rows, ApiServerKind::Central, None), "clamd");
+	}
+
+	#[test]
+	fn a_facility_server_ignores_central_scope() {
+		let rows = vec![row("central", None, "other"), row("global", None, "clamd")];
+		assert_eq!(
+			scanner_for(rows, ApiServerKind::Facility, Some("facility-1")),
+			"clamd"
+		);
+	}
+
+	fn config(extra: Value) -> TamanuConfig {
+		let mut json =
+			json!({ "db": { "name": "tamanu-facility", "username": "u", "password": "p" } });
+		json.as_object_mut()
+			.unwrap()
+			.extend(extra.as_object().unwrap().clone());
+		serde_json::from_value(json).unwrap()
+	}
+
+	#[test]
+	fn the_primary_facility_is_the_first_configured() {
+		let plural = config(json!({ "serverFacilityIds": ["facility-1", "facility-2"] }));
+		assert_eq!(
+			primary_facility(None, &plural).as_deref(),
+			Some("facility-1")
+		);
+		let singular = config(json!({ "serverFacilityId": "facility-3" }));
+		assert_eq!(
+			primary_facility(None, &singular).as_deref(),
+			Some("facility-3")
+		);
+		assert_eq!(primary_facility(None, &config(json!({}))), None);
+	}
+
+	#[test]
+	fn the_recorded_facility_ids_outrank_the_config_file() {
+		let plural = config(json!({ "serverFacilityIds": ["facility-1"] }));
+		assert_eq!(
+			primary_facility(Some(r#"["facility-9","facility-1"]"#), &plural).as_deref(),
+			Some("facility-9")
+		);
 	}
 
 	#[test]
