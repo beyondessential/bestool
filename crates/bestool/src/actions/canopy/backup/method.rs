@@ -921,17 +921,28 @@ mod tests {
 		assert!(format!("{}", failing.resolve_path().await.unwrap_err()).contains("exited"));
 	}
 
+	#[cfg(all(unix, not(target_os = "linux")))]
+	#[tokio::test]
+	async fn simple_prepare_uses_the_resolved_path() {
+		let method = Method::Simple(SimpleConfig {
+			path: None,
+			path_command: Some(vec!["/bin/echo".into(), "/data/blobs".into()]),
+		});
+		assert_eq!(
+			method.prepare("tamanu-blobs", None).await.unwrap().path,
+			PathBuf::from("/data/blobs")
+		);
+	}
+
 	#[cfg(unix)]
 	#[tokio::test]
-	async fn simple_backup_and_restore_use_the_resolved_path() {
+	async fn simple_restore_uses_the_resolved_path() {
 		let tmp = tempfile::tempdir().unwrap();
 		let target = tmp.path().join("blobs");
 		let method = Method::Simple(SimpleConfig {
 			path: None,
 			path_command: Some(vec!["/bin/echo".into(), target.to_string_lossy().into_owned()]),
 		});
-
-		assert_eq!(method.prepare("tamanu-blobs", None).await.unwrap().path, target);
 
 		let staging = method.staging_dir(None, 1).await.unwrap();
 		assert_eq!(staging.parent(), Some(tmp.path()));
