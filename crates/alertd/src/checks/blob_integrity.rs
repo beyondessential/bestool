@@ -101,8 +101,13 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	let never_scrubbed: i64 = row.try_get("never_scrubbed").unwrap_or(0);
 	let scrub_idle_secs: Option<i64> = row.try_get("scrub_idle_seconds").unwrap_or(None);
 
-	let (durable_faulty, replica_faulty) =
-		split_faults(ctx.server_kind(), corrupt, absent, outbox_faulty, cache_faulty);
+	let (durable_faulty, replica_faulty) = split_faults(
+		ctx.server_kind(),
+		corrupt,
+		absent,
+		outbox_faulty,
+		cache_faulty,
+	);
 
 	// A failure here is not worth losing the registry verdict over: the counter is
 	// a supplement to it, and its absence is the normal state.
@@ -148,12 +153,12 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		.with_stat(
 			Stat::gauge("corrupt", corrupt as f64)
 				.group("faults")
-				.help("Blobs whose stored bytes no longer match their hash, or are gone"),
+				.help("Blobs whose stored bytes no longer match their hash"),
 		)
 		.with_stat(
 			Stat::gauge("absent", absent as f64)
 				.group("faults")
-				.help("Blobs whose stored bytes no longer match their hash, or are gone"),
+				.help("Blobs whose content is missing from the store"),
 		)
 		.with_stat(
 			Stat::gauge("never_scrubbed", never_scrubbed as f64)
@@ -246,7 +251,7 @@ fn classify(
 	} else if dropping {
 		let total = dropped.unwrap_or(0);
 		Verdict::Warn(format!(
-			"{total} cache blobs dropped for failing verification, the last one recently; each refetched, but a run of them reads as the storage failing"
+			"{total} cache blobs dropped for failing verification, the last one recently; each refetches on its next read, but a run of them reads as the storage failing"
 		))
 	} else if blobs > 0 && scrub_idle_secs.is_some_and(|secs| secs > STALE_SCRUB_SECS) {
 		let idle = humanise_age(scrub_idle_secs.unwrap_or(0));
