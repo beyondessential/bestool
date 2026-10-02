@@ -271,7 +271,7 @@ fn classify(
 mod tests {
 	use super::*;
 	use crate::check::CheckStatus;
-	use crate::checks::test_support::{BLOB_STORE, facility_ctx, scratch_db};
+	use crate::checks::test_support::{BLOB_STORE, ScratchDb, facility_ctx, scratch_db};
 
 	fn verdict(durable: i64, replica: i64) -> &'static str {
 		grade(durable, replica, 100, Some(0))
@@ -445,5 +445,260 @@ mod tests {
 	async fn skips_without_a_database() {
 		let check = super::run(facility_ctx()).await;
 		assert!(check.status.is_skip());
+	}
+
+	async fn seeded(sql: &str) -> Option<ScratchDb> {
+		let db = scratch_db(BLOB_STORE).await?;
+		db.central
+			.db()
+			.await
+			.expect("a scratch database carries a connection")
+			.batch_execute(sql)
+			.await
+			.expect("seeding should succeed");
+		Some(db)
+	}
+
+	fn assert_status(check: &Check, status: &str, reason: Option<&str>) {
+		assert_eq!(
+			check.status.wire_result(),
+			status,
+			"{:?}: {}",
+			check.status,
+			check.summary
+		);
+		assert_eq!(check.status.reason(), reason, "{}", check.summary);
+	}
+
+	const DURABLE_ONE: &str = "1 blob(s) that must be durably present here are corrupt or absent";
+	const CACHE_ONE: &str = "1 faulty cache blob(s), which should clear by refetching from central";
+	const DROP_RUN_12: &str = "12 cache blobs dropped for failing verification, the last one recently; each refetches on its next read, but a run of them reads as the storage failing";
+
+	#[tokio::test]
+	async fn an_absent_blob_on_central_fails() {
+		let Some(db) = seeded(
+			"INSERT INTO blobs (hash, size, integrity_state) VALUES ('sha256:a', 1, 'absent');",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_status(&check, "failed", Some(DURABLE_ONE));
+		assert_eq!(check.summary, "1 blobs: 0 corrupt, 1 absent");
+		assert_eq!(check.details["absent"], 1);
+		assert_eq!(check.details["durable_faulty"], 1);
+	}
+
+	#[tokio::test]
+	async fn a_corrupt_outbox_blob_on_a_facility_fails() {
+		let Some(db) = seeded(
+			"INSERT INTO blobs (hash, size, integrity_state, tier) \
+			 VALUES ('sha256:a', 1, 'corrupt', 'outbox');",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.facility.clone()).await;
+		assert_status(&check, "failed", Some(DURABLE_ONE));
+		assert_eq!(check.summary, "1 blobs: 1 corrupt, 0 absent");
+		assert_eq!(check.details["durable_faulty"], 1);
+		assert_eq!(check.details["replica_faulty"], 0);
+	}
+
+	#[tokio::test]
+	async fn an_absent_outbox_blob_on_a_facility_fails() {
+		let Some(db) = seeded(
+			"INSERT INTO blobs (hash, size, integrity_state, tier) \
+			 VALUES ('sha256:a', 1, 'absent', 'outbox');",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.facility.clone()).await;
+		assert_status(&check, "failed", Some(DURABLE_ONE));
+		assert_eq!(check.summary, "1 blobs: 0 corrupt, 1 absent");
+		assert_eq!(check.details["durable_faulty"], 1);
+	}
+
+	#[tokio::test]
+	async fn one_corrupt_cache_blob_on_a_facility_warns() {
+		let Some(db) = seeded(
+			"INSERT INTO blobs (hash, size, integrity_state, tier) \
+			 VALUES ('sha256:a', 1, 'corrupt', 'cache');",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.facility.clone()).await;
+		assert_status(&check, "warning", Some(CACHE_ONE));
+		assert_eq!(check.details["durable_faulty"], 0);
+		assert_eq!(check.details["replica_faulty"], 1);
+	}
+
+	#[tokio::test]
+	async fn ten_corrupt_cache_blobs_on_a_facility_fail() {
+		let Some(db) = seeded(
+			"INSERT INTO blobs (hash, size, integrity_state, tier) \
+			 SELECT 'sha256:' || g, 1, 'corrupt', 'cache' FROM generate_series(1, 10) g;",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.facility.clone()).await;
+		assert_status(
+			&check,
+			"failed",
+			Some(
+				"10 cache blobs faulty at once, which reads as the storage failing rather than one bad write",
+			),
+		);
+		assert_eq!(check.summary, "10 blobs: 10 corrupt, 0 absent");
+	}
+
+	#[tokio::test]
+	async fn soft_deleted_faulty_blobs_are_ignored() {
+		let Some(db) = seeded(
+			"INSERT INTO blobs (hash, size, integrity_state, tier, deleted_at) VALUES \
+			 ('sha256:a', 1, 'corrupt', 'outbox', now()), \
+			 ('sha256:b', 1, 'absent', 'cache', now()); \
+			 INSERT INTO blobs (hash, size) VALUES ('sha256:c', 1);",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.facility.clone()).await;
+		assert_status(&check, "passed", None);
+		assert_eq!(check.summary, "1 blobs, all verified");
+	}
+
+	#[tokio::test]
+	async fn a_recent_run_of_cache_drops_warns() {
+		let Some(db) = seeded(
+			"INSERT INTO local_system_facts (key, value, updated_at) \
+			 VALUES ('blobCacheFaults', '12', now() - interval '1 hour');",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.facility.clone()).await;
+		assert_status(&check, "warning", Some(DROP_RUN_12));
+		assert_eq!(check.details["cache_blobs_dropped"], 12);
+		let age = check.details["cache_drop_age_seconds"].as_i64().unwrap();
+		assert!((3590..=3700).contains(&age), "{age}");
+	}
+
+	#[tokio::test]
+	async fn an_old_run_of_cache_drops_passes() {
+		let Some(db) = seeded(
+			"INSERT INTO local_system_facts (key, value, updated_at) \
+			 VALUES ('blobCacheFaults', '12', now() - interval '2 days');",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.facility.clone()).await;
+		assert_status(&check, "passed", None);
+		assert_eq!(check.details["cache_blobs_dropped"], 12);
+	}
+
+	#[tokio::test]
+	async fn drop_recency_comes_from_the_counter_row_not_the_fault_time() {
+		let Some(db) = seeded(
+			"INSERT INTO local_system_facts (key, value, updated_at) VALUES \
+			 ('blobCacheFaults', '12', now() - interval '1 hour'), \
+			 ('blobCacheFaultAt', (now() - interval '3 days')::timestamp::text, now());",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.facility.clone()).await;
+		assert_status(&check, "warning", Some(DROP_RUN_12));
+	}
+
+	#[tokio::test]
+	async fn a_stale_scrub_pass_warns_despite_fresh_blob_stamps() {
+		let Some(db) = seeded(
+			"INSERT INTO local_system_facts (key, value, updated_at) \
+			 VALUES ('blobScrubCompletedAt', 'x', now() - interval '7 hours'); \
+			 INSERT INTO blobs (hash, size, last_scrubbed_at) VALUES ('sha256:a', 1, now());",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_eq!(check.status.wire_result(), "warning", "{:?}", check.status);
+		assert!(
+			check
+				.status
+				.reason()
+				.unwrap()
+				.starts_with("the scrub has verified nothing for "),
+			"{:?}",
+			check.status
+		);
+		let idle = check.details["scrub_idle_seconds"].as_i64().unwrap();
+		assert!((7 * 3600 - 10..=7 * 3600 + 100).contains(&idle), "{idle}");
+	}
+
+	#[tokio::test]
+	async fn a_fresh_scrub_pass_passes_despite_old_blob_stamps() {
+		let Some(db) = seeded(
+			"INSERT INTO local_system_facts (key, value, updated_at) \
+			 VALUES ('blobScrubCompletedAt', 'x', now() - interval '5 minutes'); \
+			 INSERT INTO blobs (hash, size, last_scrubbed_at) \
+			 VALUES ('sha256:a', 1, now() - interval '3 days');",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_status(&check, "passed", None);
+		let idle = check.details["scrub_idle_seconds"].as_i64().unwrap();
+		assert!((290..=400).contains(&idle), "{idle}");
+	}
+
+	#[tokio::test]
+	async fn without_a_scrub_pass_the_blob_stamps_decide() {
+		let Some(db) = seeded(
+			"INSERT INTO blobs (hash, size, last_scrubbed_at) \
+			 VALUES ('sha256:a', 1, now() - interval '7 hours');",
+		)
+		.await
+		else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_eq!(check.status.wire_result(), "warning", "{:?}", check.status);
+		assert!(
+			check
+				.status
+				.reason()
+				.unwrap()
+				.starts_with("the scrub has verified nothing for "),
+			"{:?}",
+			check.status
+		);
+	}
+
+	#[tokio::test]
+	async fn an_empty_store_without_a_scrub_pass_passes() {
+		let Some(db) = scratch_db(BLOB_STORE).await else {
+			return;
+		};
+		let check = super::run(db.central.clone()).await;
+		assert_status(&check, "passed", None);
+		assert_eq!(check.summary, "blob store empty");
+		assert_eq!(check.details["blobs"], 0);
 	}
 }
