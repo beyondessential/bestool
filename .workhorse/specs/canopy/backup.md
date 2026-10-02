@@ -207,8 +207,23 @@ The budget is divided between the cached copies of backed-up file data and of re
 A device taking backups never reads file data back out of the repository — restores are an operator action and the repository's upkeep is Canopy's — so a backup connection gives most of its budget to metadata, which is what lets an unchanged file be recognised from the previous snapshot without being read and hashed again.
 A restore connection reverses the split.
 
+A device keeps one cache per repository for its backups, and it persists across runs.
+Every backup connection to a repository uses that same cache, whatever its transient configuration, so the budget bounds the device's whole backup cache rather than one run's, and each backup starts from the metadata the previous one left.
+Restores keep a cache of their own per repository, apart from the backup cache because they budget and split differently.
+A restore cache persists after the restore, so a restore or inspection that follows shortly after finds it warm, and is removed once it has gone a week without use.
+The cache's location is derived from the repository without naming the bucket, so the device still holds no record of it.
+
+Every connection to the repository also sweeps the caches the device no longer uses:
+
+- a backup cache for a repository other than the one it backs up to now;
+- a restore cache past its week;
+- any cache the tool placed under its own per-configuration naming that no configuration on the device still refers to, which no connection will ever use again.
+
+Caches that another configuration on the device does refer to, such as a separately managed kopia installation's, are left alone.
+The sweep is best-effort: a cache it cannot remove costs disk, not the run.
+
 The driver applies the bound whenever it connects, so a host connected under an earlier rule is corrected by its next run without being touched.
-The bound is on the caches whose size can be set, so a device's total cache use is its budget plus the smaller caches the tool keeps unbounded; the budget is not the whole footprint.
+The bound is on the caches whose size can be set, so a device's total cache use is its backup budget, plus a restore budget while a restore cache is kept, plus the smaller caches the tool keeps unbounded; the budget is not the whole footprint.
 
 ## Registration and triggering by the daemon
 

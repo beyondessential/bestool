@@ -262,9 +262,9 @@ impl Check {
 
 	/// Encode this Check for streaming over the daemon's task endpoint.
 	///
-	/// Distinct from [`Self::to_wire`]: that one is the canopy-bound payload
-	/// (which drops the reason); this one preserves the full `CheckStatus`
-	/// enum including reasons so consumers can render the same colours and
+	/// Distinct from [`Self::to_wire`]: that one is the canopy-bound payload,
+	/// which flattens the status to a `result` string; this one preserves the
+	/// full `CheckStatus` enum so consumers can render the same colours and
 	/// reason lines as a local sweep.
 	pub fn to_streaming_json(&self) -> Value {
 		let (status, reason) = match &self.status {

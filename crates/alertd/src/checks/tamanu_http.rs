@@ -1,17 +1,21 @@
 use std::time::{Duration, Instant};
 
 use super::{TamanuCx, fmt_chain};
-use crate::Stat;
-use crate::check::Check;
+use crate::{Stat, check::Check, local_http};
 
 const PING_URL: &str = "http://localhost/api/public/ping";
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// Response latency above which a reachable endpoint is treated as degraded.
 const WARN_LATENCY_MS: u64 = 2000;
 
-pub async fn run(ctx: TamanuCx) -> Check {
+/// spec: CHK#services-on-this-machine
+pub async fn run(_ctx: TamanuCx) -> Check {
 	let start = Instant::now();
-	let response = ctx.http.get(PING_URL).timeout(TIMEOUT).send().await;
+	let response = local_http::client()
+		.get(PING_URL)
+		.timeout(TIMEOUT)
+		.send()
+		.await;
 	let latency_ms = start.elapsed().as_millis() as u64;
 
 	let check = match response {

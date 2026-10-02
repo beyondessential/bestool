@@ -252,9 +252,18 @@ pub async fn create_pool_sized(
 /// returned client owns its connection driver task — it remains usable after
 /// the pool is gone.
 pub async fn connect_one(url: &str, application_name: &str) -> Result<tokio_postgres::Client> {
+	connect_one_with(url, application_name, Prompt::Allowed).await
+}
+
+/// [`connect_one`] for a caller that says whether a password may be asked for.
+pub async fn connect_one_with(
+	url: &str,
+	application_name: &str,
+	prompt: Prompt,
+) -> Result<tokio_postgres::Client> {
 	use mobc::Manager as _;
 
-	let pool = create_pool(url, application_name).await?;
+	let pool = create_pool_sized(url, application_name, PoolSize::default(), prompt).await?;
 	pool.manager.connect().await.into_diagnostic()
 }
 

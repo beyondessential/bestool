@@ -270,16 +270,22 @@ fn run_diagnostics() {
 ///
 /// Under `%ProgramData%\bestool` like the rest of bestool's state (backups,
 /// registration), rather than a separate `BES\bestool-alertd` tree.
-fn get_service_log_path() -> Result<std::path::PathBuf> {
+///
+/// spec: ALOG#log-sources
+pub(crate) fn service_log_dir() -> std::path::PathBuf {
 	use std::path::PathBuf;
 
-	let log_dir = std::env::var("ProgramData")
+	std::env::var("ProgramData")
 		.map(PathBuf::from)
 		.unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"))
 		.join("bestool")
-		.join("logs");
+		.join("logs")
+}
 
-	// lloggs writes into this directory, so make sure it exists.
+/// [`service_log_dir`], created if missing: lloggs writes into it.
+fn get_service_log_path() -> Result<std::path::PathBuf> {
+	let log_dir = service_log_dir();
+
 	if !log_dir.exists() {
 		std::fs::create_dir_all(&log_dir).ok();
 	}
@@ -362,6 +368,7 @@ pub fn install_service_with_args(launch_arguments: &[OsString]) -> Result<()> {
 	println!("\nService logs:");
 	println!("  • Location: {}", log_path.display());
 	println!("  • Logs are stored in JSON format with timestamps");
+	println!("  • View them with `bestool alertd logs`");
 	println!("\nFor errors:");
 	println!("  • Check the log files in the directory above");
 	println!(

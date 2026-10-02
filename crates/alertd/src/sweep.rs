@@ -36,6 +36,7 @@ use crate::{
 	server_info::ServerFacts,
 	store,
 	subject::{ApplicationKind, ApplicationRef, Subject},
+	sweep_cache::SweepCache,
 };
 
 /// The name bestool's daemon reports under.
@@ -363,7 +364,8 @@ fn tamanu_context(
 	targets: &SweepTargets,
 	tamanu: &Option<ResolvedTamanu>,
 	pool: &Option<bestool_postgres::pool::PgPool>,
-	http: &reqwest::Client,
+	canopy: &Option<Arc<CanopyClient>>,
+	sweep: &Arc<SweepCache>,
 ) -> checks::TamanuCx {
 	let tamanu = tamanu.as_ref();
 	// `0.0.0` is the sweep's marker for a version it could not resolve, which
@@ -376,9 +378,10 @@ fn tamanu_context(
 		install_root: tamanu.and_then(|t| t.root.clone()),
 		database_url: targets.database_url.clone(),
 		pool: pool.clone(),
-		http: http.clone(),
+		canopy: canopy.clone(),
 		runtime: tamanu_runtime(app, &version),
-		traffic: Arc::new(runtime::caddy::CaddyRuntime::new(http.clone())),
+		traffic: Arc::new(runtime::caddy::CaddyRuntime::new(sweep.clone())),
+		sweep: sweep.clone(),
 		store: Arc::new(store::FileStore::for_subject(&Subject::Application(
 			app.clone(),
 		))),
@@ -702,6 +705,10 @@ pub fn validate_selection(
 	Ok(())
 }
 
+/// Longer than a check queueing for the sweep pool's slot and connecting, shorter than the
+/// daemon's default watchdog, so a hung check can't stop the sweep reporting.
+const CHECK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(240);
+
 /// Drive a set of checks concurrently, each on its own task.
 ///
 /// spec: CHK
@@ -712,6 +719,8 @@ pub fn validate_selection(
 /// (an `Instant` straddling an `.await` counts wall-clock spent unpolled). A
 /// panicking check surfaces as a `broken` result for that check alone rather
 /// than taking the whole sweep down.
+///
+/// spec: DOC
 async fn run_checks_concurrently(
 	checks: Vec<PreparedCheck>,
 	progress: Option<&ProgressSender>,
@@ -727,7 +736,20 @@ async fn run_checks_concurrently(
 	} in checks
 	{
 		let task = tokio::spawn(async move {
-			let result = fut.await;
+			let result = match tokio::time::timeout(CHECK_DEADLINE, fut).await {
+				Ok(result) => result,
+				Err(_) => {
+					warn!(
+						check = name,
+						"doctor check did not finish within its deadline"
+					);
+					Check::broken(
+						name,
+						"check did not finish",
+						format!("still running after {}s", CHECK_DEADLINE.as_secs()),
+					)
+				}
+			};
 			if let Some(spawn_heal) = heal
 				&& result.status.is_fatal()
 			{
@@ -868,7 +890,7 @@ pub async fn perform_sweep(
 	// a machine fact — and nothing scoped to an application.
 	let machine_cx = checks::MachineCx::builder()
 		.http(http_client.clone())
-		.maybe_canopy(canopy)
+		.maybe_canopy(canopy.clone())
 		.maybe_tamanu(tamanu.as_ref().map(|t| checks::MachineTamanu {
 			version: t.version.clone(),
 			root: t.root.clone(),
@@ -889,6 +911,11 @@ pub async fn perform_sweep(
 	//
 	// `applications` is empty unless the sweep resolved targets, so there is
 	// nothing to build a context from without them.
+	// One per sweep, so the readings that are the machine's — Canopy's
+	// entitlement, Caddy's configuration, the collected chains — are taken once
+	// however many applications this host carries.
+	let sweep_cache = Arc::new(SweepCache::new());
+
 	let mut pg_cxs: HashMap<ApplicationRef, checks::PgCx> = HashMap::new();
 	let mut tamanu_cxs: HashMap<ApplicationRef, checks::TamanuCx> = HashMap::new();
 	if let Some(targets) = targets.as_ref() {
@@ -898,7 +925,7 @@ pub async fn perform_sweep(
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
 				pg_cxs.insert(app.clone(), cx);
 			} else {
-				let cx = tamanu_context(app, targets, &tamanu, &check_pool, &http_client);
+				let cx = tamanu_context(app, targets, &tamanu, &check_pool, &canopy, &sweep_cache);
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
 				tamanu_cxs.insert(app.clone(), cx);
 			}
@@ -1444,6 +1471,44 @@ mod tests {
 		);
 	}
 
+	#[tokio::test(start_paused = true)]
+	async fn a_hung_check_is_broken_and_the_rest_still_report() {
+		let prepared = vec![
+			PreparedCheck {
+				idx: 0,
+				name: "hung",
+				subject: Subject::Machine,
+				on_wire: true,
+				fut: Box::pin(std::future::pending()),
+				heal: None,
+			},
+			PreparedCheck {
+				idx: 1,
+				name: "quick",
+				subject: Subject::Machine,
+				on_wire: true,
+				fut: Box::pin(async { Check::pass("quick", "ok") }),
+				heal: None,
+			},
+		];
+
+		let results = run_checks_concurrently(prepared, None).await;
+		let status_of = |idx: usize| {
+			&results
+				.iter()
+				.find(|(i, _)| *i == idx)
+				.expect("every check reports")
+				.1
+				.check
+				.status
+		};
+		assert!(matches!(status_of(0), crate::check::CheckStatus::Broken(_)));
+		assert!(!matches!(
+			status_of(1),
+			crate::check::CheckStatus::Broken(_)
+		));
+	}
+
 	#[tokio::test]
 	async fn sweep_without_tamanu_omits_application_checks() {
 		// No Tamanu means no application subject, so an application check is not
@@ -1583,7 +1648,6 @@ mod tests {
 			kind: bestool_tamanu::ApiServerKind::Central,
 			root: Some(PathBuf::from("/opt/tamanu")),
 		});
-		let http = reqwest::Client::new();
 
 		// A cluster's context has no field for a version, an install root or a
 		// deployment configuration, so this asserts what it does carry: the
@@ -1599,7 +1663,8 @@ mod tests {
 			&targets,
 			&tamanu,
 			&None,
-			&http,
+			&None,
+			&Arc::new(SweepCache::new()),
 		);
 		assert_eq!(deployment.install_root, Some(PathBuf::from("/opt/tamanu")));
 		assert!(deployment.installed_config().is_some());

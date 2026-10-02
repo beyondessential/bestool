@@ -218,6 +218,12 @@ pub(crate) async fn install<T: WifiConfigurator + 'static>(
 	);
 	object_server.at(ADV_PATH, initial_adv).await.map_err(map)?;
 
+	// Register an ObjectManager (zbus does not do that automatically)
+	object_server
+		.at(APP_PATH, zbus::fdo::ObjectManager)
+		.await
+		.map_err(map)?;
+
 	// Register the application + advertisement with BlueZ on the chosen adapter.
 	let gatt_mgr = GattManager1Proxy::builder(&connection)
 		.path(adapter_path.clone())

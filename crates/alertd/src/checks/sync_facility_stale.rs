@@ -35,7 +35,7 @@ const SQL: &str = "WITH facility_sessions AS ( \
 	) \
 	SELECT a.facility_id, \
 		ls.last_successful_sync::text AS last_successful_sync, \
-		EXTRACT(EPOCH FROM (now() - ls.last_successful_sync)) / 60 AS minutes_since_success \
+		(EXTRACT(EPOCH FROM (now() - ls.last_successful_sync)) / 60)::float8 AS minutes_since_success \
 	FROM active a LEFT JOIN last_success ls USING (facility_id) \
 	ORDER BY minutes_since_success DESC NULLS FIRST";
 
@@ -113,6 +113,8 @@ pub async fn run(ctx: TamanuCx) -> Check {
 
 #[cfg(test)]
 mod tests {
+	use tokio_postgres::types::Type;
+
 	use crate::check::CheckStatus;
 	use crate::checks::test_support::{central_ctx, facility_ctx};
 
@@ -127,6 +129,23 @@ mod tests {
 			check.status,
 			CheckStatus::Pass | CheckStatus::Warning(_) | CheckStatus::Fail(_)
 		));
+	}
+
+	// A numeric column fails to decode as f64, which the tiering reads as "no
+	// successful sync" and grades every active facility as FAIL.
+	#[tokio::test]
+	async fn minutes_column_decodes_as_f64() {
+		let Some(ctx) = central_ctx().await else {
+			return;
+		};
+		let client = ctx.db().await.expect("central connection");
+		let stmt = client.prepare(super::SQL).await.expect("prepare");
+		let col = stmt
+			.columns()
+			.iter()
+			.find(|c| c.name() == "minutes_since_success")
+			.expect("minutes_since_success column");
+		assert_eq!(col.type_(), &Type::FLOAT8);
 	}
 
 	#[tokio::test]

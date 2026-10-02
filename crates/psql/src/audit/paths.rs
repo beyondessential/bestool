@@ -274,40 +274,40 @@ pub fn default_dir() -> Result<PathBuf> {
 /// deployment means patient data in plain, greppable JSON. Other local users
 /// have no business reading it.
 ///
-/// A directory that already exists is left as its owner set it. `--audit-path`
-/// is operator-supplied and this runs on every segment open, so narrowing one
-/// that was already there would quietly strip access from a directory this code
-/// does not own — it says so instead, and records there anyway, because a
-/// degraded log is better than none.
+/// A directory that already exists and is shared, whether left so by an older
+/// release or named by `--audit-path`, is narrowed to its owner. When that fails
+/// it says so, and records there anyway, because a degraded log is better than
+/// none.
 pub fn create_dir(dir: &Path) -> Result<()> {
-	if dir.is_dir() {
-		warn_if_shared(dir);
-		return Ok(());
+	if !dir.is_dir() {
+		// Created private, rather than created and then narrowed: between the
+		// two another local user could open a directory that is about to hold
+		// patient data and keep reading it afterwards.
+		let mut builder = std::fs::DirBuilder::new();
+		builder.recursive(true);
+
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::DirBuilderExt as _;
+			builder.mode(0o700);
+		}
+
+		builder
+			.create(dir)
+			.into_diagnostic()
+			.wrap_err_with(|| format!("creating audit directory {}", dir.display()))?;
 	}
 
-	// Created private, rather than created and then narrowed: between the two
-	// another local user could open a directory that is about to hold patient
-	// data and keep reading it afterwards.
-	let mut builder = std::fs::DirBuilder::new();
-	builder.recursive(true);
-
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::DirBuilderExt as _;
-		builder.mode(0o700);
-	}
-
-	builder
-		.create(dir)
-		.into_diagnostic()
-		.wrap_err_with(|| format!("creating audit directory {}", dir.display()))?;
-
-	warn_if_shared(dir);
+	make_private(dir);
 	Ok(())
 }
 
-/// Say so, loudly, when the audit directory can be read by anyone else.
-fn warn_if_shared(dir: &Path) {
+/// Narrow the audit directory to its owner when anyone else can read it, and
+/// say so, loudly, when that cannot be done.
+///
+/// Narrowing the directory is enough: the files already inside it cannot be
+/// reached through it by anyone else, whatever their own modes.
+fn make_private(dir: &Path) {
 	#[cfg(unix)]
 	{
 		use std::os::unix::fs::PermissionsExt as _;
@@ -315,21 +315,41 @@ fn warn_if_shared(dir: &Path) {
 		let Ok(metadata) = std::fs::metadata(dir) else {
 			return;
 		};
-		let mode = metadata.permissions().mode() & 0o777;
+		let mode = metadata.permissions().mode() & 0o7777;
 		if mode & 0o077 == 0 {
 			return;
 		}
 
-		tracing::warn!(
-			?dir,
-			mode = format!("{mode:o}"),
-			"audit directory is not private"
-		);
-		eprintln!(
-			"warning: the audit directory {} can be read by other users of this machine (mode {mode:o})",
-			dir.display()
-		);
-		eprintln!("warning: it holds the full text of every statement this session runs");
+		let narrowed = mode & !0o077;
+		match std::fs::set_permissions(dir, std::fs::Permissions::from_mode(narrowed)) {
+			Ok(()) => {
+				tracing::debug!(
+					?dir,
+					from = format!("{mode:o}"),
+					to = format!("{narrowed:o}"),
+					"narrowed the audit directory to its owner"
+				);
+				eprintln!(
+					"note: the audit directory {} was readable by other users of this machine (mode {:o}); it is now private",
+					dir.display(),
+					mode & 0o777,
+				);
+			}
+			Err(err) => {
+				tracing::warn!(
+					?dir,
+					?err,
+					mode = format!("{mode:o}"),
+					"audit directory is not private and cannot be narrowed"
+				);
+				eprintln!(
+					"warning: the audit directory {} can be read by other users of this machine (mode {:o})",
+					dir.display(),
+					mode & 0o777,
+				);
+				eprintln!("warning: it holds the full text of every statement this session runs");
+			}
+		}
 	}
 
 	#[cfg(not(unix))]

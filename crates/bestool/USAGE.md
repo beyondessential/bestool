@@ -8,6 +8,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool alertd`↴](#bestool-alertd)
 * [`bestool alertd run`↴](#bestool-alertd-run)
 * [`bestool alertd status`↴](#bestool-alertd-status)
+* [`bestool alertd logs`↴](#bestool-alertd-logs)
 * [`bestool alertd reload`↴](#bestool-alertd-reload)
 * [`bestool alertd restart`↴](#bestool-alertd-restart)
 * [`bestool audit-psql`↴](#bestool-audit-psql)
@@ -20,6 +21,14 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool canopy register`↴](#bestool-canopy-register)
 * [`bestool canopy export`↴](#bestool-canopy-export)
 * [`bestool canopy import`↴](#bestool-canopy-import)
+* [`bestool canopy certs`↴](#bestool-canopy-certs)
+* [`bestool canopy certs list`↴](#bestool-canopy-certs-list)
+* [`bestool canopy certs request`↴](#bestool-canopy-certs-request)
+* [`bestool canopy certs collect`↴](#bestool-canopy-certs-collect)
+* [`bestool canopy dns`↴](#bestool-canopy-dns)
+* [`bestool canopy dns show`↴](#bestool-canopy-dns-show)
+* [`bestool canopy dns register`↴](#bestool-canopy-dns-register)
+* [`bestool canopy dns withdraw`↴](#bestool-canopy-dns-withdraw)
 * [`bestool canopy tags`↴](#bestool-canopy-tags)
 * [`bestool canopy backup`↴](#bestool-canopy-backup)
 * [`bestool canopy hold`↴](#bestool-canopy-hold)
@@ -72,6 +81,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu alertd`↴](#bestool-tamanu-alertd)
 * [`bestool tamanu alertd run`↴](#bestool-tamanu-alertd-run)
 * [`bestool tamanu alertd status`↴](#bestool-tamanu-alertd-status)
+* [`bestool tamanu alertd logs`↴](#bestool-tamanu-alertd-logs)
 * [`bestool tamanu alertd reload`↴](#bestool-tamanu-alertd-reload)
 * [`bestool tamanu alertd restart`↴](#bestool-tamanu-alertd-restart)
 * [`bestool tamanu artifacts`↴](#bestool-tamanu-artifacts)
@@ -84,6 +94,7 @@ This document contains the help content for the `bestool` command-line program.
 * [`bestool tamanu download`↴](#bestool-tamanu-download)
 * [`bestool tamanu find`↴](#bestool-tamanu-find)
 * [`bestool tamanu logs`↴](#bestool-tamanu-logs)
+* [`bestool tamanu pre-upgrade`↴](#bestool-tamanu-pre-upgrade)
 * [`bestool tamanu psql`↴](#bestool-tamanu-psql)
 * [`bestool tamanu sync`↴](#bestool-tamanu-sync)
 * [`bestool tamanu tags`↴](#bestool-tamanu-tags)
@@ -173,6 +184,7 @@ sweeps, with every Tamanu-dependent check skipped.
 
 * `run` — Run the healthcheck daemon
 * `status` — Show status and health of a running daemon
+* `logs` — Show the daemon's log entries
 * `reload` — Reload a running daemon
 * `restart` — Restart a running daemon
 
@@ -203,6 +215,9 @@ Starts the daemon which runs the doctor healthcheck sweep on a schedule and post
 * `--no-watchdog` — Disable the watchdog
 
    By default, the daemon will exit if no task activity is detected within the watchdog timeout. This flag disables that behaviour.
+* `--permit-cert-user <USER>` — User permitted to fetch a canopy-issued certificate, beyond root
+
+   The certificate endpoint hands out a private key, so it identifies its caller. The superuser may always fetch one; this names one further user, which is the user the front end runs as (commonly `caddy`). Takes a name or a numeric uid.
 
 
 
@@ -219,6 +234,23 @@ Connects to the running daemon's HTTP API and displays version, uptime, health, 
 * `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
 
    Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+
+
+
+## `bestool alertd logs`
+
+Show the daemon's log entries
+
+Prints the most recent entries, then follows new ones as they're written until interrupted. Reads from where the service writes its logs (the log files under %ProgramData%\bestool\logs on Windows, the journal on Linux), so it works while the daemon is down.
+
+**Usage:** `bestool alertd logs [OPTIONS]`
+
+###### **Options:**
+
+* `-n`, `--lines <LINES>` — How many recent entries to print before following
+
+  Default value: `50`
+* `--no-follow` — Print the recent entries and exit, instead of following new ones
 
 
 
@@ -345,6 +377,8 @@ Interact with Canopy
 * `register` — Enrol this machine as a Canopy server
 * `export` — Export this machine's canopy registration for transfer to another machine
 * `import` — Import a canopy registration exported from another machine
+* `certs` — The TLS certificates canopy holds for this server.
+* `dns` — The DNS records canopy publishes for this server.
 * `tags` — Fetch this device's tags from canopy.
 * `backup` — Run a configured backup, driving kopia and reporting to Canopy
 * `hold` — Manage captures held on this device as local rollback points
@@ -421,6 +455,109 @@ Decrypts the export blob with its passphrase and re-stores it under this machine
 * `--insecure-passphrase <INSECURE_PASSPHRASE>` — A passphrase as a string.
 
    This is extremely insecure, only use when there is no other option. When on an interactive terminal, make sure to wipe this command line from your history, or better yet not record it in the first place (in Bash you often can do that by prepending a space to your command).
+
+
+
+## `bestool canopy certs`
+
+The TLS certificates canopy holds for this server.
+
+**Usage:** `bestool canopy certs [OPTIONS] [COMMAND]`
+
+###### **Subcommands:**
+
+* `list` — Report the certificates canopy holds and the chains this host serves
+* `request` — Ask canopy to certify a name, without waiting for it to be discovered
+* `collect` — Run a collection now rather than waiting for the schedule
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — Daemon HTTP address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+* `--json` — Print the daemon's answer as JSON rather than as a report
+
+
+
+## `bestool canopy certs list`
+
+Report the certificates canopy holds and the chains this host serves
+
+**Usage:** `bestool canopy certs list`
+
+
+
+## `bestool canopy certs request`
+
+Ask canopy to certify a name, without waiting for it to be discovered.
+
+The name still has to be one this server's entitlement covers; this is for pre-provisioning, not for reaching past the grant.
+
+**Usage:** `bestool canopy certs request <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>` — The name to certify
+
+
+
+## `bestool canopy certs collect`
+
+Run a collection now rather than waiting for the schedule
+
+**Usage:** `bestool canopy certs collect`
+
+
+
+## `bestool canopy dns`
+
+The DNS records canopy publishes for this server.
+
+**Usage:** `bestool canopy dns [OPTIONS] [COMMAND]`
+
+###### **Subcommands:**
+
+* `show` — Report the names canopy holds registrations for on this server
+* `register` — Publish the addresses a name resolves to
+* `withdraw` — Take a name's records down and free the name
+
+###### **Options:**
+
+* `--server-addr <SERVER_ADDR>` — Daemon HTTP address(es) to try (defaults to [::1]:8271 and 127.0.0.1:8271)
+* `--json` — Print the daemon's answer as JSON rather than as a report
+
+
+
+## `bestool canopy dns show`
+
+Report the names canopy holds registrations for on this server
+
+**Usage:** `bestool canopy dns show`
+
+
+
+## `bestool canopy dns register`
+
+Publish the addresses a name resolves to.
+
+Replaces whatever was registered for the name before. The name must sit within a domain this server's group controls, and a name another server already holds is refused.
+
+**Usage:** `bestool canopy dns register <NAME> <ADDRESSES>...`
+
+###### **Arguments:**
+
+* `<NAME>` — The name to publish records at
+* `<ADDRESSES>` — Every external address this server is reachable at
+
+
+
+## `bestool canopy dns withdraw`
+
+Take a name's records down and free the name
+
+**Usage:** `bestool canopy dns withdraw <NAME>`
+
+###### **Arguments:**
+
+* `<NAME>` — The name to withdraw
 
 
 
@@ -1620,6 +1757,7 @@ Alias: t
 * `find` — Find Tamanu installations
 * `logs` — Tail logs for tamanu services and (optionally) the caddy and postgres
 pseudo-services.
+* `pre-upgrade` — Prepare this server for upgrading Tamanu to a new version
 * `psql` — Connect to Tamanu's database
 * `sync` — Trigger a manual sync on a facility server and watch it run.
 * `tags` — Fetch this device's tags from canopy.
@@ -1649,6 +1787,7 @@ sweeps, with every Tamanu-dependent check skipped.
 
 * `run` — Run the healthcheck daemon
 * `status` — Show status and health of a running daemon
+* `logs` — Show the daemon's log entries
 * `reload` — Reload a running daemon
 * `restart` — Restart a running daemon
 
@@ -1679,6 +1818,9 @@ Starts the daemon which runs the doctor healthcheck sweep on a schedule and post
 * `--no-watchdog` — Disable the watchdog
 
    By default, the daemon will exit if no task activity is detected within the watchdog timeout. This flag disables that behaviour.
+* `--permit-cert-user <USER>` — User permitted to fetch a canopy-issued certificate, beyond root
+
+   The certificate endpoint hands out a private key, so it identifies its caller. The superuser may always fetch one; this names one further user, which is the user the front end runs as (commonly `caddy`). Takes a name or a numeric uid.
 
 
 
@@ -1695,6 +1837,23 @@ Connects to the running daemon's HTTP API and displays version, uptime, health, 
 * `--server-addr <SERVER_ADDR>` — HTTP server address(es) to try
 
    Can be provided multiple times. Will attempt to connect to each address in order until one succeeds. Defaults to [::1]:8271 and 127.0.0.1:8271
+
+
+
+## `bestool tamanu alertd logs`
+
+Show the daemon's log entries
+
+Prints the most recent entries, then follows new ones as they're written until interrupted. Reads from where the service writes its logs (the log files under %ProgramData%\bestool\logs on Windows, the journal on Linux), so it works while the daemon is down.
+
+**Usage:** `bestool tamanu alertd logs [OPTIONS]`
+
+###### **Options:**
+
+* `-n`, `--lines <LINES>` — How many recent entries to print before following
+
+  Default value: `50`
+* `--no-follow` — Print the recent entries and exit, instead of following new ones
 
 
 
@@ -2073,6 +2232,9 @@ Exit code 0 on HEALTHY or DEGRADED, 1 on FAILING, 130 on interrupt.
 * `--no-daemon` — Skip the alertd integration entirely and always compute locally.
 
    Combined with `--fresh` this is a no-op (a local sweep is always fresh).
+* `--heal` — Run the self-heal action of every failing check in the selection.
+
+   A heal changes the system: it restarts services and, for the reporting schema, replaces it, so it needs `--check` naming the repair intended. Implies `--no-daemon`, since a sweep the daemon computes is side-effect free by design and the daemon heals on its own schedule.
 
 
 
@@ -2177,6 +2339,30 @@ on Windows it tails the `.log` files from the Postgres data directory.
 * `-v`, `--invert-match` — Invert the grep match — print lines that do NOT match. Only has an effect when combined with `--grep`. Mirrors `grep -v`.
 
    `journalctl` has no native inverse-match, so on Linux the filter is applied client-side when `-v` is in use; without `-v` the regex is still pushed down into `journalctl -g` for the kernel-side speedup.
+
+
+
+## `bestool tamanu pre-upgrade`
+
+Prepare this server for upgrading Tamanu to a new version.
+
+Downloads the target release if it isn't installed yet and works out which of its migrations this database hasn't run. If there are any, drops the reporting schema, whose views block migrations that alter the columns they read.
+
+A reporting schema alertd did not stamp may be hand-built, so it is only dropped with `--yes`. Once the new version has migrated, alertd applies the schema canopy publishes for it; where canopy publishes none, reinstall the schema by hand.
+
+**Usage:** `bestool tamanu pre-upgrade [OPTIONS] <VERSION>`
+
+###### **Arguments:**
+
+* `<VERSION>` — Version being upgraded to
+
+###### **Options:**
+
+* `--into <INTO>` — Where to download the release to
+
+  Default value: `.`
+* `--yes` — Also drop a reporting schema that alertd did not apply
+* `--dry-run` — Say what would be done without downloading or dropping anything
 
 
 

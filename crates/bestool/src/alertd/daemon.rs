@@ -162,6 +162,7 @@ pub async fn run_with_shutdown(
 		let watchdog_timeout = daemon_config.watchdog_timeout;
 		let backups = daemon_config.backups.clone();
 		let metrics = daemon_config.metrics.clone();
+		let certificates = daemon_config.certificates.clone();
 		let binary_version = crate::alertd::BINARY_VERSION.to_string();
 		tokio::spawn(async move {
 			http_server::start_server(
@@ -172,6 +173,7 @@ pub async fn run_with_shutdown(
 				control,
 				backups,
 				metrics,
+				certificates,
 				binary_version,
 			)
 			.await;
