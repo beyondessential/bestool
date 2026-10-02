@@ -19,9 +19,22 @@ use crate::check::Check;
 
 const NAME: &str = "blob_correction_rate";
 
+/// Distinct blobs repaired in a week before repair reads as a spread. The
+/// runbook calls one correction the feature working and gives no number; three
+/// keeps a pair of unrelated bit flips from warning.
 const WARN_BLOBS_7D: i64 = 3;
+
+/// Distinct blobs repaired in a day that read as the media failing. The same
+/// count as `blob_integrity`'s many-at-once line, so both checks call a failing
+/// disk at the same point whether or not parity caught it.
 const FAIL_BLOBS_24H: i64 = 10;
+
+/// The fewest repairs in a day that can read as accelerating, so going from one
+/// repair a week to two in a day is not called a trend.
 const RISING_MIN_24H: i64 = 5;
+
+/// How far above the week's daily average a day must be to read as
+/// accelerating. The runbook compares the two windows without giving a ratio.
 const RISING_FACTOR: f64 = 3.0;
 
 const SQL: &str = "SELECT \
