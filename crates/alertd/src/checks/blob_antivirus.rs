@@ -34,7 +34,7 @@ const STALL_SECS: i64 = 2 * 60 * 60;
 /// Blobs above this are never sent to the scanner and stay unscanned by design,
 /// so they are kept out of the backlog. Overridden by the deployment's own
 /// `blobStorage.antivirus.maxScanMB` where it is set.
-const DEFAULT_MAX_SCAN_MB: i64 = 25;
+const DEFAULT_MAX_SCAN_MB: f64 = 25.0;
 
 const SCANNER_KEY: &str = "blobStorage.antivirus.scanner";
 const SERVE_POLICY_KEY: &str = "blobStorage.antivirus.servePolicy";
@@ -199,10 +199,10 @@ fn posture(settings: &[(String, Value)]) -> Posture {
 		&& setting(settings, SERVE_POLICY_KEY)
 			.and_then(Value::as_str)
 			.is_some_and(|policy| policy == POLICY_ONLY_KNOWN_GOOD);
-	let max_scan_bytes = setting(settings, MAX_SCAN_MB_KEY)
-		.and_then(Value::as_i64)
-		.unwrap_or(DEFAULT_MAX_SCAN_MB)
-		* 1024 * 1024;
+	let max_scan_mb = setting(settings, MAX_SCAN_MB_KEY)
+		.and_then(Value::as_f64)
+		.unwrap_or(DEFAULT_MAX_SCAN_MB);
+	let max_scan_bytes = (max_scan_mb * 1024.0 * 1024.0).floor() as i64;
 	Posture {
 		scanner,
 		scanning,
@@ -374,6 +374,17 @@ mod tests {
 		let posture = posture(&rows);
 		assert!(posture.scanning);
 		assert!(posture.withholds_unscanned);
+	}
+
+	#[test]
+	fn a_fractional_scan_cap_is_kept() {
+		let rows = vec![(MAX_SCAN_MB_KEY.to_string(), json!(0.3))];
+		assert_eq!(posture(&rows).max_scan_bytes, 314_572);
+	}
+
+	#[test]
+	fn the_scan_cap_defaults_to_25_mb() {
+		assert_eq!(posture(&[]).max_scan_bytes, 25 * 1024 * 1024);
 	}
 
 	#[test]
