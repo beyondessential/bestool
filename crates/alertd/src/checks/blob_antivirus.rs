@@ -1,7 +1,8 @@
 //! Malware verdicts over stored blobs, and whether the scanner is being reached.
 //!
 //! Scanning is off unless a scanner is named, which is the default, and no
-//! scanner means no verdicts at all — the normal state, so this SKIPs. The
+//! scanner means no scan pass, so this SKIPs even over verdicts a scanner since
+//! switched off left behind. The
 //! quarantine record propagates from central, so standing quarantines are
 //! reported even on a server that drives no scanner of its own.
 //!
@@ -71,17 +72,12 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		Err(err) if is_missing_relation(&err) => Vec::new(),
 		Err(err) => return query_error_check(NAME, &err),
 	};
-	let scanner = setting(&settings, SCANNER_KEY)
-		.and_then(Value::as_str)
-		.unwrap_or(SCANNER_NONE)
-		.to_string();
-	let withholds_unscanned = setting(&settings, SERVE_POLICY_KEY)
-		.and_then(Value::as_str)
-		.is_some_and(|policy| policy == POLICY_ONLY_KNOWN_GOOD);
-	let max_scan_bytes = setting(&settings, MAX_SCAN_MB_KEY)
-		.and_then(Value::as_i64)
-		.unwrap_or(DEFAULT_MAX_SCAN_MB)
-		* 1024 * 1024;
+	let Posture {
+		scanner,
+		scanning,
+		withholds_unscanned,
+		max_scan_bytes,
+	} = posture(&settings);
 
 	let row = match client.query_one(SQL, &[&max_scan_bytes]).await {
 		Ok(row) => row,
@@ -117,13 +113,11 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		Err(err) => return query_error_check(NAME, &err),
 	};
 
-	// A scanner turned off leaves its verdicts behind, and they still grade.
-	let scanning = scanner != SCANNER_NONE || clean + infected > 0;
 	if !scanning && quarantined == 0 {
 		return Check::skip(
 			NAME,
 			"no antivirus scanning here",
-			"no scanner is configured on this server and no verdict is recorded, which is the default",
+			"no scanner is configured on this server, which is the default",
 		);
 	}
 
@@ -184,6 +178,37 @@ pub async fn run(ctx: TamanuCx) -> Check {
 			));
 	}
 	check
+}
+
+struct Posture {
+	scanner: String,
+	scanning: bool,
+	withholds_unscanned: bool,
+	max_scan_bytes: i64,
+}
+
+/// How this server is set to scan. With no scanner Tamanu runs no scan pass and
+/// withholds nothing, whatever the serve policy says.
+fn posture(settings: &[(String, Value)]) -> Posture {
+	let scanner = setting(settings, SCANNER_KEY)
+		.and_then(Value::as_str)
+		.unwrap_or(SCANNER_NONE)
+		.to_string();
+	let scanning = scanner != SCANNER_NONE;
+	let withholds_unscanned = scanning
+		&& setting(settings, SERVE_POLICY_KEY)
+			.and_then(Value::as_str)
+			.is_some_and(|policy| policy == POLICY_ONLY_KNOWN_GOOD);
+	let max_scan_bytes = setting(settings, MAX_SCAN_MB_KEY)
+		.and_then(Value::as_i64)
+		.unwrap_or(DEFAULT_MAX_SCAN_MB)
+		* 1024 * 1024;
+	Posture {
+		scanner,
+		scanning,
+		withholds_unscanned,
+		max_scan_bytes,
+	}
 }
 
 enum Verdict {
@@ -330,6 +355,25 @@ mod tests {
 	#[test]
 	fn withheld_content_outranks_a_standing_quarantine() {
 		assert_eq!(grade(true, 1, Some(STALL_SECS + 1), true, 1), "fail");
+	}
+
+	#[test]
+	fn no_scanner_means_no_scanning_and_nothing_withheld() {
+		let rows = vec![(SERVE_POLICY_KEY.to_string(), json!(POLICY_ONLY_KNOWN_GOOD))];
+		let posture = posture(&rows);
+		assert!(!posture.scanning);
+		assert!(!posture.withholds_unscanned);
+	}
+
+	#[test]
+	fn a_named_scanner_under_only_known_good_withholds() {
+		let rows = vec![
+			(SCANNER_KEY.to_string(), json!("clamd")),
+			(SERVE_POLICY_KEY.to_string(), json!(POLICY_ONLY_KNOWN_GOOD)),
+		];
+		let posture = posture(&rows);
+		assert!(posture.scanning);
+		assert!(posture.withholds_unscanned);
 	}
 
 	#[test]
