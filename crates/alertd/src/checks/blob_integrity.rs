@@ -334,6 +334,47 @@ mod tests {
 	}
 
 	#[test]
+	fn nine_recent_cache_drops_pass() {
+		assert_eq!(grade_drops(0, 0, 100, Some(0), Some(9), Some(60)), "pass");
+	}
+
+	#[test]
+	fn a_drop_exactly_a_day_old_still_counts_as_recent() {
+		assert_eq!(
+			grade_drops(0, 0, 100, Some(0), Some(10), Some(RECENT_DROP_SECS)),
+			"warn"
+		);
+	}
+
+	#[test]
+	fn a_drop_count_without_recency_passes() {
+		assert_eq!(grade_drops(0, 0, 100, Some(0), Some(50), None), "pass");
+	}
+
+	fn reason(verdict: Verdict) -> String {
+		match verdict {
+			Verdict::Pass => panic!("expected a reason, got a pass"),
+			Verdict::Warn(r) | Verdict::Fail(r) => r,
+		}
+	}
+
+	#[test]
+	fn a_faulty_cache_blob_is_reported_over_a_drop_run() {
+		assert_eq!(
+			reason(classify(0, 1, 100, Some(0), Some(50), Some(60))),
+			"1 faulty cache blob(s), which should clear by refetching from central"
+		);
+	}
+
+	#[test]
+	fn a_faulty_cache_blob_is_reported_over_a_stale_scrub() {
+		assert_eq!(
+			reason(classify(0, 1, 100, Some(STALE_SCRUB_SECS + 1), None, None)),
+			"1 faulty cache blob(s), which should clear by refetching from central"
+		);
+	}
+
+	#[test]
 	fn a_store_that_has_never_dropped_one_passes() {
 		assert_eq!(grade_drops(0, 0, 100, Some(0), None, None), "pass");
 	}
