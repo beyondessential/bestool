@@ -716,6 +716,9 @@ mod tests {
 	}
 
 	const MB: i64 = 1024 * 1024;
+	const SCANNER: &str = "blobStorage.antivirus.scanner";
+	const POLICY: &str = "blobStorage.antivirus.servePolicy";
+	const MAX_SCAN_MB: &str = "blobStorage.antivirus.maxScanMB";
 	const QUARANTINE: &str = "INSERT INTO blob_quarantines (hash) VALUES ('sha256:quarantined');";
 	const STALL_WARNING: &str =
 		"no verdict recorded for 3h with 1 blob(s) waiting, so the scanner is not being reached";
@@ -740,7 +743,7 @@ mod tests {
 	}
 
 	fn central_scanner(scanner: &str) -> String {
-		setting_sql("central", None, SCANNER_KEY, &format!("\"{scanner}\""))
+		setting_sql("central", None, SCANNER, &format!("\"{scanner}\""))
 	}
 
 	async fn graded(on_facility: bool, seed: &str) -> Option<Check> {
@@ -780,7 +783,7 @@ mod tests {
 		for policy in [None, Some("off"), Some("unless-known-bad")] {
 			let mut seed = central_scanner("clamd") + &blob_sql(1, 4096, "3 hours", None);
 			if let Some(policy) = policy {
-				seed += &setting_sql("global", None, SERVE_POLICY_KEY, &format!("\"{policy}\""));
+				seed += &setting_sql("global", None, POLICY, &format!("\"{policy}\""));
 			}
 			let Some(check) = graded(false, &seed).await else {
 				return;
@@ -798,7 +801,7 @@ mod tests {
 	#[tokio::test]
 	async fn a_stall_fails_under_only_known_good() {
 		let seed = central_scanner("clamd")
-			+ &setting_sql("global", None, SERVE_POLICY_KEY, "\"only-known-good\"")
+			+ &setting_sql("global", None, POLICY, "\"only-known-good\"")
 			+ &blob_sql(1, 4096, "3 hours", None);
 		let Some(check) = graded(false, &seed).await else {
 			return;
@@ -850,7 +853,7 @@ mod tests {
 	#[tokio::test]
 	async fn no_scanner_skips_over_leftover_verdicts() {
 		let seed = central_scanner("none")
-			+ &setting_sql("global", None, SERVE_POLICY_KEY, "\"only-known-good\"")
+			+ &setting_sql("global", None, POLICY, "\"only-known-good\"")
 			+ &blob_sql(1, 4096, "4 hours", Some(("clean", "3 hours")))
 			+ &blob_sql(2, 4096, "1 minute", None);
 		let Some(check) = graded(false, &seed).await else {
@@ -869,7 +872,7 @@ mod tests {
 	#[tokio::test]
 	async fn no_scanner_warns_for_a_quarantine_only() {
 		let seed = central_scanner("none")
-			+ &setting_sql("global", None, SERVE_POLICY_KEY, "\"only-known-good\"")
+			+ &setting_sql("global", None, POLICY, "\"only-known-good\"")
 			+ &blob_sql(1, 4096, "4 hours", Some(("clean", "3 hours")))
 			+ &blob_sql(2, 4096, "1 minute", None)
 			+ QUARANTINE;
@@ -903,7 +906,7 @@ mod tests {
 	#[tokio::test]
 	async fn a_raised_cap_brings_the_blob_into_the_backlog() {
 		let seed = central_scanner("clamd")
-			+ &setting_sql("central", None, MAX_SCAN_MB_KEY, "40")
+			+ &setting_sql("central", None, MAX_SCAN_MB, "40")
 			+ &blob_sql(1, 30 * MB, "3 hours", None);
 		let Some(check) = graded(false, &seed).await else {
 			return;
@@ -916,7 +919,7 @@ mod tests {
 	#[tokio::test]
 	async fn a_fractional_cap_is_applied_to_the_store() {
 		let seed = central_scanner("clamd")
-			+ &setting_sql("central", None, MAX_SCAN_MB_KEY, "12.5")
+			+ &setting_sql("central", None, MAX_SCAN_MB, "12.5")
 			+ &blob_sql(1, 20 * MB, "3 hours", None);
 		let Some(check) = graded(false, &seed).await else {
 			return;
@@ -942,7 +945,7 @@ mod tests {
 	async fn central_ignores_a_facility_scanner() {
 		assert_no_scanner(
 			false,
-			&setting_sql("facility", Some("facility-1"), SCANNER_KEY, "\"clamd\""),
+			&setting_sql("facility", Some("facility-1"), SCANNER, "\"clamd\""),
 		)
 		.await;
 	}
@@ -956,7 +959,7 @@ mod tests {
 	async fn a_facility_ignores_another_facilitys_scanner() {
 		assert_no_scanner(
 			true,
-			&setting_sql("facility", Some("facility-2"), SCANNER_KEY, "\"clamd\""),
+			&setting_sql("facility", Some("facility-2"), SCANNER, "\"clamd\""),
 		)
 		.await;
 	}
@@ -972,12 +975,12 @@ mod tests {
 
 	#[tokio::test]
 	async fn own_scope_beats_global_in_the_store() {
-		let global_none = setting_sql("global", None, SCANNER_KEY, "\"none\"");
+		let global_none = setting_sql("global", None, SCANNER, "\"none\"");
 		let cases = [
 			(false, central_scanner("clamd")),
 			(
 				true,
-				setting_sql("facility", Some("facility-1"), SCANNER_KEY, "\"clamd\""),
+				setting_sql("facility", Some("facility-1"), SCANNER, "\"clamd\""),
 			),
 		];
 		for (on_facility, own) in cases {
@@ -1024,8 +1027,8 @@ mod tests {
 
 	#[tokio::test]
 	async fn a_facility_without_a_scanner_never_stalls() {
-		let seed = setting_sql("facility", Some("facility-1"), SCANNER_KEY, "\"none\"")
-			+ &setting_sql("global", None, SERVE_POLICY_KEY, "\"only-known-good\"")
+		let seed = setting_sql("facility", Some("facility-1"), SCANNER, "\"none\"")
+			+ &setting_sql("global", None, POLICY, "\"only-known-good\"")
 			+ "INSERT INTO blobs (hash, size, created_at) \
 			   SELECT 'sha256:' || lpad(n::text, 64, '0'), 4096, now() - interval '30 days' \
 			   FROM generate_series(1, 500) n;"
