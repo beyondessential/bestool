@@ -47,18 +47,19 @@ const STALE_SCRUB_SECS: i64 = 6 * 60 * 60;
 /// a genuinely failing disk does not fall between two sweeps of this check.
 const RECENT_DROP_SECS: i64 = 24 * 60 * 60;
 
-/// Read separately from the blob registry: the rows these count are gone, which
-/// is the whole reason the count exists. Both are null on a server that has never
-/// dropped one, and on any Tamanu predating the counter.
+/// Read separately from the blob registry: a dropped blob's row is gone, and a
+/// scrub pass that verified nothing stamps no row. Each column is null where its
+/// fact has never been written, including on any Tamanu predating it.
 ///
-/// `blobCacheFaultAt` is a server-local time with no offset, so recency comes from
-/// the counter row's `updated_at`, which every increment stamps.
-const CACHE_DROPS_SQL: &str = "\
+/// `blobCacheFaultAt` is zoneless server-local time, so ages come from `updated_at`.
+const FACTS_SQL: &str = "\
 	SELECT \
 	(SELECT value::bigint FROM local_system_facts \
 	 WHERE key = 'blobCacheFaults' AND deleted_at IS NULL) AS dropped, \
 	(SELECT extract(epoch FROM now() - updated_at)::bigint FROM local_system_facts \
-	 WHERE key = 'blobCacheFaults' AND deleted_at IS NULL) AS dropped_since";
+	 WHERE key = 'blobCacheFaults' AND deleted_at IS NULL) AS dropped_since, \
+	(SELECT extract(epoch FROM now() - updated_at)::bigint FROM local_system_facts \
+	 WHERE key = 'blobScrubCompletedAt' AND deleted_at IS NULL) AS scrub_completed_since";
 
 const SQL: &str = "\
 	SELECT count(*) AS blobs, \
@@ -99,7 +100,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	let outbox_faulty: i64 = row.try_get("outbox_faulty").unwrap_or(0);
 	let cache_faulty: i64 = row.try_get("cache_faulty").unwrap_or(0);
 	let never_scrubbed: i64 = row.try_get("never_scrubbed").unwrap_or(0);
-	let scrub_idle_secs: Option<i64> = row.try_get("scrub_idle_seconds").unwrap_or(None);
+	let registry_idle_secs: Option<i64> = row.try_get("scrub_idle_seconds").unwrap_or(None);
 
 	let (durable_faulty, replica_faulty) = split_faults(
 		ctx.server_kind(),
@@ -109,17 +110,14 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		cache_faulty,
 	);
 
-	// A failure here is not worth losing the registry verdict over: the counter is
-	// a supplement to it, and its absence is the normal state.
-	let drops = client.query_one(CACHE_DROPS_SQL, &[]).await.ok();
-	let dropped: Option<i64> = drops
-		.as_ref()
-		.and_then(|r| r.try_get("dropped").ok())
-		.flatten();
-	let dropped_since: Option<i64> = drops
-		.as_ref()
-		.and_then(|r| r.try_get("dropped_since").ok())
-		.flatten();
+	// A failure here is not worth losing the registry verdict over: the facts are
+	// a supplement to it, and their absence is the normal state.
+	let facts = client.query_one(FACTS_SQL, &[]).await.ok();
+	let fact =
+		|name: &str| -> Option<i64> { facts.as_ref().and_then(|r| r.try_get(name).ok()).flatten() };
+	let dropped = fact("dropped");
+	let dropped_since = fact("dropped_since");
+	let scrub_idle_secs = scrub_idle(fact("scrub_completed_since"), registry_idle_secs);
 
 	let summary = if blobs == 0 {
 		"blob store empty".to_string()
@@ -179,7 +177,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	if let Some(idle) = scrub_idle_secs {
 		check = check.with_detail("scrub_idle_seconds", idle).with_stat(
 			Stat::gauge("scrub_idle_seconds", idle as f64).help(
-				"Seconds since the scrub last stamped a blob, or since the oldest blob was stored",
+				"Seconds since the last completed scrub pass, or on older Tamanu since the scrub last stamped a blob",
 			),
 		);
 	}
@@ -211,15 +209,21 @@ fn split_faults(
 	}
 }
 
+/// The age of the last completed scrub pass, where Tamanu records one.
+///
+/// The registry's newest stamp is only a fallback: admitting a blob stamps it too,
+/// so a store that keeps taking uploads never reads as idle by it. It falls back
+/// in turn to the age of the oldest blob where nothing has been stamped at all, so
+/// a store filled minutes ago does not read as unscrubbed before its first pass.
+fn scrub_idle(pass_completed_secs: Option<i64>, registry_idle_secs: Option<i64>) -> Option<i64> {
+	pass_completed_secs.or(registry_idle_secs)
+}
+
 /// Grade the store on what it has lost and whether anything is still checking.
 ///
 /// `durable_faulty` counts copies that must be durably present on this server,
 /// so one is enough to escalate; `replica_faulty` counts copies central still
 /// holds, which refetch on demand.
-///
-/// `scrub_idle_secs` is the age of the newest scrub stamp, falling back to the
-/// age of the oldest blob where nothing has been stamped at all, so a store
-/// filled minutes ago does not read as unscrubbed before its first pass is due.
 ///
 /// `dropped` is the facility's lifetime count of cache copies dropped for failing
 /// verification and `dropped_since` how long ago the last one went. Both are
@@ -348,6 +352,18 @@ mod tests {
 	fn a_stalled_scrub_warns() {
 		assert_eq!(grade(0, 0, 100, Some(STALE_SCRUB_SECS + 1)), "warn");
 		assert_eq!(grade(0, 0, 100, Some(STALE_SCRUB_SECS)), "pass");
+	}
+
+	#[test]
+	fn a_completed_pass_outranks_the_registry_stamps() {
+		assert_eq!(scrub_idle(Some(60), Some(30 * 24 * 60 * 60)), Some(60));
+		assert_eq!(scrub_idle(Some(7 * 60 * 60), Some(0)), Some(7 * 60 * 60));
+	}
+
+	#[test]
+	fn without_a_pass_record_the_registry_stamps_decide() {
+		assert_eq!(scrub_idle(None, Some(90)), Some(90));
+		assert_eq!(scrub_idle(None, None), None);
 	}
 
 	#[test]
