@@ -1,10 +1,14 @@
 //! Malware verdicts over stored blobs, and whether the scanner is being reached.
 //!
 //! Scanning is off unless a scanner is named, which is the default, and no
-//! scanner means no scan pass, so this SKIPs even over verdicts a scanner since
-//! switched off left behind. The
-//! quarantine record propagates from central, so standing quarantines are
-//! reported even on a server that drives no scanner of its own.
+//! scanner means no scan pass, so this SKIPs even over clean verdicts a scanner
+//! since switched off left behind. The quarantine record propagates from
+//! central, so standing quarantines are reported even on a server that drives
+//! no scanner of its own.
+//!
+//! Only central writes a quarantine. A facility's own infected verdict withholds
+//! the content there and nowhere else, and stays unrecorded wherever central has
+//! no scanner, so an infected verdict with no quarantine record WARNs too.
 //!
 //! Quarantined content WARNs however new it is: it is a deliberate record that
 //! is meant to stand, and the runbook forbids deleting the row, so a FAIL here
@@ -65,6 +69,11 @@ const QUARANTINE_SQL: &str = "\
 	SELECT count(*) AS quarantined, \
 	count(*) FILTER (WHERE created_at > now() - interval '24 hours') AS quarantined_24h \
 	FROM blob_quarantines WHERE deleted_at IS NULL";
+
+const UNQUARANTINED_SQL: &str = "\
+	SELECT count(*) AS unquarantined FROM blobs b \
+	WHERE b.scan_verdict = 'infected' AND b.deleted_at IS NULL AND NOT EXISTS ( \
+	SELECT 1 FROM blob_quarantines q WHERE q.hash = b.hash AND q.deleted_at IS NULL)";
 
 pub async fn run(ctx: TamanuCx) -> Check {
 	let Some(client) = ctx.db().await else {
@@ -138,8 +147,13 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		Err(err) if is_missing_relation(&err) => (0, 0),
 		Err(err) => return query_error_check(NAME, &err),
 	};
+	let unquarantined: i64 = match client.query_one(UNQUARANTINED_SQL, &[]).await {
+		Ok(row) => row.try_get("unquarantined").unwrap_or(0),
+		Err(err) if is_missing_relation(&err) => infected,
+		Err(err) => return query_error_check(NAME, &err),
+	};
 
-	if !scanning && quarantined == 0 {
+	if !scanning && quarantined == 0 && unquarantined == 0 {
 		return Check::skip(
 			NAME,
 			"no antivirus scanning here",
@@ -147,7 +161,11 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		);
 	}
 
-	let summary = if !scanning {
+	let summary = if !scanning && unquarantined > 0 {
+		format!(
+			"no scanner here, {quarantined} hash(es) quarantined, {unquarantined} infected blob(s) unquarantined"
+		)
+	} else if !scanning {
 		format!("no scanner here, {quarantined} hash(es) quarantined")
 	} else if quarantined == 0 {
 		format!("{blobs} blobs: {clean} clean, {unscanned} unscanned")
@@ -161,6 +179,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		scan_idle_secs,
 		withholds_unscanned,
 		quarantined,
+		unquarantined,
 	) {
 		Verdict::Pass => Check::pass(NAME, summary),
 		Verdict::Warn(reason) => Check::warning(NAME, summary, reason),
@@ -176,6 +195,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		.with_detail("unscannable", unscannable)
 		.with_detail("quarantined", quarantined)
 		.with_detail("quarantined_24h", quarantined_24h)
+		.with_detail("infected_unquarantined", unquarantined)
 		.with_detail("withholds_unscanned", withholds_unscanned)
 		.with_stat(
 			Stat::gauge("unscanned", unscanned as f64)
@@ -195,6 +215,10 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		.with_stat(
 			Stat::gauge("quarantined", quarantined as f64)
 				.help("Hashes the deployment knows to be malware"),
+		)
+		.with_stat(
+			Stat::gauge("infected_unquarantined", unquarantined as f64)
+				.help("Blobs this server found infected that carry no quarantine record"),
 		);
 	if let Some(idle) = scan_idle_secs {
 		check = check
@@ -257,6 +281,7 @@ fn classify(
 	scan_idle_secs: Option<i64>,
 	withholds_unscanned: bool,
 	quarantined: i64,
+	unquarantined: i64,
 ) -> Verdict {
 	let stalled = scanning && unscanned > 0 && scan_idle_secs.is_some_and(|secs| secs > STALL_SECS);
 	let idle = humanise_age(scan_idle_secs.unwrap_or(0));
@@ -264,6 +289,10 @@ fn classify(
 	if stalled && withholds_unscanned {
 		Verdict::Fail(format!(
 			"no verdict recorded for {idle} with {unscanned} blob(s) waiting, and the serve policy withholds unscanned content"
+		))
+	} else if unquarantined > 0 {
+		Verdict::Warn(format!(
+			"{unquarantined} blob(s) found infected here with no quarantine record, so central has not recorded them as malware"
 		))
 	} else if quarantined > 0 {
 		Verdict::Warn(format!(
@@ -374,7 +403,7 @@ mod tests {
 		withholds: bool,
 		quarantined: i64,
 	) -> &'static str {
-		match classify(scanning, unscanned, idle, withholds, quarantined) {
+		match classify(scanning, unscanned, idle, withholds, quarantined, 0) {
 			Verdict::Pass => "pass",
 			Verdict::Warn(_) => "warn",
 			Verdict::Fail(_) => "fail",
@@ -1055,6 +1084,71 @@ mod tests {
 		let check = super::run(db.central.clone()).await;
 		assert!(check.status.is_skip(), "{:?}", check.status);
 		assert_eq!(check.summary, "no blob store on this Tamanu");
+	}
+
+	const UNQUARANTINED_WARNING: &str = "1 blob(s) found infected here with no quarantine record, so central has not recorded them as malware";
+
+	#[test]
+	fn an_unquarantined_infection_warns() {
+		let Verdict::Warn(reason) = classify(true, 0, Some(0), false, 0, 1) else {
+			panic!("an unquarantined infection should warn");
+		};
+		assert_eq!(reason, UNQUARANTINED_WARNING);
+	}
+
+	#[test]
+	fn an_unquarantined_infection_outranks_a_standing_quarantine() {
+		let Verdict::Warn(reason) = classify(true, 0, Some(0), false, 3, 1) else {
+			panic!("an unquarantined infection should warn");
+		};
+		assert_eq!(reason, UNQUARANTINED_WARNING);
+	}
+
+	#[tokio::test]
+	async fn a_facility_finding_without_a_quarantine_warns() {
+		let seed = setting_sql("facility", Some("facility-1"), SCANNER, "\"clamd\"")
+			+ &blob_sql(1, 4096, "2 hours", Some(("infected", "1 hour")))
+			+ &blob_sql(2, 4096, "2 hours", Some(("clean", "1 hour")));
+		let Some(check) = graded(true, &seed).await else {
+			return;
+		};
+		assert_eq!(outcome(&check), ("warning", UNQUARANTINED_WARNING));
+		assert_eq!(detail(&check, "infected_unquarantined"), json!(1));
+	}
+
+	#[tokio::test]
+	async fn a_quarantined_infection_is_not_counted_again() {
+		let seed = central_scanner("clamd")
+			+ &blob_sql(1, 4096, "2 hours", Some(("infected", "1 hour")))
+			+ &format!(
+				"INSERT INTO blob_quarantines (hash) VALUES ('sha256:{:064}');",
+				1
+			);
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(
+			outcome(&check),
+			(
+				"warning",
+				"1 hash(es) quarantined as malware, retained and never served"
+			)
+		);
+		assert_eq!(detail(&check, "infected_unquarantined"), json!(0));
+	}
+
+	#[tokio::test]
+	async fn a_leftover_infection_warns_with_no_scanner() {
+		let seed =
+			central_scanner("none") + &blob_sql(1, 4096, "2 hours", Some(("infected", "1 hour")));
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(outcome(&check), ("warning", UNQUARANTINED_WARNING));
+		assert_eq!(
+			check.summary,
+			"no scanner here, 0 hash(es) quarantined, 1 infected blob(s) unquarantined"
+		);
 	}
 
 	#[tokio::test]
