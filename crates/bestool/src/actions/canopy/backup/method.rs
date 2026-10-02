@@ -921,6 +921,53 @@ mod tests {
 		assert!(format!("{}", failing.resolve_path().await.unwrap_err()).contains("exited"));
 	}
 
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn simple_backup_and_restore_use_the_resolved_path() {
+		let tmp = tempfile::tempdir().unwrap();
+		let target = tmp.path().join("blobs");
+		let method = Method::Simple(SimpleConfig {
+			path: None,
+			path_command: Some(vec!["/bin/echo".into(), target.to_string_lossy().into_owned()]),
+		});
+
+		assert_eq!(method.prepare("tamanu-blobs", None).await.unwrap().path, target);
+
+		let staging = method.staging_dir(None, 1).await.unwrap();
+		assert_eq!(staging.parent(), Some(tmp.path()));
+
+		std::fs::create_dir_all(&staging).unwrap();
+		std::fs::write(staging.join("blob"), "restored").unwrap();
+		let opts = RestoreOpts {
+			target: None,
+			clobber: false,
+			declined: false,
+		};
+		method.restore(&staging, &opts).await.unwrap();
+		assert_eq!(std::fs::read_to_string(target.join("blob")).unwrap(), "restored");
+	}
+
+	#[cfg(windows)]
+	#[tokio::test]
+	async fn path_command_resolves_on_windows() {
+		let absolute = SimpleConfig {
+			path: None,
+			path_command: Some(vec!["cmd".into(), "/c".into(), "echo".into(), r"C:\Tamanu\blobs".into()]),
+		};
+		assert_eq!(
+			absolute.resolve_path().await.unwrap(),
+			PathBuf::from(r"C:\Tamanu\blobs")
+		);
+
+		let relative = SimpleConfig {
+			path: None,
+			path_command: Some(vec!["cmd".into(), "/c".into(), "echo".into(), r"data\blobs".into()]),
+		};
+		assert!(
+			format!("{}", relative.resolve_path().await.unwrap_err()).contains("absolute")
+		);
+	}
+
 	#[test]
 	fn clobber_guard_blocks_occupied_dir_unless_forced() {
 		let tmp = tempfile::tempdir().unwrap();

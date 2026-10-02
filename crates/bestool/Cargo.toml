@@ -176,7 +176,7 @@ tamanu-backup = ["__tamanu", "file", "tamanu-config", "dep:bestool-psql", "dep:a
 tamanu-backup-configs = ["__tamanu", "tamanu-backup", "dep:walkdir", "dep:zip"]
 # Print the blob store root, resolved from Tamanu's `blobStorage.root` setting
 # in the database, for blob store backup defs to use as their `path_command`.
-tamanu-blob-root = ["__tamanu", "tamanu-config", "dep:bestool-postgres"]
+tamanu-blob-root = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:tokio-postgres"]
 tamanu-config = ["__tamanu"]
 # Print where this host keeps the key that decrypts local_system_secrets. The
 # `tamanu_secret_key` backup method resolves the same location; this is for

@@ -41,6 +41,14 @@ pub async fn run(args: BlobRootArgs, ctx: Context) -> Result<()> {
 		None => detect_kind(&config, Some(&client)).await,
 	};
 
+	let rows = setting_rows(&client).await?;
+	let setting = pick_root(&rows, kind, first_facility_id(&config))
+		.unwrap_or_else(|| DEFAULT_ROOT.to_owned());
+	println!("{}", resolve_root(&setting, &root, kind)?.display());
+	Ok(())
+}
+
+async fn setting_rows(client: &tokio_postgres::Client) -> Result<Vec<SettingRow>> {
 	let rows = client
 		.query(
 			"SELECT value, scope, facility_id FROM settings \
@@ -51,19 +59,14 @@ pub async fn run(args: BlobRootArgs, ctx: Context) -> Result<()> {
 		.await
 		.into_diagnostic()
 		.wrap_err("querying the blobStorage.root setting")?;
-	let rows: Vec<SettingRow> = rows
+	Ok(rows
 		.into_iter()
 		.map(|row| SettingRow {
 			value: row.get(0),
 			scope: row.get(1),
 			facility_id: row.get(2),
 		})
-		.collect();
-
-	let setting = pick_root(&rows, kind, first_facility_id(&config))
-		.unwrap_or_else(|| DEFAULT_ROOT.to_owned());
-	println!("{}", resolve_root(&setting, &root, kind)?.display());
-	Ok(())
+		.collect())
 }
 
 /// One live `settings` row for the key: a JSONB value, its scope, and the
@@ -88,14 +91,13 @@ fn first_facility_id(config: &TamanuConfig) -> Option<&str> {
 
 /// Pick the stored value the server would use, or `None` when the schema
 /// default applies. On a facility server that's the first configured
-/// facility's row (any facility row when the config doesn't say which); on
+/// facility's row, and the default when the config names no facility; on
 /// central, the central-scoped row.
 fn pick_root(rows: &[SettingRow], kind: ApiServerKind, facility_id: Option<&str>) -> Option<String> {
 	let row = match kind {
-		ApiServerKind::Facility => match facility_id {
-			Some(id) => rows.iter().find(|r| r.facility_id.as_deref() == Some(id)),
-			None => rows.iter().find(|r| r.facility_id.is_some()),
-		},
+		ApiServerKind::Facility => {
+			facility_id.and_then(|id| rows.iter().find(|r| r.facility_id.as_deref() == Some(id)))
+		}
 		ApiServerKind::Central => rows
 			.iter()
 			.find(|r| r.scope == "central" && r.facility_id.is_none()),
@@ -150,10 +152,43 @@ mod tests {
 		// The configured facility has no row: the schema default applies, even
 		// though another facility's row exists.
 		assert_eq!(pick_root(&rows, ApiServerKind::Facility, Some("facility-c")), None);
-		// Unknown facility: any facility row (rows arrive sorted by facility id).
+		// No configured facility: Tamanu uses the schema default.
+		assert_eq!(pick_root(&rows, ApiServerKind::Facility, None), None);
+	}
+
+	#[tokio::test]
+	async fn reads_live_rows_for_the_key_from_settings() {
+		let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for this test");
+		let client = bestool_postgres::pool::connect_one(&url, "bestool-blob-root-test")
+			.await
+			.unwrap();
+		client
+			.batch_execute(
+				"CREATE TEMP TABLE settings ( \
+				   key text NOT NULL, value jsonb, facility_id varchar(255), \
+				   scope text NOT NULL DEFAULT 'global', deleted_at timestamptz); \
+				 INSERT INTO settings (key, value, scope, facility_id, deleted_at) VALUES \
+				   ('blobStorage.root', '\"/central\"', 'central', NULL, NULL), \
+				   ('blobStorage.root', '\"/facility-2\"', 'facility', 'facility-2', NULL), \
+				   ('blobStorage.root', '\"/facility-1\"', 'facility', 'facility-1', NULL), \
+				   ('blobStorage.root', '\"/deleted\"', 'facility', 'facility-3', now()), \
+				   ('blobStorage.freeDiskReserveGB', '10', 'global', NULL, NULL);",
+			)
+			.await
+			.unwrap();
+
+		let rows = setting_rows(&client).await.unwrap();
+		let facilities: Vec<Option<&str>> =
+			rows.iter().map(|r| r.facility_id.as_deref()).collect();
+		assert_eq!(facilities, vec![Some("facility-1"), Some("facility-2"), None]);
 		assert_eq!(
-			pick_root(&rows, ApiServerKind::Facility, None),
-			Some("/a".to_owned())
+			pick_root(&rows, ApiServerKind::Facility, Some("facility-2")),
+			Some("/facility-2".to_owned())
+		);
+		assert_eq!(pick_root(&rows, ApiServerKind::Facility, Some("facility-3")), None);
+		assert_eq!(
+			pick_root(&rows, ApiServerKind::Central, None),
+			Some("/central".to_owned())
 		);
 	}
 
