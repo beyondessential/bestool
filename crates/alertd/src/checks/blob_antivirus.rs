@@ -715,6 +715,335 @@ mod tests {
 		);
 	}
 
+	const MB: i64 = 1024 * 1024;
+	const QUARANTINE: &str = "INSERT INTO blob_quarantines (hash) VALUES ('sha256:quarantined');";
+	const STALL_WARNING: &str =
+		"no verdict recorded for 3h with 1 blob(s) waiting, so the scanner is not being reached";
+
+	fn setting_sql(scope: &str, facility_id: Option<&str>, key: &str, value: &str) -> String {
+		let facility_id = facility_id.map_or("NULL".to_string(), |id| format!("'{id}'"));
+		format!(
+			"INSERT INTO settings (key, value, scope, facility_id) \
+			 VALUES ('{key}', '{value}', '{scope}', {facility_id});"
+		)
+	}
+
+	fn blob_sql(n: u32, size: i64, created_ago: &str, verdict: Option<(&str, &str)>) -> String {
+		let (verdict, scanned_at) = match verdict {
+			Some((verdict, ago)) => (format!("'{verdict}'"), format!("now() - interval '{ago}'")),
+			None => ("NULL".to_string(), "NULL".to_string()),
+		};
+		format!(
+			"INSERT INTO blobs (hash, size, created_at, scan_verdict, scanned_at) \
+			 VALUES ('sha256:{n:064}', {size}, now() - interval '{created_ago}', {verdict}, {scanned_at});"
+		)
+	}
+
+	fn central_scanner(scanner: &str) -> String {
+		setting_sql("central", None, SCANNER_KEY, &format!("\"{scanner}\""))
+	}
+
+	async fn graded(on_facility: bool, seed: &str) -> Option<Check> {
+		let db = scratch_db(BLOB_STORE).await?;
+		db.central
+			.db()
+			.await
+			.expect("a scratch database carries a connection")
+			.batch_execute(seed)
+			.await
+			.expect("seeding should succeed");
+		let cx = if on_facility {
+			db.facility.clone()
+		} else {
+			db.central.clone()
+		};
+		Some(super::run(cx).await)
+	}
+
+	fn outcome(check: &Check) -> (&'static str, &str) {
+		let reason = match &check.status {
+			CheckStatus::Pass => "",
+			CheckStatus::Skip(reason)
+			| CheckStatus::Warning(reason)
+			| CheckStatus::Fail(reason)
+			| CheckStatus::Broken(reason) => reason,
+		};
+		(check.status.wire_result(), reason)
+	}
+
+	fn detail(check: &Check, key: &str) -> Value {
+		check.details.get(key).cloned().unwrap_or(Value::Null)
+	}
+
+	#[tokio::test]
+	async fn a_stall_warns_unless_the_policy_withholds() {
+		for policy in [None, Some("off"), Some("unless-known-bad")] {
+			let mut seed = central_scanner("clamd") + &blob_sql(1, 4096, "3 hours", None);
+			if let Some(policy) = policy {
+				seed += &setting_sql("global", None, SERVE_POLICY_KEY, &format!("\"{policy}\""));
+			}
+			let Some(check) = graded(false, &seed).await else {
+				return;
+			};
+			assert_eq!(outcome(&check), ("warning", STALL_WARNING), "{policy:?}");
+			assert_eq!(check.summary, "1 blobs: 0 clean, 1 unscanned", "{policy:?}");
+			assert_eq!(
+				detail(&check, "withholds_unscanned"),
+				json!(false),
+				"{policy:?}"
+			);
+		}
+	}
+
+	#[tokio::test]
+	async fn a_stall_fails_under_only_known_good() {
+		let seed = central_scanner("clamd")
+			+ &setting_sql("global", None, SERVE_POLICY_KEY, "\"only-known-good\"")
+			+ &blob_sql(1, 4096, "3 hours", None);
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(
+			outcome(&check),
+			(
+				"failed",
+				"no verdict recorded for 3h with 1 blob(s) waiting, and the serve policy withholds unscanned content"
+			)
+		);
+		assert_eq!(check.summary, "1 blobs: 0 clean, 1 unscanned");
+		assert_eq!(detail(&check, "withholds_unscanned"), json!(true));
+	}
+
+	#[tokio::test]
+	async fn a_fresh_upload_to_a_quiet_store_is_not_a_stall() {
+		let seed = central_scanner("clamd")
+			+ &blob_sql(1, 4096, "4 hours", Some(("clean", "3 hours")))
+			+ &blob_sql(2, 4096, "1 minute", None);
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(outcome(&check), ("passed", ""));
+		assert_eq!(check.summary, "2 blobs: 1 clean, 1 unscanned");
+		let idle = detail(&check, "scan_idle_seconds").as_i64().unwrap();
+		assert!((60..120).contains(&idle), "{idle}");
+	}
+
+	#[tokio::test]
+	async fn an_old_upload_to_a_quiet_store_is_a_stall() {
+		let seed = central_scanner("clamd")
+			+ &blob_sql(1, 4096, "4 hours", Some(("clean", "3 hours")))
+			+ &blob_sql(2, 4096, "3 hours", None)
+			+ &blob_sql(3, 4096, "1 minute", None);
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(
+			outcome(&check),
+			(
+				"warning",
+				"no verdict recorded for 3h with 2 blob(s) waiting, so the scanner is not being reached"
+			)
+		);
+		assert_eq!(check.summary, "3 blobs: 1 clean, 2 unscanned");
+	}
+
+	#[tokio::test]
+	async fn no_scanner_skips_over_leftover_verdicts() {
+		let seed = central_scanner("none")
+			+ &setting_sql("global", None, SERVE_POLICY_KEY, "\"only-known-good\"")
+			+ &blob_sql(1, 4096, "4 hours", Some(("clean", "3 hours")))
+			+ &blob_sql(2, 4096, "1 minute", None);
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(
+			outcome(&check),
+			(
+				"skipped",
+				"no scanner is configured on this server, which is the default"
+			)
+		);
+		assert_eq!(check.summary, "no antivirus scanning here");
+	}
+
+	#[tokio::test]
+	async fn no_scanner_warns_for_a_quarantine_only() {
+		let seed = central_scanner("none")
+			+ &setting_sql("global", None, SERVE_POLICY_KEY, "\"only-known-good\"")
+			+ &blob_sql(1, 4096, "4 hours", Some(("clean", "3 hours")))
+			+ &blob_sql(2, 4096, "1 minute", None)
+			+ QUARANTINE;
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(
+			outcome(&check),
+			(
+				"warning",
+				"1 hash(es) quarantined as malware, retained and never served"
+			)
+		);
+		assert_eq!(check.summary, "no scanner here, 1 hash(es) quarantined");
+		assert_eq!(detail(&check, "withholds_unscanned"), json!(false));
+	}
+
+	#[tokio::test]
+	async fn a_blob_over_the_default_cap_is_unscannable() {
+		let seed = central_scanner("clamd") + &blob_sql(1, 30 * MB, "3 hours", None);
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(outcome(&check), ("passed", ""));
+		assert_eq!(check.summary, "1 blobs: 0 clean, 0 unscanned");
+		assert_eq!(detail(&check, "unscanned"), json!(0));
+		assert_eq!(detail(&check, "unscannable"), json!(1));
+		assert_eq!(detail(&check, "scan_idle_seconds"), Value::Null);
+	}
+
+	#[tokio::test]
+	async fn a_raised_cap_brings_the_blob_into_the_backlog() {
+		let seed = central_scanner("clamd")
+			+ &setting_sql("central", None, MAX_SCAN_MB_KEY, "40")
+			+ &blob_sql(1, 30 * MB, "3 hours", None);
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(outcome(&check), ("warning", STALL_WARNING));
+		assert_eq!(detail(&check, "unscanned"), json!(1));
+		assert_eq!(detail(&check, "unscannable"), json!(0));
+	}
+
+	#[tokio::test]
+	async fn a_fractional_cap_is_applied_to_the_store() {
+		let seed = central_scanner("clamd")
+			+ &setting_sql("central", None, MAX_SCAN_MB_KEY, "12.5")
+			+ &blob_sql(1, 20 * MB, "3 hours", None);
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(outcome(&check), ("passed", ""));
+		assert_eq!(detail(&check, "unscanned"), json!(0));
+		assert_eq!(detail(&check, "unscannable"), json!(1));
+	}
+
+	async fn assert_no_scanner(on_facility: bool, scanner_row: &str) {
+		let seed = scanner_row.to_string() + &blob_sql(1, 4096, "3 hours", None);
+		let Some(check) = graded(on_facility, &seed).await else {
+			return;
+		};
+		assert_eq!(
+			(outcome(&check).0, check.summary.as_str()),
+			("skipped", "no antivirus scanning here"),
+			"{scanner_row}"
+		);
+	}
+
+	#[tokio::test]
+	async fn central_ignores_a_facility_scanner() {
+		assert_no_scanner(
+			false,
+			&setting_sql("facility", Some("facility-1"), SCANNER_KEY, "\"clamd\""),
+		)
+		.await;
+	}
+
+	#[tokio::test]
+	async fn a_facility_ignores_a_central_scanner() {
+		assert_no_scanner(true, &central_scanner("clamd")).await;
+	}
+
+	#[tokio::test]
+	async fn a_facility_ignores_another_facilitys_scanner() {
+		assert_no_scanner(
+			true,
+			&setting_sql("facility", Some("facility-2"), SCANNER_KEY, "\"clamd\""),
+		)
+		.await;
+	}
+
+	#[tokio::test]
+	async fn a_deleted_scanner_row_is_ignored() {
+		assert_no_scanner(
+			false,
+			&(central_scanner("clamd") + "UPDATE settings SET deleted_at = now();"),
+		)
+		.await;
+	}
+
+	#[tokio::test]
+	async fn own_scope_beats_global_in_the_store() {
+		let global_none = setting_sql("global", None, SCANNER_KEY, "\"none\"");
+		let cases = [
+			(false, central_scanner("clamd")),
+			(
+				true,
+				setting_sql("facility", Some("facility-1"), SCANNER_KEY, "\"clamd\""),
+			),
+		];
+		for (on_facility, own) in cases {
+			let seed = own + &global_none + &blob_sql(1, 4096, "3 hours", None);
+			let Some(check) = graded(on_facility, &seed).await else {
+				return;
+			};
+			assert_eq!(outcome(&check), ("warning", STALL_WARNING), "{on_facility}");
+			assert_eq!(detail(&check, "scanner"), json!("clamd"), "{on_facility}");
+		}
+	}
+
+	#[tokio::test]
+	async fn unverified_and_deleted_blobs_are_not_counted() {
+		let seed = central_scanner("clamd")
+			+ &blob_sql(1, 4096, "4 hours", Some(("clean", "1 hour")))
+			+ &blob_sql(2, 4096, "3 hours", None)
+			+ &blob_sql(3, 4096, "3 hours", None)
+			+ &blob_sql(4, 4096, "3 hours", Some(("clean", "1 hour")))
+			+ &blob_sql(5, 4096, "3 hours", None)
+			+ &blob_sql(6, 4096, "3 hours", Some(("infected", "1 hour")))
+			+ &blob_sql(7, 30 * MB, "3 hours", None)
+			+ &format!(
+				"UPDATE blobs SET integrity_state = 'corrupt' WHERE hash IN ('sha256:{:064}', 'sha256:{:064}'); \
+				 UPDATE blobs SET integrity_state = 'absent' WHERE hash = 'sha256:{:064}'; \
+				 UPDATE blobs SET deleted_at = now() WHERE hash IN ('sha256:{:064}', 'sha256:{:064}', 'sha256:{:064}');",
+				2, 4, 3, 5, 6, 7
+			);
+		let Some(check) = graded(false, &seed).await else {
+			return;
+		};
+		assert_eq!(outcome(&check), ("passed", ""));
+		assert_eq!(check.summary, "1 blobs: 1 clean, 0 unscanned");
+		for (key, count) in [
+			("blobs", 1),
+			("clean", 1),
+			("infected", 0),
+			("unscanned", 0),
+			("unscannable", 0),
+		] {
+			assert_eq!(detail(&check, key), json!(count), "{key}");
+		}
+	}
+
+	#[tokio::test]
+	async fn a_facility_without_a_scanner_never_stalls() {
+		let seed = setting_sql("facility", Some("facility-1"), SCANNER_KEY, "\"none\"")
+			+ &setting_sql("global", None, SERVE_POLICY_KEY, "\"only-known-good\"")
+			+ "INSERT INTO blobs (hash, size, created_at) \
+			   SELECT 'sha256:' || lpad(n::text, 64, '0'), 4096, now() - interval '30 days' \
+			   FROM generate_series(1, 500) n;"
+			+ QUARANTINE;
+		let Some(check) = graded(true, &seed).await else {
+			return;
+		};
+		assert_eq!(
+			outcome(&check),
+			(
+				"warning",
+				"1 hash(es) quarantined as malware, retained and never served"
+			)
+		);
+		assert_eq!(check.summary, "no scanner here, 1 hash(es) quarantined");
+		assert_eq!(detail(&check, "unscanned"), json!(500));
+	}
+
 	#[tokio::test]
 	async fn skips_without_a_blob_store() {
 		let Some(db) = scratch_db("").await else {
