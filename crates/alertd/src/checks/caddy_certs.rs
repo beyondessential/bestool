@@ -114,7 +114,7 @@ pub async fn run(ctx: HostedCx) -> Check {
 		);
 	}
 
-	let Some(ownership) = ctx.sweep.ownership(ctx.canopy.as_deref()).await else {
+	let Some(ownership) = ctx.sweep.ownership().await else {
 		return Check::skip(
 			NAME,
 			"certificates could not be attributed",

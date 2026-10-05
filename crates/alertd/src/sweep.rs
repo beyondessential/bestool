@@ -965,11 +965,10 @@ pub async fn perform_sweep(
 	// One cache per sweep, so the readings that are the machine's — Canopy's
 	// entitlement, Caddy's configuration, the collected chains — are taken once
 	// however many applications this host carries.
-	let sweep_cache = Arc::new(SweepCache::with_host_applications(host_applications(
-		targets.as_ref(),
-		tamanu.as_ref(),
-		msupply_installed,
-	)));
+	let sweep_cache = Arc::new(SweepCache::for_sweep(
+		host_applications(targets.as_ref(), tamanu.as_ref(), msupply_installed),
+		canopy.clone(),
+	));
 
 	let mut pg_cxs: HashMap<ApplicationRef, checks::PgCx> = HashMap::new();
 	let mut tamanu_cxs: HashMap<ApplicationRef, checks::TamanuCx> = HashMap::new();

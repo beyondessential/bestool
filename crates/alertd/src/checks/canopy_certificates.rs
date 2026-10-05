@@ -56,17 +56,17 @@ const NAME: &str = "canopy_certificates";
 const RUNDOWN_FRACTION: f64 = 1.0 / 8.0;
 
 pub async fn run(ctx: HostedCx) -> Check {
-	let Some(canopy) = ctx.canopy.as_deref() else {
+	if ctx.canopy.is_none() {
 		return Check::skip(
 			NAME,
 			"no canopy connectivity",
 			"this sweep has no canopy client, so what this server may do could not be asked",
 		);
-	};
+	}
 
 	// Asked once for the machine and shared: the answer covers every application
 	// on it, and this check runs once per application.
-	let entitlement = match ctx.sweep.entitlement(canopy).await {
+	let entitlement = match ctx.sweep.entitlement().await {
 		Ok(entitlement) => entitlement,
 		Err(err) => {
 			return Check::broken(NAME, "could not ask canopy what this server may do", err);
@@ -105,22 +105,16 @@ pub async fn run(ctx: HostedCx) -> Check {
 		);
 	}
 
-	let subjects = match ctx.sweep.caddy_subjects().await {
-		Some(subjects) => subjects,
-		None => {
-			return Check::skip(
-				NAME,
-				"caddy's configuration could not be read",
-				"which names this host answers on could not be established, so what it should be collecting is unknown",
-			);
-		}
-	};
-
-	let Some(ownership) = ctx.sweep.ownership(Some(canopy)).await else {
+	// Both come from one reading of Caddy's configuration, so they are missing
+	// together.
+	let (Some(subjects), Some(ownership)) = (
+		ctx.sweep.caddy_subjects().await,
+		ctx.sweep.ownership().await,
+	) else {
 		return Check::skip(
 			NAME,
 			"caddy's configuration could not be read",
-			"which application each DNS name belongs to could not be established, so what it should be collecting is unknown",
+			"which names this host answers on, and which application each belongs to, could not be established, so what it should be collecting is unknown",
 		);
 	};
 	let owned = owned_names(&subjects, &ownership, ctx.app.kind.type_slug());

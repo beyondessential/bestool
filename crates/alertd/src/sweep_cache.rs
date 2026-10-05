@@ -77,6 +77,10 @@ pub struct SweepCache {
 	/// The applications on this machine that Caddy can be fronting, which is what
 	/// a DNS name's site is attributed against.
 	host_applications: Vec<HostApplication>,
+	/// The sweep's Canopy client, where it has one. Held here rather than passed
+	/// to each reading, so what a reading is memoised from cannot depend on which
+	/// check asked first.
+	canopy: Option<Arc<CanopyClient>>,
 	/// Caddy's live admin configuration, or `None` where its admin API could not
 	/// be read.
 	caddy_config: OnceCell<Option<Arc<Value>>>,
@@ -112,9 +116,13 @@ impl SweepCache {
 		Self::default()
 	}
 
-	pub fn with_host_applications(host_applications: Vec<HostApplication>) -> Self {
+	pub fn for_sweep(
+		host_applications: Vec<HostApplication>,
+		canopy: Option<Arc<CanopyClient>>,
+	) -> Self {
 		Self {
 			host_applications,
+			canopy,
 			..Self::default()
 		}
 	}
@@ -174,21 +182,18 @@ impl SweepCache {
 	/// Which application each DNS name belongs to, or `None` where Caddy's
 	/// configuration could not be read.
 	///
-	/// Canopy's declarations are folded in when a client is given and it
+	/// Canopy's declarations are folded in where the sweep has a client and it
 	/// answers; without them, attribution from Caddy's sites still works.
 	///
 	/// spec: NAM#which-application-a-dns-name-belongs-to
-	pub async fn ownership(&self, canopy: Option<&CanopyClient>) -> Option<Arc<Ownership>> {
+	pub async fn ownership(&self) -> Option<Arc<Ownership>> {
 		self.ownership
 			.get_or_init(|| async {
 				let sites = self.caddy_sites().await?;
-				let entitlement = match canopy {
-					Some(canopy) => self.entitlement(canopy).await.unwrap_or_else(|err| {
-						debug!(%err, "attributing DNS names without canopy's declarations");
-						Entitlement::default()
-					}),
-					None => Entitlement::default(),
-				};
+				let entitlement = self.entitlement().await.unwrap_or_else(|err| {
+					debug!(%err, "attributing DNS names without canopy's declarations");
+					Entitlement::default()
+				});
 				Some(Arc::new(Ownership::resolve(
 					&sites,
 					self.host_applications(),
@@ -300,11 +305,14 @@ impl SweepCache {
 	/// What Canopy says this machine may do, or why it could not be asked.
 	///
 	/// A sweep with no Canopy client cannot ask at all, which is not the same as
-	/// an ask that failed: the caller distinguishes them, so that case does not
-	/// reach here.
-	pub async fn entitlement(&self, canopy: &CanopyClient) -> Result<Entitlement, String> {
+	/// an ask that failed; a caller that must tell them apart checks for a client
+	/// first.
+	pub async fn entitlement(&self) -> Result<Entitlement, String> {
 		self.entitlement
 			.get_or_init(|| async {
+				let Some(canopy) = self.canopy.as_deref() else {
+					return Err("this sweep has no canopy client".to_owned());
+				};
 				canopy
 					.names_entitlements()
 					.await
@@ -371,7 +379,7 @@ mod tests {
 			&subjects,
 			&cache.caddy_subjects().await.unwrap()
 		));
-		assert!(cache.ownership(None).await.is_some());
+		assert!(cache.ownership().await.is_some());
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
 	}
 
