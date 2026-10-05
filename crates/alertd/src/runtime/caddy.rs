@@ -159,7 +159,9 @@ impl HttpRuntime for CaddyRuntime {
 	}
 
 	async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable> {
-		read_certificates(&self.sweep).await
+		self.sweep
+			.certificates(read_certificates(&self.sweep))
+			.await
 	}
 }
 

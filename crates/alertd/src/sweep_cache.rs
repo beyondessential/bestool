@@ -16,6 +16,7 @@
 
 use std::{
 	collections::{BTreeMap, BTreeSet},
+	future::Future,
 	path::PathBuf,
 	sync::Arc,
 };
@@ -32,7 +33,7 @@ use tracing::debug;
 use crate::{
 	checks::fmt_chain,
 	ownership::{CaddySites, HostApplication, Ownership},
-	runtime::caddy,
+	runtime::{Certificate, Unavailable, caddy},
 };
 
 /// What Canopy last refused each DNS name for, as the daemon recorded it.
@@ -100,6 +101,10 @@ pub struct SweepCache {
 	chain_validity: OnceCell<Arc<BTreeMap<String, (i64, i64)>>>,
 	/// What Canopy last said this machine may do.
 	entitlement: OnceCell<Result<Entitlement, String>>,
+	/// The certificates the front end has in force, with what it serves for each.
+	/// Reading them walks Caddy's store and handshakes against the names, and
+	/// the check grading them runs once per application.
+	certificates: OnceCell<Result<Vec<Certificate>, Unavailable>>,
 }
 
 impl SweepCache {
@@ -212,6 +217,15 @@ impl SweepCache {
 			})
 			.await
 			.clone()
+	}
+
+	/// The front end's certificates, read by `read` on the first ask in the sweep
+	/// and shared from then on.
+	pub(crate) async fn certificates(
+		&self,
+		read: impl Future<Output = Result<Vec<Certificate>, Unavailable>>,
+	) -> Result<Vec<Certificate>, Unavailable> {
+		self.certificates.get_or_init(|| read).await.clone()
 	}
 
 	/// The collected chains, or why they could not be read.
@@ -373,6 +387,22 @@ mod tests {
 			(Err(a), Err(b)) => assert_eq!(a, b),
 			_ => panic!("the same read answered two different ways"),
 		}
+	}
+
+	/// The front end's certificates are read once however many applications'
+	/// runs grade them.
+	#[tokio::test]
+	async fn the_certificates_are_read_once_for_the_sweep() {
+		let cache = SweepCache::new();
+		let reads = AtomicUsize::new(0);
+		let read = || async {
+			reads.fetch_add(1, Ordering::SeqCst);
+			Err(Unavailable::new("no front end"))
+		};
+		let first = cache.certificates(read()).await;
+		let second = cache.certificates(read()).await;
+		assert_eq!(first, second);
+		assert_eq!(reads.load(Ordering::SeqCst), 1);
 	}
 
 	fn kept(kind: RefusalKind, reason: &str) -> StoredRefusal {
