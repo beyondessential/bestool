@@ -211,6 +211,10 @@ pub struct CertificateState {
 	explicit: Mutex<BTreeMap<String, String>>,
 	/// The refusals last written to disk, so a pass writes only on a change.
 	persisted_refusals: Mutex<BTreeMap<String, StoredRefusal>>,
+	/// The applications on this host, as last discovered. Discovering them reads
+	/// the Tamanu install and may reach its container runtime or database, so a
+	/// steady pass does it and the passes between reuse what it found.
+	applications: RwLock<Option<Vec<HostApplication>>>,
 
 	/// The keys, held across passes so scrypt is not re-run every tick. Loaded
 	/// on the first pass and written through on change.
@@ -240,6 +244,7 @@ impl CertificateState {
 			wanted: Mutex::new(BTreeSet::new()),
 			explicit: Mutex::new(BTreeMap::new()),
 			persisted_refusals: Mutex::new(BTreeMap::new()),
+			applications: RwLock::new(None),
 			keys: Mutex::new(None),
 			last_pass: RwLock::new(None),
 			stood_down: RwLock::new(None),
@@ -496,7 +501,7 @@ impl CertificateState {
 		}
 		*self.stood_down.write().await = None;
 
-		let targets = self.targets(&entitlement).await;
+		let targets = self.targets(&entitlement, steady).await;
 		let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
 
 		self.prune_orders(&names).await;
@@ -656,13 +661,24 @@ impl CertificateState {
 	/// their site is hooked.
 	///
 	/// spec: TLS#which-dns-names-are-certified
-	async fn targets(&self, entitlement: &Entitlement) -> Vec<Target> {
+	async fn targets(&self, entitlement: &Entitlement, steady: bool) -> Vec<Target> {
 		let sites = delivery::caddy_sites().await.unwrap_or_else(|err| {
 			debug!(%err, "could not read Caddy's configuration");
 			CaddySites::default()
 		});
-		let applications = ownership::discover_host_applications().await;
+		let applications = self.host_applications(steady).await;
 		self.targets_from(entitlement, &sites, &applications).await
+	}
+
+	/// The applications on this host: discovered afresh on a steady pass or where
+	/// none have been, and as last discovered otherwise.
+	async fn host_applications(&self, steady: bool) -> Vec<HostApplication> {
+		if !steady && let Some(known) = self.applications.read().await.clone() {
+			return known;
+		}
+		let found = ownership::discover_host_applications().await;
+		*self.applications.write().await = Some(found.clone());
+		found
 	}
 
 	async fn targets_from(
@@ -2137,6 +2153,15 @@ mod tests {
 		assert!(!state.pass_due().await);
 		state.note_wanted("app.example.com").await;
 		assert!(!state.pass_due().await);
+	}
+
+	/// A pass between steady ones reuses the applications last discovered rather
+	/// than discovering them again.
+	#[tokio::test]
+	async fn the_host_applications_are_reused_between_steady_passes() {
+		let (_dir, state) = state();
+		*state.applications.write().await = Some(vec![msupply()]);
+		assert_eq!(state.host_applications(false).await, vec![msupply()]);
 	}
 
 	/// The command an operator runs after declaring a DNS name, or lifting its
