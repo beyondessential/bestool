@@ -61,7 +61,7 @@ Application checks are: everything that reads the application's own data, its HT
 The checks that grade the database server itself — whether it is reachable, what version it runs, how it is tuned, and whether its pages carry checksums — report for the Postgres application rather than for whatever uses it.
 A check reading an application's tables is about that application; a check grading the cluster is about the cluster.
 
-An mSupply application carries two checks: the Canopy certificate collection check ([CHK-CCO](../canopy/certificate-collection-check.md)) and the Caddy certificate check ([CHK-CCT](caddy-certs.md)), each grading the sites attributed to it.
+An mSupply application carries two checks: the Canopy certificate collection check ([CHK-CCO](../canopy/certificate-collection-check.md)) and the Caddy certificate check ([CHK-CCT](caddy-certs.md)), each grading the DNS names belonging to it ([NAM](../canopy/names.md#which-application-a-dns-name-belongs-to)).
 
 A concern that genuinely exists on both sides is two checks rather than one check with a conditional subject, so neither has a mode in which it reports the wrong subject's reading.
 
@@ -86,9 +86,9 @@ A machine reports: its hostname, its uptime, its operating system kind, name, ve
 
 An application reports: its product version, its type, its install root where it has one on disk, the version of the runtime it executes under, its canonical URL, its current sync tick, and its configured timezone.
 
-A Postgres application reports its server version.
-
 An mSupply application reports its type and its product version, read from the version its installation pins, without the database flavour and architecture that accompany it.
+
+A Postgres application reports its server version.
 That version belongs to the server rather than to what connects to it, so an application using a database does not report the database's version as one of its own facts.
 
 Because each subject reports only its own facts, a fact is absent when the subject genuinely lacks it rather than when the reading could not be attributed.

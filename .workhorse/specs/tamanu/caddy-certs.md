@@ -12,9 +12,9 @@ It grades certificates whatever their source, so a host obtaining chains from Ca
 The check reports for an application rather than for the machine ([SUBJ](subjects.md)): a certificate is issued for the DNS names an application answers on, and it is that application's group that answers for one running out.
 The software serving it is the machine's, and its version, its resolvers and its configuration marker are graded separately against the machine.
 
-The check runs for each Tamanu and each mSupply application on the host, and grades the certificates served for the sites attributed to that application ([NAM](../canopy/names.md#which-application-a-site-belongs-to)).
-A certificate serving sites attributed to several applications is graded under each of them.
-A certificate serving only sites attributed to no application is graded under the host's Tamanu where there is one, so a certificate the host serves is not left ungraded for want of an owner.
+The check runs for each Tamanu and each mSupply application on the host, and grades the certificates served for the DNS names belonging to that application ([NAM](../canopy/names.md#which-application-a-dns-name-belongs-to)).
+A certificate serving DNS names belonging to several applications is graded under each of them.
+A certificate serving only DNS names belonging to no application is not graded.
 
 ## Which certificates it grades
 
@@ -24,7 +24,7 @@ Caddy's on-disk store is not the source of that list, because it keeps certifica
 A renewal obtained from a different issuer than the last one is stored alongside the previous copy rather than replacing it, and only the newest is served, so a set of names is graded on the certificate that expires last.
 A certificate reached by several names or from several sources is graded once.
 
-The check skips when Caddy's configuration cannot be read, which is how a host not running Caddy is passed over, and when the configuration references no certificate the check can read.
+The check skips when Caddy's configuration cannot be read, which is how a host not running Caddy is passed over, and when the configuration references no certificate the check can read for a DNS name belonging to its application.
 
 ## Expiry
 
