@@ -10,15 +10,17 @@ Canopy holds the account with the authority and proves control of the name throu
 The private key never leaves the machine: Canopy signs a certificate signing request and never sees the key behind it.
 
 The alertd daemon runs the collection on a schedule and serves the collected chain to Caddy; see [TLSD](certificate-delivery.md) for how Caddy is served.
-Which names a server may certify follows from its entitlement, see [NAM](names.md).
+Which DNS names a server may certify follows from its entitlement, see [NAM](names.md).
 Whether the collection is working is graded by its own healthcheck, see [CHK-CCO](certificate-collection-check.md).
 The server authenticates to Canopy with the device identity in its registration, see [CHK-REG](registration.md).
 
 ## Which names are certified
 
-A name is certified when it is both a site address Caddy is configured to serve, read from Caddy's live admin configuration, and a name the server's entitlement covers: within the group's domains, with the TLS grant held and no pause in force ([NAM](names.md)).
-Caddy's configuration says which names the host answers on, and the entitlement says which of those Canopy will act on; a name meeting one test and not the other is left to Caddy's own issuance.
-The daemon orders for the names meeting both ahead of any client arriving, because a certificate is obtained before it is needed rather than while a client waits.
+A DNS name is certified when it is a site address Caddy is configured to serve, on a site that names the daemon's certificate endpoint as a certificate source, and a DNS name the server's entitlement covers: within the group's domains, with the TLS grant held and no pause in force ([NAM](names.md)).
+All three are read from Caddy's live admin configuration and Canopy's answer.
+Caddy's configuration says which DNS names the host answers on and which of those Caddy will ask the daemon for, and the entitlement says which of those Canopy will act on; a DNS name failing any of the tests is left to Caddy's own issuance.
+A site that does not name the daemon's endpoint is never served from Canopy ([TLSD](certificate-delivery.md#caddy-configuration)), so a pass orders nothing for it of its own accord, and on a host where no site names the endpoint a pass orders nothing at all.
+The daemon orders for the DNS names meeting every test ahead of any client arriving, because a certificate is obtained before it is needed rather than while a client waits.
 
 A handshake for a configured name the daemon holds no chain for records that name so that an order follows, which covers a name added to Caddy between reads of its configuration.
 A name recorded this way is subject to the same entitlement test as one read from the configuration, so a handshake cannot conjure an order for a name outside the server's reach.
@@ -27,7 +29,8 @@ What a pass acts on still comes from Caddy's configuration; a name recorded duri
 
 A server standing down records nothing to act on, so the names handshakes leave behind while it stands down do not bring a pass forward: it waits for the ordinary interval rather than asking again for an answer that cannot change until the grant returns or the pause lifts.
 
-A name may also be requested explicitly through a command, for pre-provisioning.
+A DNS name may also be requested explicitly through a command, for pre-provisioning.
+A DNS name requested this way is ordered whether or not its site names the daemon's endpoint yet, so its chain is ready before the hook is added, and passes keep collecting it while Caddy serves it and the host holds a chain for it.
 
 ## Keys
 
@@ -36,8 +39,9 @@ A key covering one name means a key Canopy condemns costs only that name a repla
 
 Keys are ECDSA over the P-256 curve.
 
-A request carries the signing request as base64-encoded DER and names exactly one name.
+A request carries the signing request as base64-encoded DER and names exactly one DNS name.
 Canopy refuses a request whose signing request carries any other name rather than trimming it.
+A request carries the type of the application the DNS name's site belongs to, where the server can tell ([NAM](names.md#which-application-a-site-belongs-to)).
 
 Keys are held in a machine-bound encrypted store alongside the device identity, keyed by a passphrase derived from the host's machine id, so no private key is at rest in plaintext and the store cannot be read on a different machine.
 One store holds every name's key.
@@ -82,6 +86,21 @@ Other names the server holds chains for are unaffected and continue to be served
 A certificate Canopy reports as requiring its key to be replaced gets a new key pair before the next request, rather than a further request against the same key.
 A condemned key is never certified again, for any name, so replacing it is the only way forward and the server does not wait for an operator to act on the key itself.
 
+## Undeclared and denied DNS names
+
+A request Canopy refuses as undeclared is waiting on an operator to declare the DNS name in Canopy, and is not a fault on this host ([NAM](names.md#how-canopy-resolves-a-request)).
+The daemon keeps asking about it on the steady schedule rather than sooner, and a handshake asking for it does not bring a pass forward.
+It keeps asking rather than going quiet, because Canopy shows an operator an undeclared request only while the machine keeps making it, and drops one the machine has not asked about for a day.
+The request that follows a declaration is accepted, and collection carries on from there as for any DNS name.
+
+A request Canopy refuses as denied is an operator's decision that no application on this machine should be certified for the DNS name.
+The DNS name is left to Caddy's own issuance, as any DNS name Canopy will not certify is.
+The daemon keeps asking about it on the steady schedule rather than sooner, which is how a lifted denial is noticed, and a handshake asking for it does not bring a pass forward.
+A chain already collected for a denied DNS name continues to be served until it expires, since a denial is not a revocation.
+
+The daemon keeps, for each DNS name, whether Canopy last refused it as undeclared or as denied, with the reason Canopy gave, until a later answer replaces it.
+That record is what the certificate healthcheck reads to tell a DNS name waiting on an operator from one whose collection is failing ([CHK-CCO](certificate-collection-check.md)), and it is readable without privilege, as reporting what this server holds is.
+
 ## When the grant is absent or the server is paused
 
 A server that may not obtain certificates stops requesting them, and so does one Canopy reports as paused.
@@ -98,7 +117,10 @@ A pause is Canopy's to lift and no length of pause is escalated from here, so a 
 ## Commands
 
 `bestool canopy certs` reaches the running daemon over its HTTP interface.
-It reports the certificates Canopy holds for this server, requests a name, and runs a collection without waiting for the schedule.
+It reports the certificates Canopy holds for this server, requests a DNS name, and runs a collection without waiting for the schedule.
+
+Its report shows, for each DNS name whose order is in flight or failing, the application type the request carried or that it carried none, and the state of the order.
+A DNS name Canopy refused shows the refusal as its state, undeclared, denied, or otherwise, with the reason Canopy gave.
 
 Requesting a name and running a collection spend orders at the authority, so they are refused unless run by the superuser; reporting what this server holds needs no privilege.
-Requesting a name outside the domains the group controls is refused rather than reported as taken, because a pass would drop it.
+Requesting a DNS name outside the domains the group controls is refused rather than reported as taken, because a pass would drop it.
