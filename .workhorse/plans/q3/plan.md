@@ -2,9 +2,13 @@
 
 ## Dependency on canopy F4
 
-- Needs the bes-canopy-api release carrying F4: optional `application_type` on `RequestCertificateArgs` and `RegisterNameArgs`, and `CanopyHttpError`'s message including the problem detail. Bump with `cargo add`, don't guess the version.
-- The problem type is in the body `CanopyHttpError` already carries (`body`), as a problem document whose `type` is `/errors/dns-name-undeclared` or `/errors/dns-name-denied`. Branch on that, not on the 403 alone: `name-not-entitled` is also 403.
-- F4 hasn't settled the problem type for a type that mismatches an existing declaration. Bestool doesn't need it: anything other than undeclared/denied is graded as a failure, with canopy's detail as the reason. NAM and CHK-CCO still assert the refusal names the declaring type; confirm against F4 before implementing.
+- F4 is merged (canopy PR 625). Needs the bes-canopy-api release carrying it, not yet published: optional `application_type: Option<ApplicationType>` on `RequestCertificateArgs` and `RegisterNameArgs`. `ApplicationType` is a string newtype, not an enum. Bump with `cargo add` once published, don't guess the version.
+- `CanopyHttpError`'s message now appends `reason()` for a 4xx with a problem-document body (the document's `title`, falling back to `detail`). Use `reason()` for the refusal record's reason rather than re-parsing.
+- Problem types, from the `type` in the body (`/errors/<slug>`). Branch on the slug, not the status, since `name-not-entitled` is also 403:
+  - `dns-name-undeclared`, 403: waiting on an operator.
+  - `dns-name-denied`, 403: operator decision against.
+  - `dns-name-type-mismatch`, 409: the type sent contradicts the machine, either the declaring application's type or no application of that type. The reason names the actual types. This is an ordinary failure, kind "other".
+- Canopy's own tests already send `application_type: "msupply"`, so the slug agrees.
 - On canopy's side `registered_names` is built from every declaration row (`ApplicationName::for_server`), so it already means "DNS names this application declares", including operator declarations with no addresses. Ownership's declaration fallback and the check's daemon-unreachable fallback both read it as that.
 
 ## Ownership (NAM#which-application-a-dns-name-belongs-to)
@@ -62,7 +66,7 @@ Read from Caddy's live admin JSON, per site (server route matching a host):
 
 - New `ApplicationKind::Msupply`, type slug `msupply`, detected by `/etc/containers/systemd/msupply.container`.
 - `canopy_certificates` and `caddy_certs` apply, both currently wired against `tamanu_app`; each needs a selector covering Tamanu and mSupply. Facts are type and version: the version comes from `MSUPPLY_VERSION` in `/etc/msupply/env` (e.g. `v2.17.06-sqlite-amd64` → `2.17.06`).
-- `msupply` is the first use of an mSupply type anywhere, so this card sets it. Canopy's mSupply applications need to be recorded under the same slug, since CHK-CCO matches entries by type and requests carry it. Raise it on the canopy side so F4 (or its follow-up) doesn't pick another spelling.
+- `msupply` is set by this card, and matches what canopy's F4 tests use. Canopy's mSupply applications need to be recorded under the same slug, since CHK-CCO matches entries by type and requests carry it.
 
 ## caddy_certs attribution (CHK-CCT)
 

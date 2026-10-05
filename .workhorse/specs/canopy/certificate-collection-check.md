@@ -43,7 +43,7 @@ How near is too near is a fraction of that chain's own lifetime, since Canopy ch
 A renewal under way is not a failure: the chain in hand stays valid until the new one lands, so a DNS name holding a usable chain passes whatever Canopy is doing behind it.
 
 The check reports the reason Canopy gave for a DNS name whose order is failing, whether Canopy gave it on a certificate it holds or in refusing the daemon's last request, so an operator sees why issuance is stuck rather than only that nothing arrived.
-A request refused because its application type differs from the application declaring the DNS name is such a failure, and the reason names the declaring type ([NAM](names.md#how-canopy-resolves-a-request)).
+A request refused as a type mismatch is such a failure, and the reason names the types Canopy gave ([NAM](names.md#how-canopy-resolves-a-request)).
 
 A DNS name Canopy refused as undeclared or as denied is not graded, whether or not a chain is held for it.
 Canopy shows an operator an undeclared request itself, and a denial is an operator's decision against the DNS name, so neither is this host's to report.

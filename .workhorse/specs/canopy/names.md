@@ -55,7 +55,9 @@ A DNS name served by sites attributed to different applications is unattributed.
 Canopy resolves which application a request concerns from the DNS name it asks about and from the type the request carries, not from the identity presented, because an identity belongs to the machine.
 A request carries the type of the application the DNS name belongs to.
 
-A DNS name an application on the machine already declares resolves to that application, and a request carrying a different type is refused, naming the declaring application's type.
+A DNS name an application on the machine already declares resolves to that application.
+A request carrying a type the machine contradicts is refused as a type mismatch: a type other than that of the application declaring the DNS name, or one none of the machine's applications is.
+The refusal names the declaring application's type, or the types the machine's applications are.
 The server sends the type its own attribution gives regardless of the declaration, so a site Caddy routes to one application while Canopy holds it for another is reported as a fault for an operator to correct.
 A DNS name no application declares resolves by the type, and a request that resolves declares the DNS name for that application, so later requests follow the declaration.
 
