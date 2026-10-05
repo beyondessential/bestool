@@ -2,7 +2,7 @@
 
 ## Dependency on canopy F4
 
-- F4 is merged (canopy PR 625). Needs the bes-canopy-api release carrying it, not yet published: optional `application_type: Option<ApplicationType>` on `RequestCertificateArgs` and `RegisterNameArgs`. `ApplicationType` is a string newtype, not an enum. Bump with `cargo add` once published, don't guess the version.
+- F4 is merged (canopy PR 625). bes-canopy-api 1.1.0 carries it, and `bestool-canopy` is bumped to it: optional `application_type: Option<ApplicationType>` on `RequestCertificateArgs` and `RegisterNameArgs`. `ApplicationType` is a string newtype, not an enum.
 - `CanopyHttpError`'s message now appends `reason()` for a 4xx with a problem-document body (the document's `title`, falling back to `detail`). Use `reason()` for the refusal record's reason rather than re-parsing.
 - Problem types, from the `type` in the body (`/errors/<slug>`). Branch on the slug, not the status, since `name-not-entitled` is also 403:
   - `dns-name-undeclared`, 403: waiting on an operator.
