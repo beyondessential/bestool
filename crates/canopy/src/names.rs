@@ -25,7 +25,8 @@ use crate::certificates::name_within;
 /// How canopy refused a certificate request or an address registration.
 ///
 /// Taken from the problem type in the refusal's body, never from the status:
-/// `name-not-entitled` is a 403 too, and is an ordinary failure.
+/// canopy answers about the DNS name, the application, and the machine with the
+/// same few statuses.
 ///
 /// spec: NAM#how-canopy-resolves-a-request
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,8 +37,10 @@ pub enum RefusalKind {
 	Undeclared,
 	/// An operator has denied the DNS name to this machine (`dns-name-denied`).
 	Denied,
-	/// Any other refusal, a type mismatch (`dns-name-type-mismatch`) and
-	/// `name-not-entitled` included.
+	/// Any other answer about the DNS name: a type mismatch
+	/// (`dns-name-type-mismatch`), a DNS name outside the group's domains
+	/// (`name-not-entitled`), or one canopy cannot act on for this machine
+	/// (`conflict`).
 	Other,
 }
 
@@ -68,33 +71,27 @@ impl Refusal {
 	/// Read a refusal out of an error from canopy, where canopy answered with
 	/// one.
 	///
-	/// `None` for an error that is not a 4xx answer about the DNS name: a
-	/// transport failure, a server fault, a timeout, and being asked to slow down
-	/// are not refusals, and nor is an answer about the caller or the route, such
-	/// as an identity canopy does not accept or a machine it has no server for.
-	/// Each of those is the same for every DNS name, so read as a refusal it would
-	/// overwrite what canopy last said about all of them at once.
+	/// `None` for anything that is not an answer about the DNS name: a transport
+	/// failure, a server fault, being asked to slow down, and an answer about the
+	/// application or the machine, such as a pause, a missing grant, or an
+	/// identity canopy does not accept. Those are the same for every DNS name, so
+	/// read as a refusal one would overwrite what canopy last said about all of
+	/// them at once.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
 	pub fn from_error(err: &Error) -> Option<Self> {
 		Self::from_http(err.http()?)
 	}
 
 	pub fn from_http(err: &CanopyHttpError) -> Option<Self> {
-		use http::StatusCode;
-		if !err.status.is_client_error()
-			|| matches!(
-				err.status,
-				StatusCode::UNAUTHORIZED
-					| StatusCode::NOT_FOUND
-					| StatusCode::REQUEST_TIMEOUT
-					| StatusCode::PRECONDITION_FAILED
-					| StatusCode::TOO_MANY_REQUESTS
-			) {
+		if !err.status.is_client_error() {
 			return None;
 		}
-		let kind = match problem_slug(err).as_deref() {
-			Some("dns-name-undeclared") => RefusalKind::Undeclared,
-			Some("dns-name-denied") => RefusalKind::Denied,
-			_ => RefusalKind::Other,
+		let kind = match problem_slug(err).as_deref()? {
+			"dns-name-undeclared" => RefusalKind::Undeclared,
+			"dns-name-denied" => RefusalKind::Denied,
+			"dns-name-type-mismatch" | "name-not-entitled" | "conflict" => RefusalKind::Other,
+			_ => return None,
 		};
 		let reason = err
 			.reason()
@@ -346,25 +343,41 @@ mod tests {
 
 	#[test]
 	fn an_answer_not_about_the_dns_name_is_not_a_refusal() {
-		for status in [401, 404, 408, 412, 429] {
+		for (status, slug) in [
+			(401, "auth-failed"),
+			(403, "auth-insufficient-permissions"),
+			(403, "auth-tailnet-node-not-permitted"),
+			(400, "bad-request"),
+			(404, "resource-not-found"),
+			(409, "name-management-paused"),
+			(412, "device-has-no-server"),
+			(429, "rate-limited"),
+		] {
 			let err = refused(
 				status,
-				serde_json::json!({"type": "/errors/rate-limited", "title": "slow down"}),
+				serde_json::json!({"type": format!("/errors/{slug}"), "title": slug}),
 			);
-			assert_eq!(Refusal::from_error(&err), None, "{status}");
+			assert_eq!(Refusal::from_error(&err), None, "{status} {slug}");
 		}
 	}
 
 	#[test]
-	fn a_body_that_is_not_a_problem_document_is_still_a_refusal_with_a_reason() {
+	fn a_conflict_is_an_answer_about_the_dns_name() {
+		let err = refused(
+			409,
+			serde_json::json!({"type": "/errors/conflict", "title": "no zone covers it"}),
+		);
+		assert_eq!(Refusal::from_error(&err).unwrap().kind, RefusalKind::Other);
+	}
+
+	#[test]
+	fn a_body_that_is_not_a_problem_document_is_not_a_refusal() {
 		let err = Error::Http(CanopyHttpError {
 			status: http::StatusCode::FORBIDDEN,
 			path: "/certificates/request".into(),
 			body: "nope".into(),
 		});
-		let refusal = Refusal::from_error(&err).unwrap();
-		assert_eq!(refusal.kind, RefusalKind::Other);
-		assert!(refusal.reason.contains("403"), "{}", refusal.reason);
+		assert_eq!(Refusal::from_error(&err), None);
 	}
 
 	#[test]
