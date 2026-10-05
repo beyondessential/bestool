@@ -480,8 +480,12 @@ impl CertificateState {
 
 	/// One collection pass: what may be certified, asked about and collected.
 	///
+	/// A steady pass asks about every DNS name; any other asks about the ones
+	/// due, and about `asked`, the one a command asked for, whatever canopy last
+	/// said about it.
+	///
 	/// spec: TLS#requesting-and-collecting
-	async fn pass(&self, ctx: &TaskContext, steady: bool) -> Result<()> {
+	async fn pass(&self, ctx: &TaskContext, steady: bool, asked: Option<&str>) -> Result<()> {
 		self.load_from_disk().await?;
 		let entitlement = self.refresh_entitlement(ctx).await?;
 
@@ -505,8 +509,7 @@ impl CertificateState {
 
 		let now = Timestamp::now();
 		for target in targets {
-			let due = steady || self.name_due(&target.name, now).await;
-			if !due {
+			if !self.target_due(&target.name, steady, asked, now).await {
 				continue;
 			}
 			match self.collect_one(ctx, &target).await {
@@ -600,6 +603,23 @@ impl CertificateState {
 			.write()
 			.await
 			.retain(|name, _| targets.contains(name) || held.contains_key(name));
+	}
+
+	/// Whether a pass asks about one DNS name.
+	///
+	/// A DNS name a command asked for is asked about at once, even one waiting
+	/// on an operator: the operator who has just declared it, or lifted its
+	/// denial, is the one asking.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	async fn target_due(
+		&self,
+		name: &str,
+		steady: bool,
+		asked: Option<&str>,
+		now: Timestamp,
+	) -> bool {
+		steady || asked == Some(name) || self.name_due(name, now).await
 	}
 
 	/// Whether one name is due to be asked about outside a steady pass.
@@ -1123,7 +1143,7 @@ impl BackgroundTask for CanopyNames {
 				}
 			};
 
-			match self.state.pass(ctx, steady).await {
+			match self.state.pass(ctx, steady, None).await {
 				Ok(()) => {
 					*self.state.last_error.write().await = None;
 				}
@@ -1146,7 +1166,7 @@ impl BackgroundTask for CanopyNames {
 			}),
 			guarded_endpoint("collect", self.state.clone(), |state, ctx| {
 				Box::pin(async move {
-					state.pass(&ctx, true).await?;
+					state.pass(&ctx, true, None).await?;
 					*state.last_pass.write().await = Some(Timestamp::now());
 					Ok(state.report().await)
 				})
@@ -1179,8 +1199,12 @@ impl BackgroundTask for CanopyNames {
 						}
 						_ => {}
 					}
-					state.explicit.lock().await.insert(name, application_type);
-					state.pass(&ctx, false).await?;
+					state
+						.explicit
+						.lock()
+						.await
+						.insert(name.clone(), application_type);
+					state.pass(&ctx, false, Some(&name)).await?;
 					Ok(state.report().await)
 				})
 			}),
@@ -2113,6 +2137,36 @@ mod tests {
 		assert!(!state.pass_due().await);
 		state.note_wanted("app.example.com").await;
 		assert!(!state.pass_due().await);
+	}
+
+	/// The command an operator runs after declaring a DNS name, or lifting its
+	/// denial, asks canopy at once rather than waiting for the steady schedule.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	#[tokio::test]
+	async fn a_name_a_command_asks_for_is_due_even_while_waiting_on_an_operator() {
+		let (_dir, state) = state();
+		for (name, kind) in [
+			("a.example.com", RefusalKind::Undeclared),
+			("b.example.com", RefusalKind::Denied),
+		] {
+			state
+				.record_failure(
+					&target(name),
+					refused(kind, "an operator's"),
+					Timestamp::now(),
+				)
+				.await;
+			let now = Timestamp::now();
+			assert!(!state.target_due(name, false, None, now).await);
+			assert!(
+				!state
+					.target_due(name, false, Some("other.example.com"), now)
+					.await
+			);
+			assert!(state.target_due(name, false, Some(name), now).await);
+			assert!(state.target_due(name, true, None, now).await);
+		}
 	}
 
 	#[tokio::test]
