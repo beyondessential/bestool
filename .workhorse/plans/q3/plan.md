@@ -62,7 +62,7 @@ Read from Caddy's live admin JSON, per site (server route matching a host):
 
 - New `ApplicationKind::Msupply`, type slug `msupply`, detected by `/etc/containers/systemd/msupply.container`.
 - `canopy_certificates` and `caddy_certs` apply, both currently wired against `tamanu_app`; each needs a selector covering Tamanu and mSupply. Facts are type and version: the version comes from `MSUPPLY_VERSION` in `/etc/msupply/env` (e.g. `v2.17.06-sqlite-amd64` → `2.17.06`).
-- Confirm canopy uses `msupply` as mSupply's application type; CHK-CCO matches entries by type.
+- `msupply` is the first use of an mSupply type anywhere, so this card sets it. Canopy's mSupply applications need to be recorded under the same slug, since CHK-CCO matches entries by type and requests carry it. Raise it on the canopy side so F4 (or its follow-up) doesn't pick another spelling.
 
 ## caddy_certs attribution (CHK-CCT)
 
