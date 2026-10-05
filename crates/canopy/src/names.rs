@@ -7,16 +7,99 @@
 //! and paused state.
 //!
 //! [`Entitlement`] flattens both forms into one list, so nothing downstream has
-//! to know which shape came back. Asking is done on the union of that list,
-//! because nothing on this side ties a Caddy site to an application; reporting
-//! is done per entry, because canopy's answer says which application declares
-//! each name.
+//! to know which shape came back. Which application a DNS name belongs to is
+//! decided by the caller, from the site Caddy serves it on and from what each
+//! entry declares; [`Entitlement::for_type`] then gives that application's
+//! entry.
 //!
 //! spec: NAM
 
-use bes_canopy_api::schema::{ApplicationEntitlements, Entitlements, HeldCertificate};
+use bes_canopy_api::{
+	CanopyHttpError, Error,
+	schema::{ApplicationEntitlements, Entitlements, HeldCertificate},
+};
+use serde::{Deserialize, Serialize};
 
 use crate::certificates::name_within;
+
+/// How canopy refused a certificate request or an address registration.
+///
+/// Taken from the problem type in the refusal's body, never from the status:
+/// `name-not-entitled` is a 403 too, and is an ordinary failure.
+///
+/// spec: NAM#how-canopy-resolves-a-request
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RefusalKind {
+	/// The request resolved to no single application, and is waiting for an
+	/// operator to declare the DNS name (`dns-name-undeclared`).
+	Undeclared,
+	/// An operator has denied the DNS name to this machine (`dns-name-denied`).
+	Denied,
+	/// Any other refusal, a type mismatch (`dns-name-type-mismatch`) and
+	/// `name-not-entitled` included.
+	Other,
+}
+
+impl RefusalKind {
+	/// Whether the refusal is an operator's to act on rather than a fault on
+	/// this host.
+	pub fn awaits_operator(self) -> bool {
+		matches!(self, Self::Undeclared | Self::Denied)
+	}
+
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Undeclared => "undeclared",
+			Self::Denied => "denied",
+			Self::Other => "other",
+		}
+	}
+}
+
+/// A refusal canopy gave, with the reason it gave it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+	pub kind: RefusalKind,
+	pub reason: String,
+}
+
+impl Refusal {
+	/// Read a refusal out of an error from canopy, where canopy answered with
+	/// one.
+	///
+	/// `None` for an error that is not a 4xx answer: a transport failure or a
+	/// server fault is not a refusal.
+	pub fn from_error(err: &Error) -> Option<Self> {
+		Self::from_http(err.http()?)
+	}
+
+	pub fn from_http(err: &CanopyHttpError) -> Option<Self> {
+		if !err.status.is_client_error() {
+			return None;
+		}
+		let kind = match problem_slug(err).as_deref() {
+			Some("dns-name-undeclared") => RefusalKind::Undeclared,
+			Some("dns-name-denied") => RefusalKind::Denied,
+			_ => RefusalKind::Other,
+		};
+		let reason = err
+			.reason()
+			.unwrap_or_else(|| format!("canopy returned {} for {}", err.status, err.path));
+		Some(Self { kind, reason })
+	}
+}
+
+/// The last segment of the problem document's `type`, which is
+/// `/errors/<slug>`.
+fn problem_slug(err: &CanopyHttpError) -> Option<String> {
+	let document: serde_json::Value = serde_json::from_slice(&err.body).ok()?;
+	let uri = document.get("type")?.as_str()?;
+	uri.trim_end_matches('/')
+		.rsplit('/')
+		.next()
+		.map(str::to_owned)
+}
 
 /// One application's entitlement, whichever shape canopy answered in.
 #[derive(Clone, Debug)]
@@ -213,6 +296,73 @@ fn from_application(app: &ApplicationEntitlements) -> AppEntitlement {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn refused(status: u16, body: serde_json::Value) -> Error {
+		Error::Http(CanopyHttpError {
+			status: http::StatusCode::from_u16(status).unwrap(),
+			path: "/certificates/request".into(),
+			body: serde_json::to_vec(&body).unwrap().into(),
+		})
+	}
+
+	#[test]
+	fn the_problem_type_decides_the_kind_not_the_status() {
+		let undeclared = refused(
+			403,
+			serde_json::json!({"type": "/errors/dns-name-undeclared", "title": "needs declaring"}),
+		);
+		let refusal = Refusal::from_error(&undeclared).unwrap();
+		assert_eq!(refusal.kind, RefusalKind::Undeclared);
+		assert_eq!(refusal.reason, "needs declaring");
+
+		let denied = refused(
+			403,
+			serde_json::json!({"type": "/errors/dns-name-denied", "title": "denied"}),
+		);
+		assert_eq!(
+			Refusal::from_error(&denied).unwrap().kind,
+			RefusalKind::Denied
+		);
+
+		// Also a 403, and an ordinary failure.
+		let not_entitled = refused(
+			403,
+			serde_json::json!({"type": "/errors/name-not-entitled", "title": "no grant"}),
+		);
+		assert_eq!(
+			Refusal::from_error(&not_entitled).unwrap().kind,
+			RefusalKind::Other
+		);
+
+		let mismatch = refused(
+			409,
+			serde_json::json!({"type": "/errors/dns-name-type-mismatch", "title": "this machine hosts tamanu-central"}),
+		);
+		let refusal = Refusal::from_error(&mismatch).unwrap();
+		assert_eq!(refusal.kind, RefusalKind::Other);
+		assert!(refusal.reason.contains("tamanu-central"));
+	}
+
+	#[test]
+	fn a_body_that_is_not_a_problem_document_is_still_a_refusal_with_a_reason() {
+		let err = Error::Http(CanopyHttpError {
+			status: http::StatusCode::FORBIDDEN,
+			path: "/certificates/request".into(),
+			body: "nope".into(),
+		});
+		let refusal = Refusal::from_error(&err).unwrap();
+		assert_eq!(refusal.kind, RefusalKind::Other);
+		assert!(refusal.reason.contains("403"), "{}", refusal.reason);
+	}
+
+	#[test]
+	fn a_server_fault_is_not_a_refusal() {
+		let err = refused(
+			500,
+			serde_json::json!({"type": "/errors/dns-name-undeclared", "title": "boom"}),
+		);
+		assert!(Refusal::from_error(&err).is_none());
+	}
 
 	fn held(name: &str) -> HeldCertificate {
 		HeldCertificate::builder()
