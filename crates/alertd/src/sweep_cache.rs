@@ -24,12 +24,15 @@ use serde_json::Value;
 use tokio::sync::OnceCell;
 use tracing::debug;
 
-use crate::{checks::fmt_chain, runtime::caddy};
+use crate::{checks::fmt_chain, ownership::HostApplication, runtime::caddy};
 
 /// One sweep's shared readings. Cheap to build; nothing is asked for until it is
 /// wanted.
 #[derive(Default)]
 pub struct SweepCache {
+	/// The applications on this machine that Caddy can be fronting, which is what
+	/// a DNS name's site is attributed against.
+	host_applications: Vec<HostApplication>,
 	/// Caddy's live admin configuration, or `None` where its admin API could not
 	/// be read.
 	caddy_config: OnceCell<Option<Arc<Value>>>,
@@ -53,6 +56,17 @@ pub struct SweepCache {
 impl SweepCache {
 	pub fn new() -> Self {
 		Self::default()
+	}
+
+	pub fn with_host_applications(host_applications: Vec<HostApplication>) -> Self {
+		Self {
+			host_applications,
+			..Self::default()
+		}
+	}
+
+	pub fn host_applications(&self) -> &[HostApplication] {
+		&self.host_applications
 	}
 
 	pub async fn caddy_config(&self) -> Option<Arc<Value>> {

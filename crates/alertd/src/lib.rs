@@ -5,6 +5,8 @@ pub mod check;
 pub mod checks;
 pub mod heal;
 pub mod local_http;
+pub mod msupply;
+pub mod ownership;
 pub mod progress;
 pub mod runtime;
 pub mod server_info;
