@@ -88,6 +88,14 @@ const STEADY_INTERVAL: Duration = Duration::from_secs(30 * 60);
 /// let a stream of invented names push out the one a real client asked for.
 const WANTED_LIMIT: usize = 64;
 
+/// The most DNS names a command may have asked for at once.
+///
+/// What a command asked for is kept until it is collected and no longer served,
+/// so this is what stops requests that are never fulfilled from accumulating.
+/// A request past the bound is refused rather than an older one evicted, so the
+/// operator is told rather than a request already accepted being forgotten.
+const EXPLICIT_LIMIT: usize = 64;
+
 /// How soon a name whose order is pending is asked about again.
 ///
 /// Sooner than the steady interval, so an order in flight is collected promptly
@@ -134,6 +142,17 @@ impl Order {
 			.map(|refusal| refusal.reason.as_str())
 			.or(self.last_error.as_deref())
 	}
+}
+
+/// Whether a DNS name a command asked for may be ordered now, for the
+/// application the command named.
+///
+/// An application canopy has no entry for is left for canopy to refuse, since
+/// the refusal names the types the machine has.
+fn explicit_orderable(entitlement: &Entitlement, name: &str, application_type: &str) -> bool {
+	entitlement
+		.for_type(application_type)
+		.is_none_or(|app| app.may_certify(name))
 }
 
 /// The order state a DNS name canopy refused shows as.
@@ -328,6 +347,20 @@ impl CertificateState {
 		}
 	}
 
+	/// Record a DNS name a command asked for, with the application type it named.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	async fn note_explicit(&self, name: &str, application_type: String) -> Result<()> {
+		let mut explicit = self.explicit.lock().await;
+		if explicit.len() >= EXPLICIT_LIMIT && !explicit.contains_key(name) {
+			return Err(miette!(
+				"{EXPLICIT_LIMIT} DNS names requested by command are already being collected; restart the daemon to clear requests no longer wanted"
+			));
+		}
+		explicit.insert(name.to_owned(), application_type);
+		Ok(())
+	}
+
 	/// Load what this host already holds, so a restart serves its chains at once
 	/// and collects an order already placed rather than placing a new one.
 	///
@@ -454,7 +487,23 @@ impl CertificateState {
 		// it does anything else — on every tick until it succeeds is what the
 		// per-name backoff exists to stop.
 		let mut wanted: Vec<String> = self.wanted.lock().await.iter().cloned().collect();
-		wanted.extend(self.explicit.lock().await.keys().cloned());
+		{
+			// A name whose application is paused or without the grant is kept, but
+			// waits for the steady pass that finds it lifted.
+			let entitlement = self.entitlement.read().await;
+			wanted.extend(
+				self.explicit
+					.lock()
+					.await
+					.iter()
+					.filter(|(name, application_type)| {
+						entitlement
+							.as_ref()
+							.is_none_or(|e| explicit_orderable(e, name, application_type))
+					})
+					.map(|(name, _)| name.clone()),
+			);
+		}
 		for name in &wanted {
 			if self.name_due(name, now).await {
 				return true;
@@ -731,19 +780,24 @@ impl CertificateState {
 
 		// A name a command asked for carries the application the command named,
 		// whatever its site says. It is kept until its first chain arrives and then
-		// while Caddy serves it. An application canopy knows nothing of is left for
-		// canopy to refuse, since the refusal names the types the machine has.
+		// while Caddy serves it, through a pause or a withdrawn grant, which are
+		// canopy's to lift; it is ordered only while its application may certify
+		// it.
+		//
+		// spec: TLS#which-dns-names-are-certified
 		{
 			let held = self.held.read().await;
 			let mut explicit = self.explicit.lock().await;
 			explicit.retain(|name, application_type| {
 				let wanted_still = !held.contains_key(name) || sites.serves(name);
-				let may = entitlement
+				let within = entitlement
 					.for_type(application_type)
-					.is_none_or(|app| app.may_certify(name));
-				wanted_still && may
+					.is_none_or(|app| app.covers(name));
+				wanted_still && within
 			});
-			for (name, application_type) in explicit.iter() {
+			for (name, application_type) in explicit.iter().filter(|(name, application_type)| {
+				explicit_orderable(entitlement, name, application_type)
+			}) {
 				targets.insert(
 					name.clone(),
 					Target {
@@ -1220,11 +1274,7 @@ impl BackgroundTask for CanopyNames {
 						}
 						_ => {}
 					}
-					state
-						.explicit
-						.lock()
-						.await
-						.insert(name.clone(), application_type);
+					state.note_explicit(&name, application_type).await?;
 					state.pass(&ctx, false, Some(&name)).await?;
 					Ok(state.report().await)
 				})
@@ -2030,6 +2080,73 @@ mod tests {
 			.targets_from(&entitlement, &CaddySites::default(), &[])
 			.await;
 		assert_eq!(names(&targets), vec!["a.one.test"]);
+		// Not ordered, but kept for when the grant arrives.
+		assert!(state.explicit.lock().await.contains_key("b.two.test"));
+	}
+
+	/// Past the bound a new request is refused, and one already accepted can
+	/// still be asked again.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn requests_by_command_are_bounded() {
+		let (_dir, state) = state();
+		for n in 0..EXPLICIT_LIMIT {
+			state
+				.note_explicit(&format!("n{n}.example.com"), "msupply".into())
+				.await
+				.unwrap();
+		}
+		assert!(
+			state
+				.note_explicit("over.example.com", "msupply".into())
+				.await
+				.is_err()
+		);
+		state
+			.note_explicit("n0.example.com", "tamanu-central".into())
+			.await
+			.unwrap();
+		assert_eq!(
+			state.explicit.lock().await["n0.example.com"],
+			"tamanu-central"
+		);
+	}
+
+	/// A pause on the named application holds a requested name back without
+	/// forgetting it, and neither it nor the name wakes a pass in the meantime.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn an_explicit_request_waits_out_its_applications_pause() {
+		let (_dir, state) = state();
+		*state.last_pass.write().await = Some(Timestamp::now());
+		let mut wire = applications_wire();
+		wire.applications[0].paused = true;
+		*state.entitlement.write().await = Some(Entitlement::from_wire(&wire));
+		let paused = entitled(&state).await;
+		let type_slug = paused.applications[0].type_slug.clone().unwrap();
+		let name = format!("pre.{}", paused.applications[0].domains[0]);
+		state
+			.explicit
+			.lock()
+			.await
+			.insert(name.clone(), type_slug.clone());
+
+		assert!(!state.pass_due().await);
+		let targets = state
+			.targets_from(&paused, &CaddySites::default(), &[])
+			.await;
+		assert!(!names(&targets).contains(&name.as_str()));
+		assert!(state.explicit.lock().await.contains_key(&name));
+
+		*state.entitlement.write().await = Some(Entitlement::from_wire(&applications_wire()));
+		let lifted = entitled(&state).await;
+		assert!(state.pass_due().await);
+		let targets = state
+			.targets_from(&lifted, &CaddySites::default(), &[])
+			.await;
+		assert!(names(&targets).contains(&name.as_str()));
 	}
 
 	#[tokio::test]

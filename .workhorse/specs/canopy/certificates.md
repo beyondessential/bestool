@@ -32,6 +32,8 @@ A server standing down records nothing to act on, so the DNS names handshakes le
 A DNS name may also be requested explicitly through a command, for pre-provisioning.
 A DNS name requested this way is ordered whether or not Caddy serves it yet or its site names the daemon's endpoint, so its chain is ready before the site or the hook is added.
 Passes keep collecting it until its first chain arrives, and after that while Caddy serves it.
+A DNS name requested for an application that is paused or without the TLS grant is kept and ordered once that is lifted, and until then it does not bring a pass forward.
+The number of DNS names requested this way is bounded, and a request past the bound is refused rather than an earlier one forgotten.
 
 ## Keys
 
