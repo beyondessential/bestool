@@ -68,18 +68,26 @@ impl Refusal {
 	/// Read a refusal out of an error from canopy, where canopy answered with
 	/// one.
 	///
-	/// `None` for an error that is not a 4xx answer about the request: a
+	/// `None` for an error that is not a 4xx answer about the DNS name: a
 	/// transport failure, a server fault, a timeout, and being asked to slow down
-	/// are not refusals.
+	/// are not refusals, and nor is an answer about the caller or the route, such
+	/// as an identity canopy does not accept or a machine it has no server for.
+	/// Each of those is the same for every DNS name, so read as a refusal it would
+	/// overwrite what canopy last said about all of them at once.
 	pub fn from_error(err: &Error) -> Option<Self> {
 		Self::from_http(err.http()?)
 	}
 
 	pub fn from_http(err: &CanopyHttpError) -> Option<Self> {
+		use http::StatusCode;
 		if !err.status.is_client_error()
 			|| matches!(
 				err.status,
-				http::StatusCode::REQUEST_TIMEOUT | http::StatusCode::TOO_MANY_REQUESTS
+				StatusCode::UNAUTHORIZED
+					| StatusCode::NOT_FOUND
+					| StatusCode::REQUEST_TIMEOUT
+					| StatusCode::PRECONDITION_FAILED
+					| StatusCode::TOO_MANY_REQUESTS
 			) {
 			return None;
 		}
@@ -337,8 +345,8 @@ mod tests {
 	}
 
 	#[test]
-	fn a_timeout_or_being_asked_to_slow_down_is_not_a_refusal() {
-		for status in [408, 429] {
+	fn an_answer_not_about_the_dns_name_is_not_a_refusal() {
+		for status in [401, 404, 408, 412, 429] {
 			let err = refused(
 				status,
 				serde_json::json!({"type": "/errors/rate-limited", "title": "slow down"}),
