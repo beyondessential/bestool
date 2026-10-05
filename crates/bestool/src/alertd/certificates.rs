@@ -560,10 +560,11 @@ impl CertificateState {
 		}
 		*self.stood_down.write().await = None;
 
-		let targets = self.targets(&entitlement, steady).await;
-		let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
-
-		self.prune_orders(&names).await;
+		let (targets, complete) = self.targets(&entitlement, steady).await;
+		if complete {
+			let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
+			self.prune_orders(&names).await;
+		}
 		self.persist_refusals().await;
 
 		if targets.is_empty() {
@@ -714,14 +715,43 @@ impl CertificateState {
 	/// Explicitly requested names are ordered whether or not Caddy serves them or
 	/// their site is hooked.
 	///
+	/// Where Caddy's configuration cannot be read, only the names a command asked
+	/// for are returned, since they are the ones that do not depend on it, and the
+	/// list is marked incomplete. Read as Caddy serving nothing, it would drop
+	/// every other name's order and refusal, and the handshake names waiting for
+	/// a pass.
+	///
 	/// spec: TLS#which-dns-names-are-certified
-	async fn targets(&self, entitlement: &Entitlement, steady: bool) -> Vec<Target> {
-		let sites = delivery::caddy_sites().await.unwrap_or_else(|err| {
-			debug!(%err, "could not read Caddy's configuration");
-			CaddySites::default()
-		});
-		let applications = self.host_applications(steady).await;
-		self.targets_from(entitlement, &sites, &applications).await
+	async fn targets(&self, entitlement: &Entitlement, steady: bool) -> (Vec<Target>, bool) {
+		match delivery::caddy_sites().await {
+			Ok(sites) => {
+				let applications = self.host_applications(steady).await;
+				(
+					self.targets_from(entitlement, &sites, &applications).await,
+					true,
+				)
+			}
+			Err(err) => {
+				warn!(%err, "could not read Caddy's configuration; ordering only DNS names requested by command");
+				(self.explicit_targets(entitlement).await, false)
+			}
+		}
+	}
+
+	/// The DNS names a command asked for that may be ordered now.
+	async fn explicit_targets(&self, entitlement: &Entitlement) -> Vec<Target> {
+		self.explicit
+			.lock()
+			.await
+			.iter()
+			.filter(|(name, application_type)| {
+				explicit_orderable(entitlement, name, application_type)
+			})
+			.map(|(name, application_type)| Target {
+				name: name.clone(),
+				application_type: application_type.clone(),
+			})
+			.collect()
 	}
 
 	/// The applications on this host: discovered afresh on a steady pass or where
@@ -787,25 +817,16 @@ impl CertificateState {
 		// spec: TLS#which-dns-names-are-certified
 		{
 			let held = self.held.read().await;
-			let mut explicit = self.explicit.lock().await;
-			explicit.retain(|name, application_type| {
+			self.explicit.lock().await.retain(|name, application_type| {
 				let wanted_still = !held.contains_key(name) || sites.serves(name);
 				let within = entitlement
 					.for_type(application_type)
 					.is_none_or(|app| app.covers(name));
 				wanted_still && within
 			});
-			for (name, application_type) in explicit.iter().filter(|(name, application_type)| {
-				explicit_orderable(entitlement, name, application_type)
-			}) {
-				targets.insert(
-					name.clone(),
-					Target {
-						name: name.clone(),
-						application_type: application_type.clone(),
-					},
-				);
-			}
+		}
+		for target in self.explicit_targets(entitlement).await {
+			targets.insert(target.name.clone(), target);
 		}
 
 		targets.into_values().collect()
@@ -2082,6 +2103,37 @@ mod tests {
 		assert_eq!(names(&targets), vec!["a.one.test"]);
 		// Not ordered, but kept for when the grant arrives.
 		assert!(state.explicit.lock().await.contains_key("b.two.test"));
+	}
+
+	/// With Caddy's configuration unreadable, what is known about the other names
+	/// is left as it was rather than read as Caddy serving nothing.
+	#[tokio::test]
+	async fn an_unreadable_caddy_configuration_orders_only_requested_names_and_drops_nothing() {
+		if delivery::caddy_sites().await.is_ok() {
+			// A Caddy is answering on this machine; the case cannot be staged.
+			return;
+		}
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+		let entitlement = entitled(&state).await;
+		state.note_wanted("hooked.example.com").await;
+		state
+			.record_failure(
+				&target("wait.example.com"),
+				refused(RefusalKind::Undeclared, "declare it"),
+				Timestamp::now(),
+			)
+			.await;
+		state
+			.note_explicit("pre.example.com", "tamanu-central".into())
+			.await
+			.unwrap();
+
+		let (targets, complete) = state.targets(&entitlement, false).await;
+		assert!(!complete);
+		assert_eq!(names(&targets), vec!["pre.example.com"]);
+		assert!(state.wanted.lock().await.contains("hooked.example.com"));
+		assert!(state.orders.read().await.contains_key("wait.example.com"));
 	}
 
 	/// Past the bound a new request is refused, and one already accepted can
