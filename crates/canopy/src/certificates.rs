@@ -229,9 +229,9 @@ fn refusals_file(dir: &Path) -> PathBuf {
 }
 
 /// What canopy last refused a name for, kept so a restart does not mistake a
-/// name waiting on an operator for a failing one before it has asked again.
-///
-/// Only the refusals an operator is waited on for are kept.
+/// name waiting on an operator for a failing one before it has asked again, and
+/// so the certificate healthcheck can tell why a name is not being collected
+/// without asking the running daemon.
 ///
 /// spec: TLS#undeclared-and-denied-dns-names
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,16 +246,33 @@ pub struct StoredRefusal {
 
 /// Read the refusals kept for each name, or none where there is no file.
 ///
-/// A file that cannot be parsed reads as none: the refusals come back on the
-/// next steady pass, so losing them costs a few minutes' misreading rather than
-/// a daemon that will not collect.
-pub async fn load_refusals(dir: &Path) -> BTreeMap<String, StoredRefusal> {
+/// A file that is there and cannot be read or parsed is an error rather than
+/// none, so a reader grading names by it can tell an empty record from one it
+/// could not see.
+pub async fn read_refusals(dir: &Path) -> Result<BTreeMap<String, StoredRefusal>> {
 	let path = refusals_file(dir);
-	let Ok(bytes) = tokio::fs::read(&path).await else {
-		return BTreeMap::new();
+	let bytes = match tokio::fs::read(&path).await {
+		Ok(bytes) => bytes,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+		Err(err) => {
+			return Err(err)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("reading {}", path.display()));
+		}
 	};
-	serde_json::from_slice(&bytes).unwrap_or_else(|err| {
-		debug!(path = %path.display(), %err, "could not parse the kept refusals");
+	serde_json::from_slice(&bytes)
+		.into_diagnostic()
+		.wrap_err_with(|| format!("parsing {}", path.display()))
+}
+
+/// [`read_refusals`], reading a file that cannot be read as none.
+///
+/// For the daemon, whose refusals come back on the next steady pass, so losing
+/// them costs a few minutes' misreading rather than a daemon that will not
+/// collect.
+pub async fn load_refusals(dir: &Path) -> BTreeMap<String, StoredRefusal> {
+	read_refusals(dir).await.unwrap_or_else(|err| {
+		debug!(%err, "could not read the kept refusals");
 		BTreeMap::new()
 	})
 }
@@ -497,13 +514,18 @@ mod tests {
 		assert!(!refusals_file(dir.path()).exists());
 	}
 
+	/// The daemon reads an unparseable record as none; a reader grading by it is
+	/// told it could not read it, which is not the same as no file at all.
 	#[tokio::test]
-	async fn an_unparseable_refusals_file_reads_as_none() {
+	async fn an_unparseable_refusals_file_reads_as_none_to_the_daemon_only() {
 		let dir = tempfile::tempdir().unwrap();
+		assert!(read_refusals(dir.path()).await.unwrap().is_empty());
+
 		tokio::fs::write(refusals_file(dir.path()), b"not json")
 			.await
 			.unwrap();
 		assert!(load_refusals(dir.path()).await.is_empty());
+		assert!(read_refusals(dir.path()).await.is_err());
 	}
 
 	#[test]

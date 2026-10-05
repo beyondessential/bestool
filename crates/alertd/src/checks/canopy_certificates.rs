@@ -20,7 +20,8 @@
 //! application are not in tension.
 //!
 //! A name canopy refused as undeclared or denied is not this host's to report,
-//! so it is listed and left ungraded; the daemon says which are which.
+//! so it is listed and left ungraded; the daemon's record of canopy's refusals
+//! says which are which.
 //!
 //! spec: CHK-CCO
 
@@ -36,7 +37,7 @@ use crate::{
 	Stat,
 	check::Check,
 	ownership::{Ownership, host_covers},
-	sweep_cache::DaemonStatus,
+	sweep_cache::RefusalRecord,
 };
 
 const NAME: &str = "canopy_certificates";
@@ -128,8 +129,8 @@ pub async fn run(ctx: HostedCx) -> Check {
 		return Check::broken(NAME, "could not read the collected chains", err);
 	}
 
-	// Asked once for the machine and shared, like the entitlement above.
-	let daemon = ctx.sweep.daemon_status().await;
+	// Read once for the machine and shared, like the entitlement above.
+	let record = ctx.sweep.refusals().await;
 
 	// Parsed once for the sweep, on the blocking pool, rather than decoded here
 	// per name per application.
@@ -138,7 +139,7 @@ pub async fn run(ctx: HostedCx) -> Check {
 		app,
 		&owned,
 		&validity,
-		daemon.as_deref().map_err(String::as_str),
+		record.as_deref().map_err(String::as_str),
 		Timestamp::now(),
 	)
 }
@@ -170,8 +171,8 @@ fn declares(app: &AppEntitlement, name: &str) -> bool {
 ///
 /// A name this application's entitlement does not cover is not this check's
 /// business — nothing should be collecting a chain for it. Where the daemon
-/// reported Canopy refusing a name as undeclared or denied, the name is listed
-/// and left ungraded; where the daemon could not be asked, only the names the
+/// recorded Canopy refusing a name as undeclared or denied, the name is listed
+/// and left ungraded; where that record could not be read, only the names the
 /// application declares are graded, since any other may be waiting on an
 /// operator and nothing here can tell.
 ///
@@ -180,15 +181,15 @@ fn grade(
 	app: &AppEntitlement,
 	owned: &BTreeSet<String>,
 	validity: &BTreeMap<String, (i64, i64)>,
-	daemon: Result<&DaemonStatus, &str>,
+	record: Result<&RefusalRecord, &str>,
 	now: Timestamp,
 ) -> Check {
 	let mut graded: Vec<&String> = Vec::new();
 	let mut undeclared: Vec<Value> = Vec::new();
 	let mut denied: Vec<Value> = Vec::new();
 	for name in owned.iter().filter(|name| app.covers(name)) {
-		match daemon {
-			Ok(status) => match status.refusal(name) {
+		match record {
+			Ok(record) => match record.refusal(name) {
 				Some(Refusal { kind, reason }) if *kind == RefusalKind::Undeclared => {
 					undeclared.push(json!({"name": name, "reason": reason}));
 				}
@@ -210,10 +211,10 @@ fn grade(
 		if !denied.is_empty() {
 			check = check.with_detail("denied", Value::Array(denied.clone()));
 		}
-		if let Err(err) = daemon {
+		if let Err(err) = record {
 			check = check.with_detail(
-				"daemon",
-				json!({"asked": false, "error": err, "note": "only names this application declares were graded"}),
+				"refusals",
+				json!({"read": false, "error": err, "note": "only names this application declares were graded"}),
 			);
 		}
 		check
@@ -236,9 +237,9 @@ fn grade(
 		let canopy_says = app.certificate(name);
 		// A refusal other than undeclared or denied, such as a type mismatch, is a
 		// fault on this host's side of the request.
-		let refusal = daemon
+		let refusal = record
 			.ok()
-			.and_then(|status| status.refusal(name))
+			.and_then(|record| record.refusal(name))
 			.filter(|refusal| refusal.kind == RefusalKind::Other);
 		// While canopy is still retrying, it reports why the last attempt
 		// failed. Surfacing it is what shows an operator why issuance is stuck
@@ -347,22 +348,26 @@ mod tests {
 
 	const D: i64 = 86400;
 
-	/// Grading with a daemon that has refused nothing.
+	/// Grading with a record of nothing refused.
 	fn grade(
 		app: &AppEntitlement,
 		owned: &BTreeSet<String>,
 		validity: &BTreeMap<String, (i64, i64)>,
 		now: Timestamp,
 	) -> Check {
-		super::grade(app, owned, validity, Ok(&DaemonStatus::default()), now)
+		super::grade(app, owned, validity, Ok(&RefusalRecord::default()), now)
 	}
 
-	fn daemon(orders: Value) -> DaemonStatus {
-		DaemonStatus::from_json(&json!({ "orders": orders }))
-	}
-
-	fn refused(name: &str, refusal: &str, reason: &str) -> Value {
-		json!({"name": name, "state": "refused", "refusal": refusal, "reason": reason})
+	fn record(name: &str, kind: RefusalKind, reason: &str) -> RefusalRecord {
+		RefusalRecord::from_stored(BTreeMap::from([(
+			name.to_owned(),
+			certs::StoredRefusal {
+				kind,
+				reason: reason.into(),
+				application_type: "tamanu-central".into(),
+				asked_at: None,
+			},
+		)]))
 	}
 
 	fn listed(check: &Check, key: &str) -> Vec<String> {
@@ -612,11 +617,11 @@ mod tests {
 	fn a_type_mismatch_fails_only_the_applications_run_owning_the_name() {
 		let ownership = two_applications();
 		let certified = subjects(&["central.example.com", "supply.example.com"]);
-		let status = daemon(json!([refused(
+		let status = record(
 			"supply.example.com",
-			"other",
-			"this machine hosts tamanu-central"
-		)]));
+			RefusalKind::Other,
+			"this machine hosts tamanu-central",
+		);
 		let validity = chains(&[
 			("central.example.com", chain(60, 90)),
 			("supply.example.com", chain(60, 90)),
@@ -657,11 +662,11 @@ mod tests {
 	/// The reason for the refusal rides along with a name that has no chain.
 	#[test]
 	fn a_refusal_other_than_undeclared_or_denied_explains_a_missing_chain() {
-		let status = daemon(json!([refused(
+		let status = record(
 			"app.example.com",
-			"other",
-			"this machine hosts msupply"
-		)]));
+			RefusalKind::Other,
+			"this machine hosts msupply",
+		);
 		let check = super::grade(
 			&app(&["example.com"], &[]),
 			&subjects(&["app.example.com"]),
@@ -686,11 +691,11 @@ mod tests {
 	fn an_undeclared_name_is_listed_and_changes_neither_outcome_nor_summary() {
 		let validity = chains(&[("app.example.com", chain(60, 90))]);
 		let entitlement = app(&["example.com"], &["app.example.com"]);
-		let status = daemon(json!([refused(
+		let status = record(
 			"wait.example.com",
-			"undeclared",
-			"needs declaring"
-		)]));
+			RefusalKind::Undeclared,
+			"needs declaring",
+		);
 
 		let with = super::grade(
 			&entitlement,
@@ -722,7 +727,7 @@ mod tests {
 	/// spec: CHK-CCO#outcomes
 	#[test]
 	fn a_denied_name_is_listed_whether_or_not_a_chain_is_held() {
-		let status = daemon(json!([refused("no.example.com", "denied", "denied")]));
+		let status = record("no.example.com", RefusalKind::Denied, "denied");
 		let entitlement = app(&["example.com"], &["app.example.com"]);
 		let names = subjects(&["app.example.com", "no.example.com"]);
 
@@ -750,11 +755,11 @@ mod tests {
 	/// spec: CHK-CCO#outcomes
 	#[test]
 	fn an_undeclared_name_beside_a_name_with_no_chain_fails_on_the_other_only() {
-		let status = daemon(json!([refused(
+		let status = record(
 			"wait.example.com",
-			"undeclared",
-			"needs declaring"
-		)]));
+			RefusalKind::Undeclared,
+			"needs declaring",
+		);
 		let check = super::grade(
 			&app(&["example.com"], &[]),
 			&subjects(&["app.example.com", "wait.example.com"]),
@@ -776,12 +781,12 @@ mod tests {
 		assert_eq!(listed(&check, "names"), vec!["app.example.com"]);
 	}
 
-	/// With the daemon out of reach a name that may be waiting on an operator is
-	/// not graded, and the detail says why.
+	/// With the refusal record unreadable a name that may be waiting on an
+	/// operator is not graded, and the detail says why.
 	///
 	/// spec: CHK-CCO#which-dns-names-it-grades
 	#[test]
-	fn with_the_daemon_unreachable_only_declared_names_are_graded() {
+	fn with_the_refusal_record_unreadable_only_declared_names_are_graded() {
 		let mut entitlement = app(&["example.com"], &[]);
 		entitlement.registered_names = vec!["Declared.example.com".into()];
 
@@ -789,7 +794,7 @@ mod tests {
 			&entitlement,
 			&subjects(&["declared.example.com", "other.example.com"]),
 			&BTreeMap::new(),
-			Err("no daemon answered"),
+			Err("permission denied"),
 			now(),
 		);
 		match &check.status {
@@ -803,16 +808,16 @@ mod tests {
 			other => panic!("expected a failure, got {other:?}"),
 		}
 		assert_eq!(listed(&check, "names"), vec!["declared.example.com"]);
-		assert_eq!(check.details["daemon"]["asked"], json!(false));
+		assert_eq!(check.details["refusals"]["read"], json!(false));
 
 		let none_declared = super::grade(
 			&app(&["example.com"], &[]),
 			&subjects(&["other.example.com"]),
 			&BTreeMap::new(),
-			Err("no daemon answered"),
+			Err("permission denied"),
 			now(),
 		);
 		assert!(matches!(none_declared.status, CheckStatus::Skip(_)));
-		assert_eq!(none_declared.details["daemon"]["asked"], json!(false));
+		assert_eq!(none_declared.details["refusals"]["read"], json!(false));
 	}
 }

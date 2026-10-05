@@ -136,6 +136,15 @@ impl Order {
 	}
 }
 
+/// The order state a DNS name canopy refused shows as.
+fn refusal_state(kind: RefusalKind) -> &'static str {
+	match kind {
+		RefusalKind::Undeclared => "undeclared",
+		RefusalKind::Denied => "denied",
+		RefusalKind::Other => "refused",
+	}
+}
+
 /// A DNS name the daemon asks canopy about, and the application it asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Target {
@@ -369,7 +378,7 @@ impl CertificateState {
 			let mut orders = self.orders.write().await;
 			for (name, kept) in &kept {
 				orders.entry(name.clone()).or_insert_with(|| Order {
-					state: kept.kind.as_str().to_owned(),
+					state: refusal_state(kept.kind).to_owned(),
 					asked_at: kept.asked_at.as_deref().and_then(|at| at.parse().ok()),
 					application_type: Some(kept.application_type.clone()),
 					refusal: Some(Refusal {
@@ -386,14 +395,15 @@ impl CertificateState {
 		Ok(())
 	}
 
-	/// Keep the refusals an operator is waited on for, where they changed.
+	/// Keep the refusals canopy gave, where they changed.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
 	async fn persist_refusals(&self) {
 		let now: BTreeMap<String, StoredRefusal> = self
 			.orders
 			.read()
 			.await
 			.iter()
-			.filter(|(_, order)| order.awaits_operator())
 			.filter_map(|(name, order)| {
 				let refusal = order.refusal.as_ref()?;
 				Some((
@@ -564,12 +574,7 @@ impl CertificateState {
 		let Some(refusal) = refusal else {
 			return;
 		};
-		order.state = match refusal.kind {
-			RefusalKind::Undeclared => "undeclared",
-			RefusalKind::Denied => "denied",
-			RefusalKind::Other => "refused",
-		}
-		.to_owned();
+		order.state = refusal_state(refusal.kind).to_owned();
 		if refusal.kind.awaits_operator() {
 			order.last_error = None;
 		} else {
@@ -2349,7 +2354,7 @@ mod tests {
 	///
 	/// spec: TLS#undeclared-and-denied-dns-names
 	#[tokio::test]
-	async fn undeclared_and_denied_refusals_survive_a_restart() {
+	async fn refusals_survive_a_restart() {
 		let dir = tempfile::tempdir().unwrap();
 		let before = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
 		before
@@ -2382,10 +2387,9 @@ mod tests {
 		assert_eq!(orders["a.example.com"].reason(), Some("declare it"));
 		assert_eq!(orders["b.example.com"].state, "denied");
 		assert!(orders["a.example.com"].application_type.is_some());
-		assert!(
-			!orders.contains_key("c.example.com"),
-			"only operator waits are kept"
-		);
+		assert_eq!(orders["c.example.com"].state, "refused");
+		assert_eq!(orders["c.example.com"].reason(), Some("mismatch"));
+		assert!(!orders["c.example.com"].awaits_operator());
 	}
 
 	/// A refusal is dropped once the DNS name leaves the set the daemon asks

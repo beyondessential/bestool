@@ -16,13 +16,14 @@
 
 use std::{
 	collections::{BTreeMap, BTreeSet},
+	path::PathBuf,
 	sync::Arc,
-	time::Duration,
 };
 
 use bestool_canopy::{
 	CanopyClient,
-	names::{Entitlement, Refusal, RefusalKind},
+	certificates::StoredRefusal,
+	names::{Entitlement, Refusal},
 };
 use serde_json::Value;
 use tokio::sync::OnceCell;
@@ -30,53 +31,31 @@ use tracing::debug;
 
 use crate::{
 	checks::fmt_chain,
-	local_http,
 	ownership::{CaddySites, HostApplication, Ownership},
 	runtime::caddy,
 };
 
-/// Where the running daemon listens, in the order a client tries. The daemon
-/// binds every loopback address it can, but on a host with only one family it
-/// ends up on just that one. Kept in step with `DAEMON_BASES` in bestool.
-const DAEMON_BASES: [&str; 2] = ["http://[::1]:8271", "http://127.0.0.1:8271"];
-
-/// The daemon's open status endpoint for the task that collects chains.
-const DAEMON_STATUS_PATH: &str = "/tasks/canopy-names/status";
-
-const DAEMON_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// What the daemon last heard from Canopy about each DNS name it ordered for.
+/// What Canopy last refused each DNS name for, as the daemon recorded it.
 ///
 /// spec: CHK-CCO#which-dns-names-it-grades
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DaemonStatus {
-	/// The DNS names whose last request Canopy refused, lower-cased.
-	pub refusals: BTreeMap<String, Refusal>,
+pub struct RefusalRecord {
+	/// Keyed by DNS name, lower-cased.
+	refusals: BTreeMap<String, Refusal>,
 }
 
-impl DaemonStatus {
-	/// Read the refusals out of the status endpoint's answer.
-	///
-	/// A row with no `refusal` is an order that is fine, or failing for a reason
-	/// that is not a refusal, and says nothing here.
-	pub fn from_json(answer: &Value) -> Self {
-		let refusals = answer["orders"]
-			.as_array()
+impl RefusalRecord {
+	pub fn from_stored(stored: BTreeMap<String, StoredRefusal>) -> Self {
+		let refusals = stored
 			.into_iter()
-			.flatten()
-			.filter_map(|row| {
-				let name = row["name"].as_str()?.trim().to_ascii_lowercase();
-				let kind = match row["refusal"].as_str()? {
-					"undeclared" => RefusalKind::Undeclared,
-					"denied" => RefusalKind::Denied,
-					_ => RefusalKind::Other,
-				};
-				let reason = row["reason"]
-					.as_str()
-					.or_else(|| row["lastError"].as_str())
-					.unwrap_or("canopy gave no reason")
-					.to_owned();
-				Some((name, Refusal { kind, reason }))
+			.map(|(name, kept)| {
+				(
+					name.trim().to_ascii_lowercase(),
+					Refusal {
+						kind: kept.kind,
+						reason: kept.reason,
+					},
+				)
 			})
 			.collect();
 		Self { refusals }
@@ -91,9 +70,9 @@ impl DaemonStatus {
 /// wanted.
 #[derive(Default)]
 pub struct SweepCache {
-	/// Where to look for the daemon; the loopback addresses it listens on when
-	/// empty.
-	daemon_bases: Vec<String>,
+	/// Where the daemon keeps its canopy state; the default location when
+	/// `None`.
+	store_dir: Option<PathBuf>,
 	/// The applications on this machine that Caddy can be fronting, which is what
 	/// a DNS name's site is attributed against.
 	host_applications: Vec<HostApplication>,
@@ -104,9 +83,9 @@ pub struct SweepCache {
 	caddy_sites: OnceCell<Option<Arc<CaddySites>>>,
 	/// Which application each DNS name belongs to.
 	ownership: OnceCell<Option<Arc<Ownership>>>,
-	/// What the daemon last heard from Canopy about each DNS name, or why the
-	/// daemon could not be asked.
-	daemon_status: OnceCell<Result<Arc<DaemonStatus>, String>>,
+	/// What Canopy last refused each DNS name for, or why the daemon's record of
+	/// it could not be read.
+	refusals: OnceCell<Result<Arc<RefusalRecord>, String>>,
 	/// The chains the daemon has collected from Canopy, read from disk, keyed by
 	/// the name each covers.
 	canopy_chains: OnceCell<Result<Arc<BTreeMap<String, String>>, String>>,
@@ -137,12 +116,18 @@ impl SweepCache {
 		&self.host_applications
 	}
 
-	/// Ask the daemon at these base URLs instead of the loopback addresses it
-	/// listens on.
+	/// Read the daemon's canopy state from `dir` instead of its default
+	/// location.
 	#[cfg(test)]
-	fn with_daemon_bases(mut self, bases: Vec<String>) -> Self {
-		self.daemon_bases = bases;
+	fn with_store_dir(mut self, dir: PathBuf) -> Self {
+		self.store_dir = Some(dir);
 		self
+	}
+
+	fn store_dir(&self) -> PathBuf {
+		self.store_dir
+			.clone()
+			.unwrap_or_else(bestool_canopy::certificates::default_dir)
 	}
 
 	pub async fn caddy_config(&self) -> Option<Arc<Value>> {
@@ -204,57 +189,31 @@ impl SweepCache {
 			.clone()
 	}
 
-	/// What the running daemon last heard from Canopy about each DNS name, or why
-	/// it could not be asked.
+	/// What Canopy last refused each DNS name for, as the daemon recorded it, or
+	/// why that record could not be read.
+	///
+	/// Read from where the daemon keeps it rather than asked of the running
+	/// daemon: the record decides which DNS names go ungraded, and anything
+	/// holding the daemon's port could answer for it.
 	///
 	/// spec: CHK-CCO#which-dns-names-it-grades
-	pub async fn daemon_status(&self) -> Result<Arc<DaemonStatus>, String> {
-		self.daemon_status
-			.get_or_init(|| async { self.fetch_daemon_status().await.map(Arc::new) })
+	pub async fn refusals(&self) -> Result<Arc<RefusalRecord>, String> {
+		self.refusals
+			.get_or_init(|| async {
+				bestool_canopy::certificates::read_refusals(&self.store_dir())
+					.await
+					.map(|stored| Arc::new(RefusalRecord::from_stored(stored)))
+					.map_err(|err| format!("{err}"))
+			})
 			.await
 			.clone()
-	}
-
-	async fn fetch_daemon_status(&self) -> Result<DaemonStatus, String> {
-		let defaults = DAEMON_BASES.map(String::from);
-		let bases = if self.daemon_bases.is_empty() {
-			&defaults[..]
-		} else {
-			&self.daemon_bases[..]
-		};
-
-		let mut last_err = String::new();
-		for base in bases {
-			let response = match local_http::client()
-				.get(format!("{base}{DAEMON_STATUS_PATH}"))
-				.timeout(DAEMON_TIMEOUT)
-				.send()
-				.await
-			{
-				Ok(response) => response,
-				Err(err) => {
-					last_err = fmt_chain(&err);
-					continue;
-				}
-			};
-			if !response.status().is_success() {
-				return Err(format!("the daemon answered {}", response.status()));
-			}
-			return response
-				.json::<Value>()
-				.await
-				.map(|answer| DaemonStatus::from_json(&answer))
-				.map_err(|err| format!("the daemon's answer did not parse: {}", fmt_chain(&err)));
-		}
-		Err(format!("no daemon answered: {last_err}"))
 	}
 
 	/// The collected chains, or why they could not be read.
 	pub async fn canopy_chains(&self) -> Result<Arc<BTreeMap<String, String>>, String> {
 		self.canopy_chains
 			.get_or_init(|| async {
-				let dir = bestool_canopy::certificates::default_dir();
-				bestool_canopy::certificates::load_chains(&dir)
+				bestool_canopy::certificates::load_chains(&self.store_dir())
 					.await
 					.map(Arc::new)
 					.map_err(|err| format!("{err}"))
@@ -344,6 +303,8 @@ mod tests {
 
 	use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+	use bestool_canopy::names::RefusalKind;
+
 	use super::*;
 
 	/// Both readings come from one fetch of Caddy's admin API, and a second ask
@@ -406,95 +367,72 @@ mod tests {
 		}
 	}
 
-	/// An HTTP server that answers every request with `body`, counting them.
-	async fn stub(status: &'static str, body: &'static str) -> (String, Arc<AtomicUsize>) {
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		let base = format!("http://{}", listener.local_addr().unwrap());
-		let hits = Arc::new(AtomicUsize::new(0));
-		let counted = hits.clone();
-		tokio::spawn(async move {
-			while let Ok((mut stream, _)) = listener.accept().await {
-				counted.fetch_add(1, Ordering::SeqCst);
-				let mut scratch = [0u8; 1024];
-				let _ = stream.read(&mut scratch).await;
-				let _ = stream
-					.write_all(
-						format!(
-							"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-							body.len()
-						)
-						.as_bytes(),
-					)
-					.await;
-				let _ = stream.shutdown().await;
-			}
-		});
-		(base, hits)
+	fn kept(kind: RefusalKind, reason: &str) -> StoredRefusal {
+		StoredRefusal {
+			kind,
+			reason: reason.into(),
+			application_type: "tamanu-central".into(),
+			asked_at: None,
+		}
 	}
 
-	async fn dead_base() -> String {
-		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-		format!("http://{}", listener.local_addr().unwrap())
-	}
-
-	const STATUS: &str = r#"{"orders":[
-		{"name":"Wait.example.com","state":"refused","refusal":"undeclared","reason":"needs declaring","lastError":"403"},
-		{"name":"no.example.com","state":"refused","refusal":"denied","reason":null,"lastError":"denied by an operator"},
-		{"name":"mismatch.example.com","state":"refused","refusal":"other","reason":"this machine hosts tamanu-central"},
-		{"name":"fine.example.com","state":"issued","refusal":null,"reason":null,"lastError":null}
-	]}"#;
-
-	/// The daemon is asked once however many applications' runs want the
-	/// answer, and what it says is read as typed refusals.
+	/// The record is read once however many applications' runs want it, and is
+	/// read as typed refusals.
 	#[tokio::test]
-	async fn the_daemons_status_is_fetched_once_for_the_sweep() {
-		let (base, hits) = stub("200 OK", STATUS).await;
-		let cache = SweepCache::new().with_daemon_bases(vec![base]);
+	async fn the_refusal_record_is_read_once_for_the_sweep() {
+		let dir = tempfile::tempdir().unwrap();
+		let mut stored = BTreeMap::new();
+		stored.insert(
+			"Wait.example.com".to_owned(),
+			kept(RefusalKind::Undeclared, "needs declaring"),
+		);
+		stored.insert(
+			"mismatch.example.com".to_owned(),
+			kept(RefusalKind::Other, "this machine hosts tamanu-central"),
+		);
+		bestool_canopy::certificates::store_refusals(dir.path(), &stored)
+			.await
+			.unwrap();
+		let cache = SweepCache::new().with_store_dir(dir.path().to_path_buf());
 
-		let first = cache.daemon_status().await.unwrap();
-		let second = cache.daemon_status().await.unwrap();
+		let first = cache.refusals().await.unwrap();
+		bestool_canopy::certificates::store_refusals(dir.path(), &BTreeMap::new())
+			.await
+			.unwrap();
+		let second = cache.refusals().await.unwrap();
 		assert!(Arc::ptr_eq(&first, &second));
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
 
 		let waiting = first.refusal("wait.example.com").unwrap();
 		assert_eq!(waiting.kind, RefusalKind::Undeclared);
 		assert_eq!(waiting.reason, "needs declaring");
 		assert_eq!(
-			first.refusal("NO.example.com").unwrap().reason,
-			"denied by an operator"
-		);
-		assert_eq!(
-			first.refusal("mismatch.example.com").unwrap().kind,
+			first.refusal("MISMATCH.example.com").unwrap().kind,
 			RefusalKind::Other
 		);
 		assert!(first.refusal("fine.example.com").is_none());
 	}
 
-	/// A daemon that cannot be reached is an answer the checks branch on, and it
-	/// is not asked again within the sweep.
+	/// No record is a record of nothing refused.
 	#[tokio::test]
-	async fn an_unreachable_daemon_is_an_error_value() {
-		let cache = SweepCache::new().with_daemon_bases(vec![dead_base().await]);
-		let err = cache.daemon_status().await.unwrap_err();
-		assert!(err.contains("no daemon answered"), "{err}");
-		assert_eq!(cache.daemon_status().await.unwrap_err(), err);
+	async fn no_record_is_nothing_refused() {
+		let dir = tempfile::tempdir().unwrap();
+		let cache = SweepCache::new().with_store_dir(dir.path().to_path_buf());
+		assert_eq!(*cache.refusals().await.unwrap(), RefusalRecord::default());
 	}
 
+	/// A record that cannot be read is an answer the checks branch on, not one
+	/// taken for nothing refused.
 	#[tokio::test]
-	async fn a_daemon_answering_with_an_error_is_an_error_value() {
-		let (base, _) = stub("500 Internal Server Error", "{}").await;
-		let cache = SweepCache::new().with_daemon_bases(vec![base]);
-		let err = cache.daemon_status().await.unwrap_err();
-		assert!(err.contains("500"), "{err}");
-	}
-
-	/// The first base that connects answers, so a host whose daemon is on only
-	/// one address family is still reached.
-	#[tokio::test]
-	async fn the_next_base_is_tried_when_one_does_not_connect() {
-		let (live, hits) = stub("200 OK", STATUS).await;
-		let cache = SweepCache::new().with_daemon_bases(vec![dead_base().await, live]);
-		assert_eq!(cache.daemon_status().await.unwrap().refusals.len(), 3);
-		assert_eq!(hits.load(Ordering::SeqCst), 1);
+	async fn an_unreadable_record_is_an_error_value() {
+		let dir = tempfile::tempdir().unwrap();
+		tokio::fs::write(
+			dir.path().join("canopy-certificate-refusals.json"),
+			b"not json",
+		)
+		.await
+		.unwrap();
+		let cache = SweepCache::new().with_store_dir(dir.path().to_path_buf());
+		let err = cache.refusals().await.unwrap_err();
+		assert_eq!(cache.refusals().await.unwrap_err(), err);
 	}
 }
