@@ -151,7 +151,7 @@ fn belonging_to(
 		.filter(|cert| {
 			cert.names
 				.iter()
-				.any(|name| ownership.owners_served_by(name).contains(type_slug))
+				.any(|name| ownership.serves(name, type_slug))
 		})
 		.collect()
 }

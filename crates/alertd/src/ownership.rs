@@ -491,7 +491,11 @@ impl Ownership {
 	/// The type of the application `dns_name` belongs to, or `None` where it
 	/// belongs to none.
 	pub fn owner(&self, dns_name: &str) -> Option<&str> {
-		let name = normalise(dns_name);
+		self.owner_of(&normalise(dns_name))
+	}
+
+	/// [`Self::owner`], for a DNS name already normalised.
+	fn owner_of(&self, name: &str) -> Option<&str> {
 		fn lookup<'a>(map: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
 			map.get(name)
 				.or_else(|| {
@@ -501,29 +505,34 @@ impl Ownership {
 				})
 				.map(String::as_str)
 		}
-		lookup(&self.attributed, &name).or_else(|| lookup(&self.declared, &name))
+		lookup(&self.attributed, name).or_else(|| lookup(&self.declared, name))
 	}
 
-	/// The types of the applications a certificate for `cert_name` serves.
+	/// Whether a certificate for `cert_name` serves the application of type
+	/// `type_slug`.
 	///
 	/// A certificate for a wildcard serves every known DNS name the wildcard
 	/// covers, so it belongs to each application owning one of them, as well as
 	/// to the owner of the wildcard itself.
 	///
 	/// spec: CHK-CCT
-	pub fn owners_served_by(&self, cert_name: &str) -> BTreeSet<&str> {
+	pub fn serves(&self, cert_name: &str, type_slug: &str) -> bool {
 		let cert_name = normalise(cert_name);
-		let mut owners: BTreeSet<&str> = self.owner(&cert_name).into_iter().collect();
-		if cert_name.starts_with("*.") {
-			for name in self.attributed.keys().chain(self.declared.keys()) {
-				if host_covers(&cert_name, name)
-					&& let Some(owner) = self.owner(name)
-				{
-					owners.insert(owner);
-				}
-			}
+		if self.owner_of(&cert_name) == Some(type_slug) {
+			return true;
 		}
-		owners
+		if !cert_name.starts_with("*.") {
+			return false;
+		}
+		// An attributed DNS name's owner is its entry. A declared one can be
+		// overridden by its site, so its owner is looked up.
+		self.attributed
+			.iter()
+			.any(|(name, owner)| owner == type_slug && host_covers(&cert_name, name))
+			|| self
+				.declared
+				.keys()
+				.any(|name| host_covers(&cert_name, name) && self.owner_of(name) == Some(type_slug))
 	}
 }
 
@@ -877,6 +886,30 @@ mod tests {
 			&flat,
 		);
 		assert_eq!(two.owner("decl.example.com"), None);
+	}
+
+	/// A wildcard certificate serves the owner of a DNS name it covers as the
+	/// site attributes it, not as a declaration its site overrides.
+	#[test]
+	fn a_wildcard_certificate_serves_a_declared_name_by_its_sites_owner() {
+		let ownership = Ownership {
+			attributed: BTreeMap::from([("app.example.com".into(), "tamanu-central".into())]),
+			declared: BTreeMap::from([
+				("app.example.com".into(), "msupply".into()),
+				("supply.example.com".into(), "msupply".into()),
+			]),
+		};
+		assert!(ownership.serves("*.example.com", "tamanu-central"));
+		assert!(ownership.serves("*.example.com", "msupply"));
+		assert!(ownership.serves("app.example.com", "tamanu-central"));
+		assert!(!ownership.serves("app.example.com", "msupply"));
+		assert!(!ownership.serves("*.other.test", "msupply"));
+
+		let only_overridden = Ownership {
+			attributed: ownership.attributed.clone(),
+			declared: BTreeMap::from([("app.example.com".into(), "msupply".into())]),
+		};
+		assert!(!only_overridden.serves("*.example.com", "msupply"));
 	}
 
 	#[test]
