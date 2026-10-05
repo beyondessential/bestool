@@ -30,7 +30,8 @@ use bestool_tamanu::{
 
 use crate::{
 	check::{Check, CheckOutcome, OverallResult},
-	checks, heal,
+	checks, heal, msupply,
+	ownership::HostApplication,
 	progress::{DoctorEvent, ProgressSender},
 	runtime, server_info,
 	server_info::ServerFacts,
@@ -491,6 +492,7 @@ enum Dispatch<'a> {
 	Machine(&'a checks::Runner<checks::MachineCx>),
 	Postgres(&'a checks::Runner<checks::PgCx>, ApplicationRef),
 	Tamanu(&'a checks::Runner<checks::TamanuCx>, ApplicationRef),
+	Hosted(&'a checks::Runner<checks::HostedCx>, ApplicationRef),
 }
 
 impl Dispatch<'_> {
@@ -498,7 +500,9 @@ impl Dispatch<'_> {
 	fn subject(&self) -> Subject {
 		match self {
 			Self::Machine(_) => Subject::Machine,
-			Self::Postgres(_, app) | Self::Tamanu(_, app) => Subject::Application(app.clone()),
+			Self::Postgres(_, app) | Self::Tamanu(_, app) | Self::Hosted(_, app) => {
+				Subject::Application(app.clone())
+			}
 		}
 	}
 }
@@ -528,7 +532,57 @@ fn dispatches_for<'a>(run: &'a checks::Run, applications: &[ApplicationRef]) -> 
 			.cloned()
 			.map(|app| Dispatch::Tamanu(runner, app))
 			.collect(),
+		checks::Run::Hosted(scope, runner) => applications
+			.iter()
+			.filter(|app| scope.admits(app))
+			.cloned()
+			.map(|app| Dispatch::Hosted(runner, app))
+			.collect(),
 	}
+}
+
+/// The applications whose Caddy sites and DNS names the sweep can attribute:
+/// the Tamanu it resolved and mSupply where installed.
+fn host_applications(
+	targets: Option<&SweepTargets>,
+	tamanu: Option<&ResolvedTamanu>,
+	msupply_installed: bool,
+) -> Vec<HostApplication> {
+	let mut out = Vec::new();
+	if let (Some(targets), Some(t)) = (targets, tamanu) {
+		out.push(HostApplication::tamanu(t.kind, &targets.config));
+	}
+	if msupply_installed {
+		out.push(HostApplication::msupply());
+	}
+	out
+}
+
+/// The applications a sweep reports for, in the order they are reported.
+///
+/// A Tamanu deployment is one; the Postgres under it is another, whether a
+/// Tamanu uses it or the host has nothing but a `DATABASE_URL`. A cluster
+/// reached at a remote address is still reported, keyed apart so no key claims
+/// this machine hosts it. mSupply stands apart from both: it is reported
+/// wherever it is installed, with no database and no targets at all.
+///
+/// spec: SUBJ
+fn sweep_applications(
+	targets: Option<&SweepTargets>,
+	tamanu_kind: Option<ApiServerKind>,
+	msupply_installed: bool,
+) -> Vec<ApplicationRef> {
+	let mut applications = Vec::new();
+	if let Some(targets) = targets {
+		if let Some(kind) = tamanu_kind {
+			applications.push(ApplicationRef::tamanu(ApplicationKind::from(kind)));
+		}
+		applications.push(postgres_ref(&targets.database_url));
+	}
+	if msupply_installed {
+		applications.push(ApplicationRef::msupply());
+	}
+	applications
 }
 
 /// The Postgres application a connection string reaches.
@@ -874,17 +928,12 @@ pub async fn perform_sweep(
 		.and_then(|t| t.root.as_ref())
 		.map(|root| root.display().to_string());
 
-	// The applications this sweep reports for. A Tamanu deployment is one; the
-	// Postgres under it is another, whether a Tamanu uses it or the host has
-	// nothing but a `DATABASE_URL`. A cluster reached at a remote address is
-	// still reported, keyed apart so no key claims this machine hosts it.
-	let mut applications: Vec<ApplicationRef> = Vec::new();
-	if let Some(targets) = targets.as_ref() {
-		if let Some(t) = tamanu.as_ref() {
-			applications.push(ApplicationRef::tamanu(ApplicationKind::from(t.kind)));
-		}
-		applications.push(postgres_ref(&targets.database_url));
-	}
+	let msupply_installed = msupply::installed();
+	let applications = sweep_applications(
+		targets.as_ref(),
+		tamanu.as_ref().map(|t| t.kind),
+		msupply_installed,
+	);
 
 	// The machine's own context. It carries which Tamanu is installed here —
 	// a machine fact — and nothing scoped to an application.
@@ -909,26 +958,53 @@ pub async fn perform_sweep(
 	// question, and only becomes a live one once a host discovers more than one
 	// cluster.
 	//
-	// `applications` is empty unless the sweep resolved targets, so there is
-	// nothing to build a context from without them.
-	// One per sweep, so the readings that are the machine's — Canopy's
+	// A cluster and a deployment exist only where the sweep resolved targets, so
+	// there is nothing to build their contexts from without them. mSupply needs
+	// none: it has no database and no supervised services.
+	//
+	// One cache per sweep, so the readings that are the machine's — Canopy's
 	// entitlement, Caddy's configuration, the collected chains — are taken once
 	// however many applications this host carries.
-	let sweep_cache = Arc::new(SweepCache::new());
+	let sweep_cache = Arc::new(SweepCache::with_host_applications(host_applications(
+		targets.as_ref(),
+		tamanu.as_ref(),
+		msupply_installed,
+	)));
 
 	let mut pg_cxs: HashMap<ApplicationRef, checks::PgCx> = HashMap::new();
 	let mut tamanu_cxs: HashMap<ApplicationRef, checks::TamanuCx> = HashMap::new();
-	if let Some(targets) = targets.as_ref() {
-		for app in &applications {
-			if app.kind == ApplicationKind::Postgres {
+	let mut hosted_cxs: HashMap<ApplicationRef, checks::HostedCx> = HashMap::new();
+	for app in &applications {
+		match (app.kind, targets.as_ref()) {
+			(ApplicationKind::Postgres, Some(targets)) => {
 				let cx = pg_context(app, targets, &check_pool);
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
 				pg_cxs.insert(app.clone(), cx);
-			} else {
+			}
+			(ApplicationKind::TamanuCentral | ApplicationKind::TamanuFacility, Some(targets)) => {
 				let cx = tamanu_context(app, targets, &tamanu, &check_pool, &canopy, &sweep_cache);
 				discard_state_held_until_compute(cx.runtime.as_ref(), cx.store.as_ref()).await;
+				hosted_cxs.insert(app.clone(), cx.hosted());
 				tamanu_cxs.insert(app.clone(), cx);
 			}
+			(ApplicationKind::Msupply, _) => {
+				hosted_cxs.insert(
+					app.clone(),
+					checks::HostedCx {
+						app: app.clone(),
+						canopy: canopy.clone(),
+						sweep: sweep_cache.clone(),
+						traffic: Arc::new(runtime::caddy::CaddyRuntime::new(sweep_cache.clone())),
+					},
+				);
+			}
+			// `sweep_applications` yields these only alongside targets.
+			(
+				ApplicationKind::Postgres
+				| ApplicationKind::TamanuCentral
+				| ApplicationKind::TamanuFacility,
+				None,
+			) => {}
 		}
 	}
 
@@ -1003,6 +1079,14 @@ pub async fn perform_sweep(
 					let heal = bind_heal(runner.heal.filter(|_| enable_heal), key, &cx);
 					((runner.run)(cx), heal)
 				}
+				Dispatch::Hosted(runner, app) => {
+					let cx = hosted_cxs
+						.get(app)
+						.expect("every application a check was dispatched for has a context")
+						.clone();
+					let heal = bind_heal(runner.heal.filter(|_| enable_heal), key, &cx);
+					((runner.run)(cx), heal)
+				}
 			};
 			PreparedCheck {
 				idx: *idx,
@@ -1067,6 +1151,9 @@ pub async fn perform_sweep(
 				ApplicationKind::TamanuCentral | ApplicationKind::TamanuFacility => {
 					serde_json::to_value(&tamanu_info)
 				}
+				ApplicationKind::Msupply => serde_json::to_value(&server_info::MsupplyInfo {
+					msupply_version: msupply::version(),
+				}),
 			};
 			Ok((app.clone(), info.into_diagnostic()?))
 		})
@@ -2249,6 +2336,177 @@ mod tests {
 			subjects_for(&machine_run(), &applications),
 			vec![Subject::Machine]
 		);
+	}
+
+	fn targets_for(url: &str, tamanu: bool) -> SweepTargets {
+		use bestool_tamanu::config::{Database, TamanuConfig};
+
+		SweepTargets {
+			database_url: url.into(),
+			config: Arc::new(TamanuConfig::from_database(
+				Database::from_url(url).unwrap(),
+			)),
+			tamanu: tamanu.then(|| SweepTamanu {
+				version: Version::new(2, 0, 0),
+				root: None,
+			}),
+		}
+	}
+
+	/// mSupply is reported wherever it is installed, with or without a database
+	/// to run Tamanu or Postgres checks against.
+	///
+	/// spec: SUBJ
+	#[test]
+	fn the_certificate_checks_are_selectable_on_msupply_and_tamanu() {
+		let registry = checks::all();
+		let names: Vec<String> = [
+			"msupply:caddy_certs",
+			"msupply:canopy_certificates",
+			"tamanu-central:canopy_certificates",
+			"tamanu-facility:caddy_certs",
+		]
+		.map(String::from)
+		.into();
+		validate_selection(&registry, &names, "--check").unwrap();
+		assert!(validate_selection(&registry, &["msupply:migrations".into()], "--check").is_err());
+		assert!(
+			validate_selection(&registry, &["postgres:caddy_certs".into()], "--check").is_err()
+		);
+	}
+
+	#[test]
+	fn msupply_is_an_application_even_with_no_targets() {
+		assert_eq!(
+			sweep_applications(None, None, true),
+			vec![ApplicationRef::msupply()]
+		);
+		assert!(sweep_applications(None, None, false).is_empty());
+	}
+
+	#[test]
+	fn a_tamanu_only_host_does_not_report_msupply() {
+		let targets = targets_for("postgresql://u@localhost/tamanu", true);
+		let applications = sweep_applications(Some(&targets), Some(ApiServerKind::Central), false);
+		assert_eq!(
+			applications,
+			vec![
+				ApplicationRef::tamanu(ApplicationKind::TamanuCentral),
+				ApplicationRef::local_postgres(5432),
+			]
+		);
+	}
+
+	#[test]
+	fn msupply_sits_beside_tamanu_and_postgres() {
+		let targets = targets_for("postgresql://u@localhost/tamanu", true);
+		let applications = sweep_applications(Some(&targets), Some(ApiServerKind::Facility), true);
+		assert_eq!(
+			applications,
+			vec![
+				ApplicationRef::tamanu(ApplicationKind::TamanuFacility),
+				ApplicationRef::local_postgres(5432),
+				ApplicationRef::msupply(),
+			]
+		);
+
+		let generic = targets_for("postgresql://u@localhost/other", false);
+		let applications = sweep_applications(Some(&generic), None, true);
+		assert_eq!(
+			applications,
+			vec![
+				ApplicationRef::local_postgres(5432),
+				ApplicationRef::msupply()
+			]
+		);
+	}
+
+	/// On a host with mSupply and nothing else, the only application checks are
+	/// the two certificate checks, and every other application check is absent.
+	///
+	/// spec: SUBJ
+	#[test]
+	fn an_msupply_host_runs_exactly_the_two_certificate_checks() {
+		let applications = sweep_applications(None, None, true);
+		let mut names = Vec::new();
+		for entry in checks::all() {
+			for dispatch in dispatches_for(&entry.run, &applications) {
+				if let Subject::Application(app) = dispatch.subject() {
+					assert_eq!(app, ApplicationRef::msupply());
+					names.push(entry.name);
+				}
+			}
+		}
+		assert_eq!(names, vec!["caddy_certs", "canopy_certificates"]);
+	}
+
+	#[test]
+	fn a_tamanu_host_runs_the_certificate_checks_for_tamanu_only() {
+		let tamanu = ApplicationRef::tamanu(ApplicationKind::TamanuCentral);
+		let applications = [tamanu.clone(), ApplicationRef::local_postgres(5432)];
+		for name in ["caddy_certs", "canopy_certificates"] {
+			let entry = checks::all().into_iter().find(|e| e.name == name).unwrap();
+			assert_eq!(
+				subjects_for(&entry.run, &applications),
+				vec![Subject::Application(tamanu.clone())],
+				"{name}"
+			);
+		}
+	}
+
+	#[test]
+	fn the_caddy_attribution_covers_the_applications_the_sweep_found() {
+		let tamanu = Some(ResolvedTamanu {
+			version: Version::new(2, 0, 0),
+			kind: ApiServerKind::Facility,
+			root: None,
+		});
+		let targets = targets_for("postgresql://u@localhost/tamanu", true);
+
+		let slugs = |apps: Vec<HostApplication>| -> Vec<String> {
+			apps.into_iter().map(|app| app.type_slug).collect()
+		};
+		assert_eq!(
+			slugs(host_applications(Some(&targets), tamanu.as_ref(), true)),
+			["tamanu-facility", "msupply"]
+		);
+		assert_eq!(
+			slugs(host_applications(Some(&targets), tamanu.as_ref(), false)),
+			["tamanu-facility"]
+		);
+		assert_eq!(slugs(host_applications(None, None, true)), ["msupply"]);
+		assert!(host_applications(None, None, false).is_empty());
+	}
+
+	/// An mSupply application reports its type and its product version, and
+	/// none of a Tamanu's or a cluster's facts.
+	///
+	/// spec: SUBJ
+	#[test]
+	fn msupply_reports_its_type_and_version_only() {
+		let details = vec![(
+			ApplicationRef::msupply(),
+			serde_json::to_value(server_info::MsupplyInfo {
+				msupply_version: Some("2.17.06".into()),
+			})
+			.unwrap(),
+		)];
+		let payload = build_payload(&machine_info(), &details, &[]).unwrap();
+		let report = payload
+			.applications
+			.as_ref()
+			.unwrap()
+			.get("host-msupply")
+			.unwrap();
+		assert_eq!(report.type_, "msupply");
+		assert_eq!(report.detail.len(), 1);
+		assert_eq!(report.detail.get("msupplyVersion").unwrap(), "2.17.06");
+	}
+
+	#[test]
+	fn an_unpinned_msupply_version_is_absent() {
+		let info = serde_json::to_value(server_info::MsupplyInfo::default()).unwrap();
+		assert_eq!(info, serde_json::json!({}));
 	}
 
 	/// A sweep that observes an application's compute to be off drops the state

@@ -19,7 +19,7 @@ pub mod sweep_cache;
 pub use runtime::{CertificateSource, Compute, Duty, HttpRuntime, ServiceRuntime, TamanuDuty};
 pub use stat::{MetricsSnapshot, Stat, StatKind, StatusCounts};
 pub use store::{CheckStore, Lifetime};
-pub use subject::{ApplicationKind, Subject, TamanuScope};
+pub use subject::{ApplicationKind, HostedScope, Subject, TamanuScope};
 pub use sweep::{
 	SweepResult, SweepTamanu, SweepTargets, discover_sweep_targets, overall_from_payload,
 	perform_sweep, resolve_sweep_targets,

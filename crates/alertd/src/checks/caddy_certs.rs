@@ -37,7 +37,7 @@
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
-use super::TamanuCx;
+use super::HostedCx;
 use crate::Stat;
 use crate::check::Check;
 use crate::runtime::Certificate;
@@ -91,7 +91,7 @@ fn classify_expiry(remaining: i64, lifetime: i64) -> Expiry {
 	}
 }
 
-pub async fn run(ctx: TamanuCx) -> Check {
+pub async fn run(ctx: HostedCx) -> Check {
 	let certs = match ctx.traffic.certificates().await {
 		Ok(certs) => certs,
 		Err(unavailable) => {

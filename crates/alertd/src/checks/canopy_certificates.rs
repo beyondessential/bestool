@@ -28,7 +28,7 @@ use jiff::Timestamp;
 use serde_json::{Value, json};
 use tracing::debug;
 
-use super::TamanuCx;
+use super::HostedCx;
 use crate::{Stat, check::Check};
 
 const NAME: &str = "canopy_certificates";
@@ -46,7 +46,7 @@ const NAME: &str = "canopy_certificates";
 /// way is never mistaken for a stalled collection.
 const RUNDOWN_FRACTION: f64 = 1.0 / 8.0;
 
-pub async fn run(ctx: TamanuCx) -> Check {
+pub async fn run(ctx: HostedCx) -> Check {
 	let Some(canopy) = ctx.canopy.as_deref() else {
 		return Check::skip(
 			NAME,
