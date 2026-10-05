@@ -122,7 +122,7 @@ pub async fn run(ctx: HostedCx) -> Check {
 		);
 	};
 
-	let certs = belonging_to(certs, &ownership, ctx.app.kind.type_slug());
+	let certs = belonging_to(&certs, &ownership, ctx.app.kind.type_slug());
 	if certs.is_empty() {
 		return Check::skip(
 			NAME,
@@ -141,18 +141,15 @@ pub async fn run(ctx: HostedCx) -> Check {
 /// them, and one serving only unowned DNS names for none.
 ///
 /// spec: CHK-CCT
-fn belonging_to(
-	certs: Vec<Certificate>,
-	ownership: &Ownership,
-	type_slug: &str,
-) -> Vec<Certificate> {
+fn belonging_to(certs: &[Certificate], ownership: &Ownership, type_slug: &str) -> Vec<Certificate> {
 	certs
-		.into_iter()
+		.iter()
 		.filter(|cert| {
 			cert.names
 				.iter()
 				.any(|name| ownership.serves(name, type_slug))
 		})
+		.cloned()
 		.collect()
 }
 
@@ -484,9 +481,9 @@ mod tests {
 			cert(&["supply.example.com"], 60, 90),
 		];
 
-		let tamanu = belonging_to(certs.clone(), &ownership(), "tamanu-central");
+		let tamanu = belonging_to(&certs, &ownership(), "tamanu-central");
 		assert_eq!(names_of(&tamanu), vec!["central.example.com"]);
-		let msupply = belonging_to(certs, &ownership(), "msupply");
+		let msupply = belonging_to(&certs, &ownership(), "msupply");
 		assert_eq!(names_of(&msupply), vec!["supply.example.com"]);
 	}
 
@@ -498,7 +495,7 @@ mod tests {
 	fn a_certificate_serving_several_applications_is_graded_under_each() {
 		let certs = vec![cert(&["central.example.com", "supply.example.com"], 60, 90)];
 		for slug in ["tamanu-central", "msupply"] {
-			assert_eq!(belonging_to(certs.clone(), &ownership(), slug).len(), 1);
+			assert_eq!(belonging_to(&certs, &ownership(), slug).len(), 1);
 		}
 	}
 
@@ -514,7 +511,7 @@ mod tests {
 			cert(&[], 60, 90),
 		];
 		for slug in ["tamanu-central", "msupply"] {
-			assert!(belonging_to(certs.clone(), &ownership(), slug).is_empty());
+			assert!(belonging_to(&certs, &ownership(), slug).is_empty());
 		}
 	}
 
@@ -525,17 +522,14 @@ mod tests {
 	#[test]
 	fn a_wildcard_certificate_belongs_to_the_owners_of_the_names_it_covers() {
 		let wild = vec![cert(&["*.example.com"], 60, 90)];
-		assert_eq!(
-			belonging_to(wild.clone(), &ownership(), "tamanu-central").len(),
-			1
-		);
-		assert_eq!(belonging_to(wild, &ownership(), "msupply").len(), 1);
+		assert_eq!(belonging_to(&wild, &ownership(), "tamanu-central").len(), 1);
+		assert_eq!(belonging_to(&wild, &ownership(), "msupply").len(), 1);
 
 		let narrow = vec![cert(&["*.wild.example.com"], 60, 90)];
-		assert!(belonging_to(narrow.clone(), &ownership(), "tamanu-central").is_empty());
-		assert_eq!(belonging_to(narrow, &ownership(), "msupply").len(), 1);
+		assert!(belonging_to(&narrow, &ownership(), "tamanu-central").is_empty());
+		assert_eq!(belonging_to(&narrow, &ownership(), "msupply").len(), 1);
 
 		let elsewhere = vec![cert(&["*.example.org"], 60, 90)];
-		assert!(belonging_to(elsewhere, &ownership(), "msupply").is_empty());
+		assert!(belonging_to(&elsewhere, &ownership(), "msupply").is_empty());
 	}
 }

@@ -158,9 +158,9 @@ impl HttpRuntime for CaddyRuntime {
 		})
 	}
 
-	async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable> {
+	async fn certificates(&self) -> Result<Arc<Vec<Certificate>>, Unavailable> {
 		self.sweep
-			.certificates(read_certificates(&self.sweep))
+			.certificates(async { read_certificates(&self.sweep).await.map(Arc::new) })
 			.await
 	}
 }

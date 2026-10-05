@@ -108,7 +108,7 @@ pub struct SweepCache {
 	/// The certificates the front end has in force, with what it serves for each.
 	/// Reading them walks Caddy's store and handshakes against the names, and
 	/// the check grading them runs once per application.
-	certificates: OnceCell<Result<Vec<Certificate>, Unavailable>>,
+	certificates: OnceCell<Result<Arc<Vec<Certificate>>, Unavailable>>,
 }
 
 impl SweepCache {
@@ -228,8 +228,8 @@ impl SweepCache {
 	/// and shared from then on.
 	pub(crate) async fn certificates(
 		&self,
-		read: impl Future<Output = Result<Vec<Certificate>, Unavailable>>,
-	) -> Result<Vec<Certificate>, Unavailable> {
+		read: impl Future<Output = Result<Arc<Vec<Certificate>>, Unavailable>>,
+	) -> Result<Arc<Vec<Certificate>>, Unavailable> {
 		self.certificates.get_or_init(|| read).await.clone()
 	}
 
