@@ -294,6 +294,52 @@ pub async fn store_refusals(dir: &Path, refusals: &BTreeMap<String, StoredRefusa
 	write_atomic(&path, &body).await
 }
 
+fn requests_file(dir: &Path) -> PathBuf {
+	dir.join("canopy-certificate-requests.json")
+}
+
+/// Read the DNS names a command asked for, each with the application type it
+/// named, or none where there is no file.
+///
+/// A file that cannot be read or parsed reads as none, as the refusals do: the
+/// daemon starting without them is better than not starting.
+///
+/// spec: TLS#which-dns-names-are-certified
+pub async fn load_requests(dir: &Path) -> BTreeMap<String, String> {
+	let path = requests_file(dir);
+	let bytes = match tokio::fs::read(&path).await {
+		Ok(bytes) => bytes,
+		Err(err) => {
+			if err.kind() != std::io::ErrorKind::NotFound {
+				debug!(path = %path.display(), %err, "could not read the requested names");
+			}
+			return BTreeMap::new();
+		}
+	};
+	serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+		debug!(path = %path.display(), %err, "could not parse the requested names");
+		BTreeMap::new()
+	})
+}
+
+/// Write the DNS names a command asked for, dropping the file where there are
+/// none.
+pub async fn store_requests(dir: &Path, requests: &BTreeMap<String, String>) -> Result<()> {
+	let path = requests_file(dir);
+	if requests.is_empty() {
+		remove_if_present(&path).await?;
+		return Ok(());
+	}
+	tokio::fs::create_dir_all(dir)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("creating {}", dir.display()))?;
+	let body = serde_json::to_vec_pretty(requests)
+		.into_diagnostic()
+		.wrap_err("serialising the requested names")?;
+	write_atomic(&path, &body).await
+}
+
 /// The file a name's collected chain is kept in.
 ///
 /// The name is sanitised into the file name rather than used raw: a name reaches
@@ -512,6 +558,19 @@ mod tests {
 
 		store_refusals(dir.path(), &BTreeMap::new()).await.unwrap();
 		assert!(!refusals_file(dir.path()).exists());
+	}
+
+	#[tokio::test]
+	async fn requested_names_round_trip_and_none_removes_the_file() {
+		let dir = tempfile::tempdir().unwrap();
+		assert!(load_requests(dir.path()).await.is_empty());
+
+		let requests = BTreeMap::from([("pre.example.com".to_owned(), "msupply".to_owned())]);
+		store_requests(dir.path(), &requests).await.unwrap();
+		assert_eq!(load_requests(dir.path()).await, requests);
+
+		store_requests(dir.path(), &BTreeMap::new()).await.unwrap();
+		assert!(!requests_file(dir.path()).exists());
 	}
 
 	/// The daemon reads an unparseable record as none; a reader grading by it is

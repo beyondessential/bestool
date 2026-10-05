@@ -236,7 +236,10 @@ pub struct CertificateState {
 	/// DNS names a command asked for, with the application type it named.
 	/// Ordered whether or not Caddy serves them or their site names the daemon's
 	/// endpoint, until the first chain arrives and then while Caddy serves them.
+	/// Kept on disk, so a restart does not forget a request still waiting.
 	explicit: Mutex<BTreeMap<String, String>>,
+	/// The requests last written to disk, so a pass writes only on a change.
+	persisted_requests: Mutex<BTreeMap<String, String>>,
 	/// The refusals last written to disk, so a pass writes only on a change.
 	persisted_refusals: Mutex<BTreeMap<String, StoredRefusal>>,
 	/// The applications on this host, as last discovered. Discovering them reads
@@ -271,6 +274,7 @@ impl CertificateState {
 			orders: RwLock::new(BTreeMap::new()),
 			wanted: Mutex::new(BTreeSet::new()),
 			explicit: Mutex::new(BTreeMap::new()),
+			persisted_requests: Mutex::new(BTreeMap::new()),
 			persisted_refusals: Mutex::new(BTreeMap::new()),
 			applications: RwLock::new(None),
 			keys: Mutex::new(None),
@@ -351,14 +355,35 @@ impl CertificateState {
 	///
 	/// spec: TLS#which-dns-names-are-certified
 	async fn note_explicit(&self, name: &str, application_type: String) -> Result<()> {
-		let mut explicit = self.explicit.lock().await;
-		if explicit.len() >= EXPLICIT_LIMIT && !explicit.contains_key(name) {
-			return Err(miette!(
-				"{EXPLICIT_LIMIT} DNS names requested by command are already being collected; restart the daemon to clear requests no longer wanted"
-			));
+		// What a restart kept is read first, so the bound counts it and the write
+		// below does not replace it.
+		self.load_from_disk().await?;
+		{
+			let mut explicit = self.explicit.lock().await;
+			if explicit.len() >= EXPLICIT_LIMIT && !explicit.contains_key(name) {
+				return Err(miette!(
+					"{EXPLICIT_LIMIT} DNS names requested by command are already being collected; no more can be requested until some are"
+				));
+			}
+			explicit.insert(name.to_owned(), application_type);
 		}
-		explicit.insert(name.to_owned(), application_type);
+		self.persist_requests().await;
 		Ok(())
+	}
+
+	/// Keep the DNS names a command asked for, where they changed.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	async fn persist_requests(&self) {
+		let now = self.explicit.lock().await.clone();
+		let mut persisted = self.persisted_requests.lock().await;
+		if *persisted == now {
+			return;
+		}
+		match certs::store_requests(&self.dir, &now).await {
+			Ok(()) => *persisted = now,
+			Err(err) => warn!(%err, "could not keep the DNS names requested by command"),
+		}
 	}
 
 	/// Load what this host already holds, so a restart serves its chains at once
@@ -423,6 +448,21 @@ impl CertificateState {
 			}
 		}
 		*self.persisted_refusals.lock().await = kept;
+
+		// A request a command made is not forgotten by a restart before its first
+		// chain arrives.
+		//
+		// spec: TLS#which-dns-names-are-certified
+		let requests = certs::load_requests(&self.dir).await;
+		{
+			let mut explicit = self.explicit.lock().await;
+			for (name, application_type) in &requests {
+				explicit
+					.entry(name.clone())
+					.or_insert_with(|| application_type.clone());
+			}
+		}
+		*self.persisted_requests.lock().await = requests;
 
 		*keys = Some(store);
 		Ok(())
@@ -489,17 +529,20 @@ impl CertificateState {
 		let mut wanted: Vec<String> = self.wanted.lock().await.iter().cloned().collect();
 		{
 			// A name whose application is paused or without the grant is kept, but
-			// waits for the steady pass that finds it lifted.
+			// waits for the steady pass that finds it lifted. One already holding a
+			// chain is renewed on the ordinary schedule.
 			let entitlement = self.entitlement.read().await;
+			let held = self.held.read().await;
 			wanted.extend(
 				self.explicit
 					.lock()
 					.await
 					.iter()
 					.filter(|(name, application_type)| {
-						entitlement
-							.as_ref()
-							.is_none_or(|e| explicit_orderable(e, name, application_type))
+						!held.contains_key(*name)
+							&& entitlement
+								.as_ref()
+								.is_none_or(|e| explicit_orderable(e, name, application_type))
 					})
 					.map(|(name, _)| name.clone()),
 			);
@@ -566,6 +609,7 @@ impl CertificateState {
 			self.prune_orders(&names).await;
 		}
 		self.persist_refusals().await;
+		self.persist_requests().await;
 
 		if targets.is_empty() {
 			debug!("no DNS name to certify on this host");
@@ -589,6 +633,7 @@ impl CertificateState {
 			}
 		}
 		self.persist_refusals().await;
+		self.persist_requests().await;
 		Ok(())
 	}
 
@@ -628,9 +673,9 @@ impl CertificateState {
 		if refusal.kind.awaits_operator() {
 			order.last_error = None;
 		} else {
-			// Canopy answered the command that asked, with a type mismatch or a
-			// missing grant, and the report it gets back says so; asking again
-			// would only repeat it.
+			// Canopy answered about the DNS name itself, with a type mismatch, a
+			// DNS name outside the group's domains, or one it cannot act on, and
+			// the report says so; asking again would only repeat it.
 			self.explicit.lock().await.remove(&target.name);
 		}
 		order.refusal = Some(refusal);
@@ -690,8 +735,11 @@ impl CertificateState {
 	/// governs, so neither a pending order nor a failing one is asked about every
 	/// tick.
 	async fn name_due(&self, name: &str, now: Timestamp) -> bool {
+		// A name a command asked for is pressing only until its first chain
+		// arrives; from then on it is renewed like any other.
 		let wanted = self.wanted.lock().await.contains(name)
-			|| self.explicit.lock().await.contains_key(name);
+			|| (self.explicit.lock().await.contains_key(name)
+				&& !self.held.read().await.contains_key(name));
 		match self.orders.read().await.get(name) {
 			None => true,
 			// Waiting on an operator, so only the steady schedule asks again. Canopy
@@ -2147,6 +2195,58 @@ mod tests {
 		assert_eq!(names(&targets), vec!["pre.example.com"]);
 		assert!(state.wanted.lock().await.contains("hooked.example.com"));
 		assert!(state.orders.read().await.contains_key("wait.example.com"));
+	}
+
+	/// A request a command made survives a restart until its first chain
+	/// arrives.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn a_request_by_command_survives_a_restart() {
+		let dir = tempfile::tempdir().unwrap();
+		let before = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
+		before
+			.note_explicit("pre.example.com", "msupply".into())
+			.await
+			.unwrap();
+
+		let after = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
+		after
+			.note_explicit("other.example.com", "msupply".into())
+			.await
+			.unwrap();
+		let explicit = after.explicit.lock().await.clone();
+		assert_eq!(explicit["pre.example.com"], "msupply");
+		assert!(explicit.contains_key("other.example.com"));
+		assert_eq!(certs::load_requests(dir.path()).await, explicit);
+	}
+
+	/// Once its first chain arrives, a requested name is renewed on the ordinary
+	/// schedule rather than asked about on the pending backoff.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn a_requested_name_with_a_chain_is_not_pressing() {
+		let (_dir, state) = state();
+		*state.last_pass.write().await = Some(Timestamp::now());
+		state
+			.note_explicit("pre.example.com", "tamanu-central".into())
+			.await
+			.unwrap();
+		let long_ago = Timestamp::now() - std::time::Duration::from_secs(3600);
+		state.orders.write().await.insert(
+			"pre.example.com".into(),
+			Order {
+				state: "issued".into(),
+				asked_at: Some(long_ago),
+				..Order::default()
+			},
+		);
+		assert!(state.name_due("pre.example.com", Timestamp::now()).await);
+
+		hold(&state, "pre.example.com", true).await;
+		assert!(!state.name_due("pre.example.com", Timestamp::now()).await);
+		assert!(!state.pass_due().await);
 	}
 
 	/// Past the bound a new request is refused, and one already accepted can
