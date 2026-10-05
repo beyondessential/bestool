@@ -181,11 +181,13 @@ struct Site {
 	api_upstreams: BTreeSet<Upstream>,
 }
 
-/// What a TLS automation policy says to ask the daemon for.
+/// A TLS automation policy, as far as the certificate hook cares.
 #[derive(Clone, Debug)]
-struct HookedPolicy {
+struct Policy {
 	/// Empty for a policy that applies to every name.
 	subjects: Vec<String>,
+	/// Whether the policy asks the daemon's certificate endpoint.
+	names_the_daemon: bool,
 }
 
 /// The sites in Caddy's live configuration.
@@ -194,7 +196,8 @@ struct HookedPolicy {
 #[derive(Clone, Debug, Default)]
 pub struct CaddySites {
 	sites: Vec<Site>,
-	hooked: Vec<HookedPolicy>,
+	/// In Caddy's order, which is the order it applies them in.
+	policies: Vec<Policy>,
 }
 
 impl CaddySites {
@@ -214,17 +217,17 @@ impl CaddySites {
 			}
 		}
 
-		let hooked = config["apps"]["tls"]["automation"]["policies"]
+		let policies = config["apps"]["tls"]["automation"]["policies"]
 			.as_array()
 			.into_iter()
 			.flatten()
-			.filter(|policy| names_the_daemon(&policy["get_certificate"]))
-			.map(|policy| HookedPolicy {
+			.map(|policy| Policy {
 				subjects: strings(&policy["subjects"]),
+				names_the_daemon: names_the_daemon(&policy["get_certificate"]),
 			})
 			.collect();
 
-		Self { sites, hooked }
+		Self { sites, policies }
 	}
 
 	/// Every address a site is configured to serve.
@@ -257,14 +260,22 @@ impl CaddySites {
 			.any(|site| site.hosts.iter().any(|host| host_covers(host, &name)))
 	}
 
+	/// Whether the policy Caddy applies to `address` asks the daemon.
+	///
+	/// Caddy applies the first policy whose subjects match, a policy with none
+	/// matching every name, so a hook on a later policy does not reach an
+	/// address an earlier one governs.
 	fn is_hooked(&self, address: &str) -> bool {
-		self.hooked.iter().any(|policy| {
-			policy.subjects.is_empty()
-				|| policy
-					.subjects
-					.iter()
-					.any(|subject| host_covers(&normalise(subject), address))
-		})
+		self.policies
+			.iter()
+			.find(|policy| {
+				policy.subjects.is_empty()
+					|| policy
+						.subjects
+						.iter()
+						.any(|subject| host_covers(subject, address))
+			})
+			.is_some_and(|policy| policy.names_the_daemon)
 	}
 
 	/// The application each address is attributed to.
@@ -779,6 +790,27 @@ mod tests {
 
 		let wildcard = CaddySites::from_config(&caddy(routes, Some(&["*.example.com"])));
 		assert_eq!(wildcard.hooked_addresses().len(), 2);
+	}
+
+	/// Caddy applies the first policy matching an address, so a hooked
+	/// catch-all after a policy of the site's own does not certify that site.
+	#[test]
+	fn the_first_policy_matching_an_address_decides_whether_it_is_hooked() {
+		let daemon = json!([{"via": "http", "url": "http://127.0.0.1:8271/certificate"}]);
+		let config = json!({"apps": {
+			"http": {"servers": {"s": {"routes": [
+				site(&["own.example.com"], vec![]),
+				site(&["rest.example.com"], vec![]),
+			]}}},
+			"tls": {"automation": {"policies": [
+				{"subjects": ["own.example.com"], "issuers": [{"module": "acme"}]},
+				{"get_certificate": daemon},
+			]}},
+		}});
+		assert_eq!(
+			CaddySites::from_config(&config).hooked_addresses(),
+			["rest.example.com".to_owned()].into()
+		);
 	}
 
 	#[test]
