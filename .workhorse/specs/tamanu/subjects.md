@@ -22,7 +22,7 @@ A machine running a Tamanu on a local Postgres therefore reports two application
 An application carries a **type**: the software it is and the role it plays, together, as a slug such as `tamanu-central`.
 Which duties it can have, which facts describe it, and which checks apply to it all follow from its type.
 
-An agent reports an mSupply application, of type `msupply`, on a machine where mSupply's container unit is installed.
+An agent reports an mSupply application, of type `msupply`, on a machine where mSupply is installed.
 
 ## Identifying a subject
 
@@ -86,7 +86,7 @@ A machine reports: its hostname, its uptime, its operating system kind, name, ve
 
 An application reports: its product version, its type, its install root where it has one on disk, the version of the runtime it executes under, its canonical URL, its current sync tick, and its configured timezone.
 
-An mSupply application reports its type and its product version, read from the version its installation pins, without the database flavour and architecture that accompany it.
+An mSupply application reports its type and its product version, read from the version its installation pins.
 
 A Postgres application reports its server version.
 That version belongs to the server rather than to what connects to it, so an application using a database does not report the database's version as one of its own facts.
