@@ -148,9 +148,14 @@ enum Upstream {
 impl Upstream {
 	fn from_dial(dial: &str) -> Self {
 		let dial = dial.trim();
+		// A unix socket is `unix/<path>`, which the scheme split below would cut
+		// down to a bare `unix`.
+		if dial.starts_with("unix/") {
+			return Self::Unrecognised;
+		}
 		let dial = dial.split_once("://").map_or(dial, |(_, rest)| rest);
 		let dial = dial.split('/').next().unwrap_or(dial);
-		if dial.is_empty() || dial.starts_with("unix") || dial.contains('{') {
+		if dial.is_empty() || dial.contains('{') {
 			return Self::Unrecognised;
 		}
 
@@ -1008,8 +1013,16 @@ mod tests {
 			Upstream::Unrecognised
 		);
 		assert_eq!(
+			Upstream::from_dial("unix/run/app.sock"),
+			Upstream::Unrecognised
+		);
+		assert_eq!(
 			Upstream::from_dial("{http.request.host}:80"),
 			Upstream::Unrecognised
+		);
+		assert_eq!(
+			Upstream::from_dial("unix-api.msupply.internal:8000"),
+			Upstream::Name("unix-api.msupply.internal".into())
 		);
 	}
 
