@@ -37,7 +37,7 @@ use bestool_canopy::{
 use bestool_kopia::{
 	CacheLimits, CacheProfile, RunAs, S3Connection, S3KopiaEnv, args_policy_set_ignores,
 	args_repository_connect_s3, args_snapshot_create,
-	build_kopia_command_with_s3, find_kopia_binary,
+	build_kopia_command_with_s3, cache_root, find_kopia_binary, mark_cache_used, sweep_caches,
 	proxy::{self, RunningProxy, S3ProxyConfig},
 };
 use clap::Parser;
@@ -394,7 +394,10 @@ async fn upstream_host_for(region: &str) -> String {
 }
 
 /// Connect kopia to the canopy-managed repo through the proxy (source host =
-/// server id).
+/// server id), with its cache pinned to the one this repository and profile
+/// always use, then sweep away the caches nothing uses any more.
+///
+/// spec: BAK#local-cache
 pub(super) async fn connect_repo(
 	kopia: &Path,
 	s3env: &S3KopiaEnv<'_>,
@@ -404,6 +407,9 @@ pub(super) async fn connect_repo(
 	run_as: RunAs,
 	cache: CacheProfile,
 ) -> Result<()> {
+	let cache_root =
+		cache_root().ok_or_else(|| miette!("could not determine where kopia keeps its cache"))?;
+	let cache_dir = cache.cache_dir(&cache_root, &target.bucket, &target.prefix);
 	let mut connect = build_kopia_command_with_s3(kopia, s3env, run_as).map_err(|e| miette!("{e}"))?;
 	args_repository_connect_s3(
 		&mut connect,
@@ -414,10 +420,25 @@ pub(super) async fn connect_repo(
 			endpoint,
 			username: "canopy",
 			hostname: server_id,
-			cache: CacheLimits::resolve(cache, config::cache_budget_override()),
+			cache_dir: &cache_dir,
+			cache: CacheLimits::resolve(cache, config::cache_budget_override(), &cache_dir),
 		},
 	);
 	run_kopia(connect, "repository connect").await?;
+
+	// After the connect, which is what creates the directory on first use.
+	if cache == CacheProfile::Restore
+		&& let Err(err) = mark_cache_used(&cache_dir)
+	{
+		warn!(%err, dir = %cache_dir.display(), "could not record the restore cache's use; it may be swept early");
+	}
+
+	let current_push = CacheProfile::Push.cache_dir(&cache_root, &target.bucket, &target.prefix);
+	match tokio::task::spawn_blocking(move || sweep_caches(&cache_root, &current_push)).await {
+		Ok(Ok(_)) => {}
+		Ok(Err(err)) => warn!(%err, "could not sweep unused kopia caches"),
+		Err(err) => warn!(%err, "the kopia cache sweep panicked"),
+	}
 	Ok(())
 }
 

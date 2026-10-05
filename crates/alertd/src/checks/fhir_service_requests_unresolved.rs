@@ -15,7 +15,7 @@ const WARN_MINUTES: f64 = 60.0;
 const FAIL_MINUTES: f64 = 6.0 * 60.0;
 
 const SQL: &str = "SELECT lr.display_id AS lab_request_id, \
-	EXTRACT(EPOCH FROM (NOW() - fsr.last_updated)) / 60 AS duration_minutes \
+	(EXTRACT(EPOCH FROM (NOW() - fsr.last_updated)) / 60)::float8 AS duration_minutes \
 	FROM fhir.service_requests fsr JOIN lab_requests lr ON fsr.upstream_id = lr.id \
 	WHERE fsr.resolved = FALSE AND NOW() - fsr.last_updated > INTERVAL '1 hours' \
 	ORDER BY duration_minutes DESC";
@@ -102,6 +102,8 @@ pub async fn run(ctx: TamanuCx) -> Check {
 
 #[cfg(test)]
 mod tests {
+	use tokio_postgres::types::Type;
+
 	use crate::check::CheckStatus;
 	use crate::checks::test_support::{central_ctx, facility_ctx};
 
@@ -116,6 +118,23 @@ mod tests {
 			check.status,
 			CheckStatus::Pass | CheckStatus::Warning(_) | CheckStatus::Fail(_)
 		));
+	}
+
+	// A numeric column fails to decode as f64, which reads every duration as 0
+	// and passes regardless of how long requests have been outstanding.
+	#[tokio::test]
+	async fn duration_column_decodes_as_f64() {
+		let Some(ctx) = central_ctx().await else {
+			return;
+		};
+		let client = ctx.db().await.expect("central connection");
+		let stmt = client.prepare(super::SQL).await.expect("prepare");
+		let col = stmt
+			.columns()
+			.iter()
+			.find(|c| c.name() == "duration_minutes")
+			.expect("duration_minutes column");
+		assert_eq!(col.type_(), &Type::FLOAT8);
 	}
 
 	#[tokio::test]

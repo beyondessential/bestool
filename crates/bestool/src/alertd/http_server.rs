@@ -13,14 +13,14 @@ use tracing::{Level, error, info, warn};
 use crate::alertd::{
 	context::InternalContext,
 	daemon::DaemonControl,
-	tasks::{BackgroundTask, TaskEndpointHandler},
+	tasks::{BackgroundTask, TaskEndpoint},
 };
 
 mod endpoints;
 mod metrics_render;
 mod state;
 #[cfg(test)]
-mod test_utils;
+pub(crate) mod test_utils;
 mod types;
 
 pub use endpoints::*;
@@ -39,6 +39,7 @@ pub async fn start_server(
 	control: DaemonControl,
 	backups: Option<Arc<crate::alertd::BackupRegistry>>,
 	metrics: Option<crate::alertd::doctor::DoctorMetricsHandle>,
+	certificates: Option<Arc<crate::alertd::certificates::CertificateState>>,
 	binary_version: String,
 ) {
 	let started_at = Timestamp::now();
@@ -56,6 +57,7 @@ pub async fn start_server(
 		control,
 		backups,
 		metrics,
+		certificates,
 	};
 
 	let app = Router::new()
@@ -66,7 +68,19 @@ pub async fn start_server(
 		.route("/seedling", get(handle_seedling))
 		.route("/reload", post(handle_reload))
 		.route("/restart", post(handle_restart))
-		.route("/tasks/{task}/{endpoint}", get(handle_task_endpoint))
+		// Both methods reach the same dispatch, which refuses a GET to a guarded
+		// endpoint: an endpoint that changes state must not be triggerable by a
+		// cross-origin `<img src>`, which can only issue a GET.
+		.route(
+			"/tasks/{task}/{endpoint}",
+			get(handle_task_endpoint).post(handle_task_endpoint),
+		)
+		// Caddy asks this during a TLS handshake, so it sits at the root rather
+		// than under /tasks: the path goes in a Caddyfile an operator writes.
+		.route(
+			"/certificate",
+			get(crate::alertd::certificates::delivery::handle_certificate),
+		)
 		.layer(
 			TraceLayer::new_for_http()
 				.make_span_with(
@@ -136,7 +150,13 @@ pub async fn start_server(
 	// Serve every bound listener concurrently; each runs until the process ends.
 	let mut servers = tokio::task::JoinSet::new();
 	for listener in listeners {
-		let app = app.clone();
+		// With connect info, because the certificate endpoint hands out a
+		// private key and has to identify its caller: the two ends of the
+		// accepted connection are what name the caller's socket to the kernel.
+		let app = app
+			.clone()
+			.into_make_service_with_connect_info::<crate::alertd::certificates::delivery::Endpoints>(
+			);
 		servers.spawn(async move {
 			if let Err(e) = axum::serve(listener, app).await {
 				error!("HTTP server error: {}", e);
@@ -148,7 +168,7 @@ pub async fn start_server(
 
 fn collect_task_endpoints(
 	tasks: &[Arc<dyn BackgroundTask>],
-) -> HashMap<(String, String), TaskEndpointHandler> {
+) -> HashMap<(String, String), TaskEndpoint> {
 	let mut map = HashMap::new();
 	for task in tasks {
 		let task_name = task.name();
@@ -165,9 +185,10 @@ fn collect_task_endpoints(
 				task = task_name,
 				endpoint = endpoint.name,
 				path = %format!("/tasks/{task_name}/{}", endpoint.name),
+				guarded = endpoint.guarded,
 				"mounting task endpoint"
 			);
-			map.insert(key, endpoint.handler);
+			map.insert(key, endpoint);
 		}
 	}
 	map

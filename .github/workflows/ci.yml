@@ -344,13 +344,13 @@ jobs:
         with:
           shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Start MinIO
+      - name: Start RustFS
         run: |
-          docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin123 \
-            quay.io/minio/minio:latest server /data
+          docker run -d --name rustfs -p 9000:9000 \
+            -e RUSTFS_ADDRESS=:9000 -e RUSTFS_ACCESS_KEY=minioadmin -e RUSTFS_SECRET_KEY=minioadmin123 \
+            rustfs/rustfs:1.0.0
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:9000/minio/health/live >/dev/null; then echo "minio ready"; break; fi
+            if curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null; then echo "rustfs ready"; break; fi
             sleep 1
           done
       - name: Create bucket

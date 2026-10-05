@@ -4,6 +4,7 @@ pub use bestool_canopy::Redacted;
 pub mod check;
 pub mod checks;
 pub mod heal;
+pub mod local_http;
 pub mod progress;
 pub mod runtime;
 pub mod server_info;
@@ -11,8 +12,9 @@ pub mod stat;
 pub mod store;
 pub mod subject;
 pub mod sweep;
+pub mod sweep_cache;
 
-pub use runtime::{Compute, Duty, HttpRuntime, ServiceRuntime, TamanuDuty};
+pub use runtime::{CertificateSource, Compute, Duty, HttpRuntime, ServiceRuntime, TamanuDuty};
 pub use stat::{MetricsSnapshot, Stat, StatKind, StatusCounts};
 pub use store::{CheckStore, Lifetime};
 pub use subject::{ApplicationKind, Subject, TamanuScope};

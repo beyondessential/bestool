@@ -531,14 +531,8 @@ impl BackgroundTask for DoctorTask {
 		};
 
 		vec![
-			TaskEndpoint {
-				name: "latest",
-				handler: latest_handler,
-			},
-			TaskEndpoint {
-				name: "recompute",
-				handler: recompute_handler,
-			},
+			TaskEndpoint::open("latest", latest_handler),
+			TaskEndpoint::open("recompute", recompute_handler),
 		]
 	}
 }

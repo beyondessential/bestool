@@ -1,6 +1,6 @@
 [package]
 name = "bestool"
-version = "2.1.4"
+version = "2.4.0"
 edition = "2024"
 default-run = "bestool"
 
@@ -19,12 +19,12 @@ workspace = true
 [dependencies]
 algae-cli = { version = "1.1.12", path = "../algae-cli", optional = true }
 axum = { version = "0.8.9", optional = true }
-bestool-alertd = { version = "28.1.2", path = "../alertd", default-features = false, optional = true }
-bestool-canopy = { version = "0.7.13", path = "../canopy", optional = true }
-bestool-kopia = { version = "0.5.4", path = "../kopia", optional = true }
-bestool-postgres = { version = "1.2.3", path = "../postgres", optional = true }
-bestool-psql = { version = "1.7.16", path = "../psql", default-features = false, optional = true }
-bestool-tamanu = { version = "0.19.15", path = "../tamanu", default-features = false, optional = true }
+bestool-alertd = { version = "28.3.0", path = "../alertd", default-features = false, optional = true }
+bestool-canopy = { version = "0.7.15", path = "../canopy", optional = true }
+bestool-kopia = { version = "0.5.5", path = "../kopia", optional = true }
+bestool-postgres = { version = "1.2.4", path = "../postgres", optional = true }
+bestool-psql = { version = "1.7.18", path = "../psql", default-features = false, optional = true }
+bestool-tamanu = { version = "0.19.17", path = "../tamanu", default-features = false, optional = true }
 binstalk-downloader = { version = "0.13.45", optional = true, features = ["hickory-dns"] }
 blake3 = { version = "1.8.5", optional = true }
 boxcar = "0.2.14"
@@ -43,7 +43,7 @@ fs4 = { version = "1.1.0", features = ["tokio"], optional = true }
 futures = { workspace = true }
 glob = { version = "0.3.3", optional = true }
 hickory-resolver = { version = "0.26.1", optional = true }
-improv-wifi = { version = "0.1.2", path = "../improv-wifi", features = ["networkmanager"], optional = true }
+improv-wifi = { version = "0.1.3", path = "../improv-wifi", features = ["networkmanager"], optional = true }
 indicatif = { workspace = true, optional = true }
 itertools = { workspace = true, optional = true }
 jiff = { version = "0.2.28", features = ["serde"] }
@@ -132,6 +132,9 @@ alertd = [
 	"dep:node-semver",
 	"dep:axum",
 	"dep:tower-http",
+	# `alertd logs` colours its output and elevates to read the journal.
+	"dep:owo-colors",
+	"dep:privilege",
 	"dep:tokio-stream",
 	"dep:sd-notify",
 	"dep:win32job",
@@ -162,6 +165,7 @@ tamanu = [ # enable all tamanu subcommands
 	"tamanu-lifecycle",
 	"tamanu-logs",
 	"tamanu-pgtune",
+	"tamanu-pre-upgrade",
 	"tamanu-psql",
 	"tamanu-sync",
 	"tamanu-tags",
@@ -203,6 +207,7 @@ tamanu-logs = ["__tamanu", "tamanu-config", "dep:bestool-postgres", "dep:owo-col
 # Windows-only PostgreSQL tuning. Reuses the lifecycle restart to bounce the
 # Tamanu workloads, and drives the postgres Windows service directly.
 tamanu-pgtune = ["__tamanu", "tamanu-config", "tamanu-lifecycle", "dep:bestool-postgres", "dep:windows-service"]
+tamanu-pre-upgrade = ["__tamanu", "tamanu-config", "tamanu-artifacts", "tamanu-download", "dep:bestool-postgres"]
 tamanu-psql = ["__tamanu", "tamanu-config", "dep:bestool-canopy", "bestool-tamanu/canopy-registration", "dep:bestool-psql", "bestool-psql/cli", "bestool-tamanu/seedling"]
 tamanu-sync = ["__tamanu", "tamanu-config"]
 # Deprecated alias for `canopy-tags`; keeps `bestool tamanu tags` working.
@@ -220,6 +225,7 @@ canopy = [ # enable all canopy subcommands
 	"canopy-register",
 	"canopy-export",
 	"canopy-import",
+	"canopy-names",
 	"canopy-tags",
 	"canopy-backup",
 	"canopy-restore",
@@ -228,6 +234,10 @@ canopy = [ # enable all canopy subcommands
 canopy-register = ["__canopy", "tamanu-config", "dep:algae-cli", "dep:base64", "dep:bestool-tamanu", "bestool-tamanu/device-key", "bestool-tamanu/canopy-registration", "dep:bestool-postgres", "dep:p256", "dep:privilege"]
 canopy-export = ["__canopy", "dep:algae-cli", "dep:base64"]
 canopy-import = ["__canopy", "dep:algae-cli", "dep:base64"]
+# Asking canopy for DNS records and TLS certificates. The daemon holds the
+# entitlement, the keys and the collected chains, so these commands reach it
+# over its HTTP interface rather than opening a canopy client of their own.
+canopy-names = ["__canopy", "alertd"]
 canopy-tags = ["__canopy", "tamanu-config", "bestool-tamanu/canopy-registration", "dep:comfy-table", "dep:owo-colors"]
 # Config-driven backups: registers capabilities with canopy, runs pre/method/post
 # per a backups/*.toml def, drives kopia, reports the outcome. The `postgresql`

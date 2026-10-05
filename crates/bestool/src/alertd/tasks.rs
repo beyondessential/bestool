@@ -72,6 +72,36 @@ pub struct TaskEndpoint {
 	/// Name segment appended after `/tasks/{task}/` to form the URL path.
 	pub name: &'static str,
 	pub handler: TaskEndpointHandler,
+	/// Whether the endpoint changes state beyond the daemon, and so answers only
+	/// to the superuser, and only over POST.
+	///
+	/// The daemon binds loopback, which makes every local process a caller: an
+	/// unguarded endpoint that repointed a production DNS record would be
+	/// reachable by any unprivileged user on the box, and — being a GET — by a
+	/// fire-and-forget `<img src>` in any page loaded in a browser on the host,
+	/// which needs no CORS permission to take effect. POST closes the second and
+	/// identifying the caller closes the first.
+	pub guarded: bool,
+}
+
+impl TaskEndpoint {
+	/// An endpoint that only reports, which any local caller may read.
+	pub fn open(name: &'static str, handler: TaskEndpointHandler) -> Self {
+		Self {
+			name,
+			handler,
+			guarded: false,
+		}
+	}
+
+	/// An endpoint that changes state. See [`TaskEndpoint::guarded`].
+	pub fn guarded(name: &'static str, handler: TaskEndpointHandler) -> Self {
+		Self {
+			name,
+			handler,
+			guarded: true,
+		}
+	}
 }
 
 /// Handler invoked when a request hits `/tasks/{task}/{endpoint}`.

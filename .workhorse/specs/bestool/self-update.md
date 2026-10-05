@@ -48,6 +48,11 @@ The daemon exposes this through an endpoint that reports whether an update is wa
 Because the restart drops the connection, the reply is the decision, not a live progress stream.
 The command reaches the daemon over whichever loopback address answers, since the daemon binds only the first it can.
 
+The command waits for the daemon to install the update and restart before it exits, so the operator sees the outcome.
+When the daemon reports that the requested version failed to install, the command exits with an error naming that version and the reason the daemon recorded, and directs the operator to `bestool alertd logs` ([ALOG](alertd-logs.md)) for the surrounding detail.
+A daemon that reports a failed version without a reason yields the same error naming only the version.
+When the daemon neither reports a failure nor restarts within a bounded wait, the command exits with an error directing the operator to `bestool alertd status` and `bestool alertd logs`.
+
 ## Automatic update by the daemon
 
 The Windows alert daemon checks once a day whether a newer version has been published, at a time staggered across hosts so a fleet neither fetches nor restarts in lockstep.
@@ -58,3 +63,14 @@ Checking and updating never block or stop the daemon's other duties: a failed up
 
 This behaviour is Windows-only.
 On Linux the binary is kept current by the package manager, and the hardened service deployment cannot write its own binary in any case.
+
+## Update failures
+
+The daemon remembers the most recent version that failed to install, whether the attempt was automatic or delegated, together with the reason it failed.
+The record lasts until the daemon next restarts, and a later failure replaces it.
+
+> [!NOTE]
+> A failed update leaves the daemon running, and a successful one restarts it, so the record is never outlived by a newer install.
+
+The daemon's self-update status endpoint reports the recorded version and reason alongside the running version.
+`bestool alertd status` shows the recorded failure, both version and reason, when there is one, so a failed automatic update is visible to an operator who was not watching it happen.

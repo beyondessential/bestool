@@ -28,11 +28,15 @@ use super::subject::{ApplicationKind, ApplicationRef, TamanuScope};
 pub mod util;
 
 pub mod billing_tags;
+pub mod blob_antivirus;
+pub mod blob_correction_rate;
+pub mod blob_integrity;
 pub mod btrfs;
 pub mod caddy_certs;
 pub mod caddy_resolvers;
 pub mod caddy_version;
 pub mod caddyfile_version;
+pub mod canopy_certificates;
 pub mod canopy_registration;
 pub mod certificate_notification_errors;
 pub mod db_connect;
@@ -59,6 +63,7 @@ pub mod pg_checksums;
 pub mod pg_tuning;
 pub mod report_errors;
 pub mod reporting_roles;
+pub mod reporting_schema;
 pub mod service_resources;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
@@ -87,9 +92,10 @@ pub mod version_drift;
 /// spec: SUBJ
 #[derive(Clone, bon::Builder)]
 pub struct MachineCx {
-	/// Shared across checks and across the daemon's other consumers so TCP/TLS
-	/// connections stay warm between ticks; HTTP checks apply per-request
-	/// timeouts via `RequestBuilder::timeout`.
+	/// Shared across checks and across the daemon's other consumers, for
+	/// requests off this machine; HTTP checks apply per-request timeouts via
+	/// `RequestBuilder::timeout`. Services on this machine are reached through
+	/// [`local_http`](crate::local_http) instead.
 	pub http: reqwest::Client,
 	/// Shared canopy client for checks that reach canopy during a sweep — a
 	/// self-heal action that recovers state from canopy, in particular. `None`
@@ -162,10 +168,10 @@ pub struct TamanuCx {
 	/// The database pool this deployment's checks draw from, when the database
 	/// could be reached at all. Take a connection with [`TamanuCx::db`].
 	pub pool: Option<PgPool>,
-	/// Shared across checks and across the daemon's other consumers so TCP/TLS
-	/// connections stay warm between ticks; HTTP checks apply per-request
-	/// timeouts via `RequestBuilder::timeout`.
-	pub http: reqwest::Client,
+	/// Shared canopy client, for a check that grades what canopy says about this
+	/// deployment. `None` on a one-shot local sweep with no canopy connectivity,
+	/// where such a check skips.
+	pub canopy: Option<Arc<CanopyClient>>,
 	/// What is running this deployment: how a check reads its services and
 	/// their facts, whatever is running them here.
 	///
@@ -174,6 +180,12 @@ pub struct TamanuCx {
 	/// machine-wide supervisor describes both.
 	///
 	/// spec: SUB
+	/// Readings this sweep takes once for the machine and shares with every
+	/// application's checks: Canopy's entitlement answer, Caddy's live
+	/// configuration, and the chains the daemon collected. Each is one answer
+	/// for the host, so a check registered per application would otherwise ask
+	/// for it once per application.
+	pub sweep: Arc<crate::sweep_cache::SweepCache>,
 	pub runtime: Arc<dyn ServiceRuntime>,
 	/// What reaches this deployment: how a check reads the traffic served for
 	/// it, whatever fronts it here.
@@ -555,6 +567,14 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("version", db_version::run, postgres, off_wire),
 		entry!("migrations", migrations::run, tamanu_app),
 		entry!("reporting_roles", reporting_roles::run, tamanu_app),
+		// Its heal is the one write any check makes to Tamanu's database.
+		entry!(
+			"reporting_schema",
+			reporting_schema::run,
+			tamanu_app,
+			(|ctx| Box::pin(reporting_schema::heal(ctx))),
+			(heal::DEFAULT_MIN_INTERVAL)
+		),
 		// An application check that still reads the machine's total memory for its
 		// denominator. Interim, and not an oversight: the substrate work replaces
 		// that reading with the Postgres service's own declared ceiling.
@@ -590,6 +610,11 @@ pub fn all() -> Vec<CheckEntry> {
 		// The certificates, by contrast, are the application's: they are issued for
 		// the names it answers on.
 		entry!("caddy_certs", caddy_certs::run, tamanu_app),
+		// The collection behind a canopy-issued certificate is the application's
+		// too, and attributed more finely than `caddy_certs` manages: canopy
+		// names the application each certificate belongs to, where caddy's
+		// configuration says nothing about which application a site serves.
+		entry!("canopy_certificates", canopy_certificates::run, tamanu_app),
 		// Grades the machine's Caddyfile version marker, so it reports for the
 		// machine — reading the deployment's version off the machine's context to
 		// tell whether the marker is stale. Windows-only, and self-skips when
@@ -675,6 +700,16 @@ pub fn all() -> Vec<CheckEntry> {
 		// records that never became FHIR resources, which every other fhir_* check
 		// reads as green.
 		entry!("fhir_materialisation", fhir_materialisation::run, central),
+		// All three run on facility as well as central: every server that stores
+		// blobs scrubs its own and reads its own media, and the quarantine record
+		// propagates to all of them.
+		entry!("blob_integrity", blob_integrity::run, tamanu_app),
+		entry!(
+			"blob_correction_rate",
+			blob_correction_rate::run,
+			tamanu_app
+		),
+		entry!("blob_antivirus", blob_antivirus::run, tamanu_app),
 	]
 }
 
@@ -688,6 +723,8 @@ pub mod test_support {
 	//! the DB is unavailable so the suite degrades gracefully off-CI.
 
 	use std::sync::Arc;
+	use std::sync::atomic::{AtomicU32, Ordering};
+	use std::time::{SystemTime, UNIX_EPOCH};
 
 	use bestool_postgres::pool::PgPool;
 	use node_semver::Version;
@@ -739,7 +776,8 @@ pub mod test_support {
 			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://localhost/tamanu-central".into(),
 			pool: Some(pool),
-			http: reqwest::Client::new(),
+			canopy: None,
+			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
@@ -756,7 +794,8 @@ pub mod test_support {
 			install_root: Some(std::path::PathBuf::from("/nonexistent")),
 			database_url: "postgresql://localhost/tamanu-facility".into(),
 			pool: None,
-			http: reqwest::Client::new(),
+			canopy: None,
+			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
 			runtime: Arc::new(FakeRuntime::empty()),
 			traffic: Arc::new(FakeTraffic::absent()),
 			store: Arc::new(MemoryStore::new()),
@@ -789,6 +828,130 @@ pub mod test_support {
 			runtime: Arc::new(FakeRuntime::empty()),
 			store: Arc::new(MemoryStore::new()),
 		}
+	}
+
+	/// The blob store tables and the settings and facts the blob checks read,
+	/// as Tamanu's migrations create them.
+	pub const BLOB_STORE: &str = include_str!("checks/blob_store.sql");
+
+	/// A database made for one test, dropped when this is.
+	pub struct ScratchDb {
+		pub central: TamanuCx,
+		pub facility: TamanuCx,
+		_dropper: DropDb,
+	}
+
+	struct DropDb {
+		admin_url: String,
+		name: String,
+	}
+
+	impl Drop for DropDb {
+		fn drop(&mut self) {
+			let admin_url = std::mem::take(&mut self.admin_url);
+			let sql = format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.name);
+			// Drop runs inside the test's runtime, which can't be blocked on.
+			let _ = std::thread::spawn(move || {
+				let rt = tokio::runtime::Builder::new_current_thread()
+					.enable_all()
+					.build()
+					.ok()?;
+				rt.block_on(async {
+					let admin = connect_url(&admin_url).await.ok()?;
+					admin.get().await.ok()?.batch_execute(&sql).await.ok()
+				})
+			})
+			.join();
+		}
+	}
+
+	async fn connect_url(url: &str) -> miette::Result<PgPool> {
+		bestool_postgres::pool::create_pool_sized(
+			url,
+			"bestool-alertd-test",
+			super::POOL_SIZE,
+			bestool_postgres::pool::Prompt::Never,
+		)
+		.await
+	}
+
+	/// A fresh database on the `DATABASE_URL` server carrying `fixture`, or
+	/// `None` when that server can't be reached. Under `CI` an unreachable
+	/// server panics, so these tests never skip there.
+	pub async fn scratch_db(fixture: &str) -> Option<ScratchDb> {
+		static NEXT: AtomicU32 = AtomicU32::new(0);
+
+		let admin_url = std::env::var("DATABASE_URL")
+			.ok()
+			.filter(|url| !url.is_empty())
+			.unwrap_or_else(|| "postgresql://localhost/postgres".into());
+		let admin = match connect_url(&admin_url).await {
+			Ok(pool) => pool,
+			Err(err) if std::env::var_os("CI").is_some() => {
+				panic!("CI must reach postgres at DATABASE_URL: {err:?}")
+			}
+			Err(_) => return None,
+		};
+
+		let nanos = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap_or_default()
+			.as_nanos();
+		let name = format!(
+			"bestool_alertd_test_{}_{nanos}_{}",
+			std::process::id(),
+			NEXT.fetch_add(1, Ordering::Relaxed)
+		);
+		admin
+			.get()
+			.await
+			.expect("the admin pool just connected")
+			.batch_execute(&format!("CREATE DATABASE \"{name}\""))
+			.await
+			.expect("creating a scratch database should succeed");
+		let dropper = DropDb {
+			admin_url: admin_url.clone(),
+			name: name.clone(),
+		};
+
+		let mut url = url::Url::parse(&admin_url).expect("DATABASE_URL should be a URL");
+		url.set_path(&format!("/{name}"));
+		let url = url.to_string();
+		let pool = connect_url(&url)
+			.await
+			.expect("the scratch database should accept connections");
+		pool.get()
+			.await
+			.expect("the scratch pool just connected")
+			.batch_execute(fixture)
+			.await
+			.expect("the fixture should apply");
+
+		let cx = |app: ApplicationKind, config: serde_json::Value| TamanuCx {
+			app: ApplicationRef::tamanu(app),
+			version: Version::parse("0.0.0").unwrap(),
+			config: Arc::new(serde_json::from_value(config).expect("test config should parse")),
+			install_root: Some(std::path::PathBuf::from("/nonexistent")),
+			database_url: url.clone(),
+			pool: Some(pool.clone()),
+			canopy: None,
+			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
+			runtime: Arc::new(FakeRuntime::empty()),
+			traffic: Arc::new(FakeTraffic::absent()),
+			store: Arc::new(MemoryStore::new()),
+		};
+		let db = serde_json::json!({ "name": name, "username": "u", "password": "p" });
+		Some(ScratchDb {
+			central: cx(
+				ApplicationKind::TamanuCentral,
+				serde_json::json!({ "db": db }),
+			),
+			facility: cx(
+				ApplicationKind::TamanuFacility,
+				serde_json::json!({ "db": db, "serverFacilityIds": ["facility-1"] }),
+			),
+			_dropper: dropper,
+		})
 	}
 }
 
@@ -864,7 +1027,8 @@ mod tests {
 			install_root: None,
 			database_url: "postgresql://u@127.0.0.1:1/tamanu".into(),
 			pool: None,
-			http: reqwest::Client::new(),
+			canopy: None,
+			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
 			runtime: Arc::new(crate::runtime::fake::FakeRuntime::empty()),
 			traffic: Arc::new(crate::runtime::fake::FakeTraffic::absent()),
 			store: Arc::new(crate::store::MemoryStore::new()),
@@ -1004,6 +1168,7 @@ mod tests {
 			);
 		}
 		assert_eq!(arm_of("fhir_workers"), Arm::Tamanu(TamanuScope::Central));
+		assert_eq!(arm_of("reporting_schema"), Arm::Tamanu(TamanuScope::Any));
 	}
 
 	/// A context describes the deployment it was built for, so the role it
