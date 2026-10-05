@@ -112,7 +112,8 @@ The daemon keeps, for each DNS name, how Canopy last refused it, as undeclared, 
 A failure that is not an answer about the DNS name replaces nothing: Canopy being unreachable or failing, asking the daemon to slow down, or answering about the application or the machine rather than the DNS name, such as a pause, a missing grant, or not accepting the machine's identity.
 The record survives a daemon restart, so a DNS name waiting on an operator is not mistaken for a failing one before the daemon has asked again.
 That record is what the certificate healthcheck reads to tell a DNS name waiting on an operator from one whose collection is failing, and why a failing one is failing ([CHK-CCO](certificate-collection-check.md)).
-It is kept beside the collected chains, written only by the daemon and readable without privilege, as reporting what this server holds is.
+It is kept beside the collected chains, under the same ownership and permissions, and is readable without privilege, as reporting what this server holds is.
+Whatever may change the collected chains may change the record, and nothing else can.
 
 ## When the grant is absent or the server is paused
 
