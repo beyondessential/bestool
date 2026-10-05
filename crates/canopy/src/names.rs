@@ -37,10 +37,13 @@ pub enum RefusalKind {
 	Undeclared,
 	/// An operator has denied the DNS name to this machine (`dns-name-denied`).
 	Denied,
-	/// Any other answer about the DNS name: a type mismatch
-	/// (`dns-name-type-mismatch`), a DNS name outside the group's domains
-	/// (`name-not-entitled`), or one canopy cannot act on for this machine
-	/// (`conflict`).
+	/// Canopy cannot act on the DNS name for a reason on its own side, such as
+	/// no zone it manages covering it (`conflict`). The request as made is sound,
+	/// and an operator fixing canopy's configuration is what lets it through.
+	Conflict,
+	/// The request as made is refused: a type mismatch
+	/// (`dns-name-type-mismatch`), or a DNS name outside the group's domains
+	/// (`name-not-entitled`).
 	Other,
 }
 
@@ -55,6 +58,7 @@ impl RefusalKind {
 		match self {
 			Self::Undeclared => "undeclared",
 			Self::Denied => "denied",
+			Self::Conflict => "conflict",
 			Self::Other => "other",
 		}
 	}
@@ -90,7 +94,8 @@ impl Refusal {
 		let kind = match problem_slug(err).as_deref()? {
 			"dns-name-undeclared" => RefusalKind::Undeclared,
 			"dns-name-denied" => RefusalKind::Denied,
-			"dns-name-type-mismatch" | "name-not-entitled" | "conflict" => RefusalKind::Other,
+			"conflict" => RefusalKind::Conflict,
+			"dns-name-type-mismatch" | "name-not-entitled" => RefusalKind::Other,
 			_ => return None,
 		};
 		let reason = err
@@ -367,7 +372,10 @@ mod tests {
 			409,
 			serde_json::json!({"type": "/errors/conflict", "title": "no zone covers it"}),
 		);
-		assert_eq!(Refusal::from_error(&err).unwrap().kind, RefusalKind::Other);
+		assert_eq!(
+			Refusal::from_error(&err).unwrap().kind,
+			RefusalKind::Conflict
+		);
 	}
 
 	#[test]

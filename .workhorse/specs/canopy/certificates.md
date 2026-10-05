@@ -37,6 +37,8 @@ A DNS name requested this way is ordered whether or not Caddy serves it yet or i
 Passes keep collecting it until its first chain arrives, and after that while Caddy serves it.
 Until its first chain arrives it is asked about as promptly as a DNS name a handshake recorded, and from then on it is renewed on the same schedule as any other DNS name.
 The request survives a daemon restart.
+A request Canopy refuses as made, with a type mismatch or a DNS name outside the named application's domains, is dropped, and the command that made it reports the refusal.
+A request Canopy cannot act on for a reason on its own side, such as no zone it manages covering the DNS name, is kept for when that is put right.
 A DNS name whose application is paused or loses the TLS grant after it was requested is kept and ordered once that is lifted, and until then it does not bring a pass forward.
 The number of DNS names requested this way is bounded, and a request past the bound is refused rather than an earlier one forgotten.
 
@@ -95,6 +97,8 @@ A certificate Canopy reports as requiring its key to be replaced gets a new key 
 A condemned key is never certified again, for any DNS name, so replacing it is the only way forward and the server does not wait for an operator to act on the key itself.
 
 ## Undeclared and denied DNS names
+
+A DNS name Canopy refused, however it refused it, is asked about again on the steady schedule rather than sooner, since asking sooner earns the same answer, and a handshake asking for it does not bring a pass forward.
 
 A request Canopy refuses as undeclared is waiting on an operator to declare the DNS name in Canopy, and is not a fault on this host ([NAM](names.md#how-canopy-resolves-a-request)).
 The daemon keeps asking about it on the steady schedule rather than sooner, and a handshake asking for it does not bring a pass forward.

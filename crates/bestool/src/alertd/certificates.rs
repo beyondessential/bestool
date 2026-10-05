@@ -127,14 +127,6 @@ impl Order {
 		self.state == "pending"
 	}
 
-	/// Whether canopy's refusal is an operator's to act on, so the DNS name is
-	/// asked about on the steady schedule and no sooner.
-	fn awaits_operator(&self) -> bool {
-		self.refusal
-			.as_ref()
-			.is_some_and(|refusal| refusal.kind.awaits_operator())
-	}
-
 	/// Why the order is not going through, from whichever side said so.
 	fn reason(&self) -> Option<&str> {
 		self.refusal
@@ -258,7 +250,7 @@ fn refusal_state(kind: RefusalKind) -> &'static str {
 	match kind {
 		RefusalKind::Undeclared => "undeclared",
 		RefusalKind::Denied => "denied",
-		RefusalKind::Other => "refused",
+		RefusalKind::Conflict | RefusalKind::Other => "refused",
 	}
 }
 
@@ -785,10 +777,13 @@ impl CertificateState {
 		order.state = refusal_state(refusal.kind).to_owned();
 		if refusal.kind.awaits_operator() {
 			order.last_error = None;
-		} else {
-			// Canopy answered about the DNS name itself, with a type mismatch, a
-			// DNS name outside the group's domains, or one it cannot act on, and
-			// the report says so; asking again would only repeat it.
+		} else if refusal.kind == RefusalKind::Other {
+			// The request as made is refused, with a type mismatch or a DNS name
+			// outside the group's domains, and the report says so; asking again
+			// would only repeat it. Canopy unable to act for a reason on its own
+			// side keeps the request, for when that is put right.
+			//
+			// spec: TLS#which-dns-names-are-certified
 			self.explicit.lock().await.remove(&target.name);
 		}
 		order.refusal = Some(refusal);
@@ -859,12 +854,13 @@ impl CertificateState {
 		let wanted = handshake || (requested && !self.held.read().await.contains_key(name));
 		match self.orders.read().await.get(name) {
 			None => true,
-			// Waiting on an operator, so only the steady schedule asks again. Canopy
-			// shows an operator an undeclared request only while the machine keeps
-			// making it, and a lifted denial is noticed the same way.
+			// Refused, so only the steady schedule asks again: asking sooner earns
+			// the same answer. Canopy shows an operator an undeclared request only
+			// while the machine keeps making it, and a lifted denial or a corrected
+			// configuration is noticed the same way.
 			//
 			// spec: TLS#undeclared-and-denied-dns-names
-			Some(order) if order.awaits_operator() => false,
+			Some(order) if order.refusal.is_some() => false,
 			Some(order) if wanted || order.pending() => order
 				.asked_at
 				.is_none_or(|at| (now - at).get_seconds() >= PENDING_RETRY.as_secs() as i64),
@@ -1547,6 +1543,13 @@ fn wrap(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	fn awaits_operator(order: &Order) -> bool {
+		order
+			.refusal
+			.as_ref()
+			.is_some_and(|refusal| refusal.kind.awaits_operator())
+	}
 
 	fn state() -> (tempfile::TempDir, CertificateState) {
 		let dir = tempfile::tempdir().unwrap();
@@ -2593,7 +2596,7 @@ mod tests {
 
 		let orders = state.orders.read().await;
 		assert_eq!(orders["app.example.com"].state, "denied");
-		assert!(orders["app.example.com"].awaits_operator());
+		assert!(awaits_operator(&orders["app.example.com"]));
 		drop(orders);
 		assert!(!state.name_due("app.example.com", Timestamp::now()).await);
 
@@ -2613,7 +2616,9 @@ mod tests {
 				Timestamp::now(),
 			)
 			.await;
-		assert!(state.orders.read().await["app.example.com"].awaits_operator());
+		assert!(awaits_operator(
+			&state.orders.read().await["app.example.com"]
+		));
 
 		state.orders.write().await.insert(
 			"app.example.com".into(),
@@ -2624,13 +2629,15 @@ mod tests {
 				..Order::default()
 			},
 		);
-		assert!(!state.orders.read().await["app.example.com"].awaits_operator());
+		assert!(!awaits_operator(
+			&state.orders.read().await["app.example.com"]
+		));
 		assert!(state.name_due("app.example.com", Timestamp::now()).await);
 	}
 
 	/// A type mismatch and `name-not-entitled` are ordinary failures: shown with
-	/// canopy's reason, retried on the backoff, and not mistaken for an operator
-	/// being waited on.
+	/// canopy's reason, asked about again only on the steady schedule, and not
+	/// mistaken for an operator being waited on.
 	#[tokio::test]
 	async fn any_other_refusal_is_an_ordinary_failure_with_canopys_reason() {
 		let (_dir, state) = state();
@@ -2650,13 +2657,62 @@ mod tests {
 		let orders = state.orders.read().await;
 		let order = &orders["app.example.com"];
 		assert_eq!(order.state, "refused");
-		assert!(!order.awaits_operator());
+		assert!(!awaits_operator(order));
 		assert_eq!(order.reason(), Some("this machine hosts tamanu-central"));
 		assert!(order.last_error.is_some());
 		drop(orders);
 
 		// The command that named the type was answered by this report.
 		assert!(state.explicit.lock().await.is_empty());
+		state.note_wanted("app.example.com").await;
+		assert!(
+			!state
+				.name_due(
+					"app.example.com",
+					Timestamp::now() + std::time::Duration::from_secs(3600)
+				)
+				.await
+		);
+	}
+
+	/// Canopy unable to act on a requested DNS name for a reason on its own side
+	/// keeps the request, asked about again on the steady schedule.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn a_conflict_keeps_the_request_for_the_steady_schedule() {
+		let (_dir, state) = state();
+		*state.last_pass.write().await = Some(Timestamp::now());
+		state
+			.note_explicit("pre.example.com", "tamanu-central".into())
+			.await
+			.unwrap();
+		let long_ago = Timestamp::now() - std::time::Duration::from_secs(3600);
+		state
+			.record_failure(
+				&target("pre.example.com"),
+				refused(RefusalKind::Conflict, "no zone covers it"),
+				long_ago,
+			)
+			.await;
+
+		assert!(state.explicit.lock().await.contains_key("pre.example.com"));
+		assert_eq!(
+			state.orders.read().await["pre.example.com"].reason(),
+			Some("no zone covers it")
+		);
+		assert!(!state.name_due("pre.example.com", Timestamp::now()).await);
+		assert!(!state.pass_due().await);
+		assert!(
+			state
+				.target_due(
+					"pre.example.com",
+					false,
+					Some("pre.example.com"),
+					Timestamp::now()
+				)
+				.await
+		);
 	}
 
 	/// A failure with no answer from canopy keeps whatever state the order had,
@@ -2718,7 +2774,7 @@ mod tests {
 		state.persist_refusals().await;
 
 		let orders = state.orders.read().await;
-		assert!(orders["app.example.com"].awaits_operator());
+		assert!(awaits_operator(&orders["app.example.com"]));
 		assert_eq!(orders["app.example.com"].reason(), Some("declare it"));
 		drop(orders);
 		assert!(
@@ -2768,7 +2824,7 @@ mod tests {
 		assert!(orders["a.example.com"].application_type.is_some());
 		assert_eq!(orders["c.example.com"].state, "refused");
 		assert_eq!(orders["c.example.com"].reason(), Some("mismatch"));
-		assert!(!orders["c.example.com"].awaits_operator());
+		assert!(!awaits_operator(&orders["c.example.com"]));
 	}
 
 	/// A refusal is dropped once the DNS name leaves the set the daemon asks

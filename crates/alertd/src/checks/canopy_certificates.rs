@@ -229,12 +229,12 @@ fn grade(
 	for name in &graded {
 		let held = validity.get(name.as_str()).copied();
 		let canopy_says = app.certificate(name);
-		// A refusal other than undeclared or denied, such as a type mismatch, is a
-		// fault on this host's side of the request.
+		// A refusal other than undeclared or denied, such as a type mismatch or
+		// canopy unable to act on the DNS name, is why it is not being collected.
 		let refusal = record
 			.ok()
 			.and_then(|record| record.refusal(name))
-			.filter(|refusal| refusal.kind == RefusalKind::Other);
+			.filter(|refusal| !refusal.kind.awaits_operator());
 		// While canopy is still retrying, it reports why the last attempt
 		// failed. Surfacing it is what shows an operator why issuance is stuck
 		// rather than only that nothing arrived.
