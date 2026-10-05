@@ -831,9 +831,13 @@ impl CertificateState {
 	async fn name_due(&self, name: &str, now: Timestamp) -> bool {
 		// A name a command asked for is pressing only until its first chain
 		// arrives; from then on it is renewed like any other.
-		let wanted = self.wanted.lock().await.contains(name)
-			|| (self.explicit.lock().await.contains_key(name)
-				&& !self.held.read().await.contains_key(name));
+		//
+		// Each lock is taken and released in its own statement: elsewhere `held` is
+		// taken before `wanted` and `explicit`, and holding either of those while
+		// waiting on `held` could deadlock against a pass.
+		let handshake = self.wanted.lock().await.contains(name);
+		let requested = self.explicit.lock().await.contains_key(name);
+		let wanted = handshake || (requested && !self.held.read().await.contains_key(name));
 		match self.orders.read().await.get(name) {
 			None => true,
 			// Waiting on an operator, so only the steady schedule asks again. Canopy
