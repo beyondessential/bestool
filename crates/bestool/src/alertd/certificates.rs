@@ -260,6 +260,12 @@ pub struct CertificateState {
 	/// and an entitlement request with it, on every tick until the grant
 	/// returns.
 	stood_down: RwLock<Option<Timestamp>>,
+	/// When a pass last could not read Caddy's configuration, where the last one
+	/// could not.
+	///
+	/// Such a pass orders only what a command asked for, so a handshake's name
+	/// gets no attempt recorded and would otherwise wake a pass on every tick.
+	caddy_unread: RwLock<Option<Timestamp>>,
 	/// What went wrong on the last pass, where something did.
 	last_error: RwLock<Option<String>>,
 }
@@ -280,6 +286,7 @@ impl CertificateState {
 			keys: Mutex::new(None),
 			last_pass: RwLock::new(None),
 			stood_down: RwLock::new(None),
+			caddy_unread: RwLock::new(None),
 			last_error: RwLock::new(None),
 		}
 	}
@@ -521,6 +528,12 @@ impl CertificateState {
 			return false;
 		}
 
+		if let Some(at) = *self.caddy_unread.read().await
+			&& (now - at).get_seconds() < PENDING_RETRY.as_secs() as i64
+		{
+			return false;
+		}
+
 		// Each name asked for is tested rather than the set merely being
 		// non-empty: a name whose last attempt failed is still asked for, and
 		// waking a full pass — which asks canopy what this server may do before
@@ -604,6 +617,7 @@ impl CertificateState {
 		*self.stood_down.write().await = None;
 
 		let (targets, complete) = self.targets(&entitlement, steady).await;
+		*self.caddy_unread.write().await = (!complete).then(Timestamp::now);
 		if complete {
 			let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
 			self.prune_orders(&names).await;
@@ -2247,6 +2261,24 @@ mod tests {
 		hold(&state, "pre.example.com", true).await;
 		assert!(!state.name_due("pre.example.com", Timestamp::now()).await);
 		assert!(!state.pass_due().await);
+	}
+
+	/// A pass that could not read Caddy's configuration backs off before the
+	/// next, rather than one waking on every tick for a handshake's name it
+	/// could not attempt.
+	#[tokio::test]
+	async fn an_unread_caddy_configuration_backs_off_the_next_pass() {
+		let (_dir, state) = state();
+		*state.last_pass.write().await = Some(Timestamp::now());
+		state.note_wanted("app.example.com").await;
+		assert!(state.pass_due().await);
+
+		*state.caddy_unread.write().await = Some(Timestamp::now());
+		assert!(!state.pass_due().await);
+
+		*state.caddy_unread.write().await =
+			Some(Timestamp::now() - std::time::Duration::from_secs(PENDING_RETRY.as_secs() + 1));
+		assert!(state.pass_due().await);
 	}
 
 	/// Past the bound a new request is refused, and one already accepted can
