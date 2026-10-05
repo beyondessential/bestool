@@ -92,6 +92,7 @@ impl HostApplication {
 				self.service_names.contains(name) || self.shared_names.contains(name)
 			}
 			Upstream::Local(port) => self.local_ports.contains(port),
+			Upstream::Unrecognised => false,
 		}
 	}
 }
@@ -137,20 +138,27 @@ enum Upstream {
 	Name(String),
 	/// A port on this machine.
 	Local(u16),
+	/// One the server cannot read: a unix socket, a placeholder resolved per
+	/// request, or a dial missing altogether. No application owns it, so a site
+	/// proxying to it is unattributed rather than attributed by its other
+	/// upstreams.
+	Unrecognised,
 }
 
 impl Upstream {
-	fn from_dial(dial: &str) -> Option<Self> {
+	fn from_dial(dial: &str) -> Self {
 		let dial = dial.trim();
 		let dial = dial.split_once("://").map_or(dial, |(_, rest)| rest);
 		let dial = dial.split('/').next().unwrap_or(dial);
 		if dial.is_empty() || dial.starts_with("unix") || dial.contains('{') {
-			return None;
+			return Self::Unrecognised;
 		}
 
 		let (host, port) = match dial.strip_prefix('[') {
 			Some(rest) => {
-				let (host, after) = rest.split_once(']')?;
+				let Some((host, after)) = rest.split_once(']') else {
+					return Self::Unrecognised;
+				};
 				(host, after.strip_prefix(':'))
 			}
 			None => match dial.rsplit_once(':') {
@@ -162,8 +170,8 @@ impl Upstream {
 		let port = port.and_then(|p| p.parse::<u16>().ok());
 
 		match (is_loopback(&host), port) {
-			(true, Some(port)) => Some(Self::Local(port)),
-			_ => Some(Self::Name(host)),
+			(true, Some(port)) => Self::Local(port),
+			_ => Self::Name(host),
 		}
 	}
 }
@@ -395,11 +403,21 @@ fn proxy_upstreams(handler: &Value) -> Vec<Upstream> {
 		.as_array()
 		.into_iter()
 		.flatten()
-		.filter_map(|upstream| Upstream::from_dial(upstream["dial"].as_str()?))
+		.map(|upstream| {
+			upstream["dial"]
+				.as_str()
+				.map_or(Upstream::Unrecognised, Upstream::from_dial)
+		})
 		.collect();
 
 	let dynamic = &handler["dynamic_upstreams"];
-	if let Some(name) = dynamic["name"].as_str().filter(|name| !name.contains('{')) {
+	if dynamic.is_object()
+		&& dynamic["name"]
+			.as_str()
+			.is_none_or(|name| name.contains('{'))
+	{
+		out.push(Upstream::Unrecognised);
+	} else if let Some(name) = dynamic["name"].as_str() {
 		let port = match &dynamic["port"] {
 			Value::String(port) => port.parse::<u16>().ok(),
 			Value::Number(port) => port.as_u64().and_then(|port| u16::try_from(port).ok()),
@@ -979,19 +997,43 @@ mod tests {
 
 	#[test]
 	fn dials_are_read_for_hosts_and_ports() {
-		assert_eq!(
-			Upstream::from_dial("localhost:3000"),
-			Some(Upstream::Local(3000))
-		);
-		assert_eq!(
-			Upstream::from_dial("[::1]:3000"),
-			Some(Upstream::Local(3000))
-		);
+		assert_eq!(Upstream::from_dial("localhost:3000"), Upstream::Local(3000));
+		assert_eq!(Upstream::from_dial("[::1]:3000"), Upstream::Local(3000));
 		assert_eq!(
 			Upstream::from_dial("http://API.Msupply.Internal:8000"),
-			Some(Upstream::Name("api.msupply.internal".into()))
+			Upstream::Name("api.msupply.internal".into())
 		);
-		assert_eq!(Upstream::from_dial("unix//run/app.sock"), None);
-		assert_eq!(Upstream::from_dial("{http.request.host}:80"), None);
+		assert_eq!(
+			Upstream::from_dial("unix//run/app.sock"),
+			Upstream::Unrecognised
+		);
+		assert_eq!(
+			Upstream::from_dial("{http.request.host}:80"),
+			Upstream::Unrecognised
+		);
+	}
+
+	/// An upstream the server cannot read leaves the site unattributed, rather
+	/// than the site being attributed by the upstreams it can.
+	///
+	/// spec: NAM#which-application-a-dns-name-belongs-to
+	#[test]
+	fn a_site_with_an_unreadable_upstream_is_unattributed() {
+		let msupply = HostApplication::msupply();
+		let handler = json!({"handler": "reverse_proxy", "upstreams": [
+			{"dial": "api.msupply.internal:8000"},
+			{"dial": "unix//run/other.sock"},
+		]});
+		let upstreams: BTreeSet<Upstream> = proxy_upstreams(&handler).into_iter().collect();
+		assert!(owners_of_all(&upstreams, std::slice::from_ref(&msupply)).is_empty());
+
+		let only_msupply = json!({"handler": "reverse_proxy", "upstreams": [
+			{"dial": "api.msupply.internal:8000"},
+		]});
+		let upstreams: BTreeSet<Upstream> = proxy_upstreams(&only_msupply).into_iter().collect();
+		assert_eq!(
+			owners_of_all(&upstreams, std::slice::from_ref(&msupply)).len(),
+			1
+		);
 	}
 }
