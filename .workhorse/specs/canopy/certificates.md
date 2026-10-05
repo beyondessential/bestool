@@ -139,3 +139,4 @@ Requesting a DNS name requires the application it is for, named by its type, bec
 Requesting a DNS name and running a collection spend orders at the authority, so they are refused unless run by the superuser; reporting what this server holds needs no privilege.
 Requesting a DNS name outside the domains the named application's group controls is refused rather than reported as taken, because a pass would drop it.
 Requesting a DNS name for an application that is paused or without the TLS grant is refused with that reason, rather than reported as taken while nothing is ordered.
+Requesting a DNS name for an application type the machine does not host is refused, naming the types it does host; a machine Canopy answers for as a single application is taken to host whatever type is named, as Canopy takes it.

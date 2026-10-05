@@ -146,13 +146,10 @@ impl Order {
 
 /// Whether a DNS name a command asked for may be ordered now, for the
 /// application the command named.
-///
-/// An application canopy has no entry for is left for canopy to refuse, since
-/// the refusal names the types the machine has.
 fn explicit_orderable(entitlement: &Entitlement, name: &str, application_type: &str) -> bool {
 	entitlement
 		.for_type(application_type)
-		.is_none_or(|app| app.may_certify(name))
+		.is_some_and(|app| app.may_certify(name))
 }
 
 /// The grant a command needs from the application it names.
@@ -189,9 +186,11 @@ impl Grant {
 /// canopy is asked.
 ///
 /// The application named is the one whose pause, grant, and domains apply,
-/// tested in the order canopy tests them. One canopy's answer has no entry for
-/// is tested against the machine as a whole and left for canopy to refuse as a
-/// type mismatch, which names the types the machine does have.
+/// tested in the order canopy tests them. A type the machine hosts no
+/// application of is refused, naming the types it does host; a machine canopy
+/// answers for as one application matches whatever type is named, as canopy
+/// does. A command naming no application, which only a withdrawal does, is
+/// tested against the machine as a whole.
 ///
 /// spec: NAM#how-canopy-resolves-a-request
 fn permit(
@@ -200,7 +199,27 @@ fn permit(
 	application_type: Option<&str>,
 	grant: Grant,
 ) -> Result<()> {
-	let named = application_type.and_then(|t| Some((t, entitlement.for_type(t)?)));
+	let named = match application_type {
+		Some(t) => match entitlement.for_type(t) {
+			Some(app) => Some((t, app)),
+			None => {
+				let hosted: Vec<&str> = entitlement
+					.applications
+					.iter()
+					.filter_map(|app| app.type_slug.as_deref())
+					.collect();
+				return Err(miette!(
+					"this machine hosts no {t} application; it hosts {}",
+					if hosted.is_empty() {
+						"none canopy knows of".to_owned()
+					} else {
+						hosted.join(", ")
+					}
+				));
+			}
+		},
+		None => None,
+	};
 	match named {
 		Some((application_type, app)) => {
 			if app.paused {
@@ -979,7 +998,7 @@ impl CertificateState {
 				let wanted_still = !held.contains_key(name) || sites.serves(name);
 				let within = entitlement
 					.for_type(application_type)
-					.is_none_or(|app| app.covers(name));
+					.is_some_and(|app| app.covers(name));
 				wanted_still && within
 			});
 		}
@@ -2203,15 +2222,15 @@ mod tests {
 	}
 
 	/// The application named by a command is the one whose entitlement applies. A
-	/// type canopy has no entry for is passed on, so canopy's refusal can name the
-	/// types the machine does have.
+	/// request kept for a type the machine no longer hosts is dropped.
 	#[tokio::test]
-	async fn an_explicit_request_for_an_application_canopy_does_not_know_is_left_to_canopy() {
+	async fn an_explicit_request_is_held_to_the_application_it_names() {
 		let (_dir, state) = state();
 		*state.entitlement.write().await = Some(Entitlement::from_wire(&applications_wire()));
 		let entitlement = entitled(&state).await;
 		let mut explicit = state.explicit.lock().await;
-		explicit.insert("a.one.test".into(), "nonesuch".into());
+		explicit.insert("a.one.test".into(), "tamanu-central".into());
+		explicit.insert("c.one.test".into(), "nonesuch".into());
 		// Named for the application that holds no TLS grant: not ordered.
 		explicit.insert("b.two.test".into(), "tamanu-facility".into());
 		drop(explicit);
@@ -2220,8 +2239,10 @@ mod tests {
 			.targets_from(&entitlement, &CaddySites::default(), &[])
 			.await;
 		assert_eq!(names(&targets), vec!["a.one.test"]);
+		let explicit = state.explicit.lock().await;
 		// Not ordered, but kept for when the grant arrives.
-		assert!(state.explicit.lock().await.contains_key("b.two.test"));
+		assert!(explicit.contains_key("b.two.test"));
+		assert!(!explicit.contains_key("c.one.test"));
 	}
 
 	/// With Caddy's configuration unreadable, what is known about the other names
@@ -3034,7 +3055,9 @@ mod tests {
 		let err = permit(&live, "x.supply.test", Some("tamanu-central"), Grant::Tls).unwrap_err();
 		assert!(err.to_string().contains("tamanu-central"), "{err}");
 
-		permit(&live, "x.supply.test", Some("nonesuch"), Grant::Tls).unwrap();
+		let err = permit(&live, "x.supply.test", Some("nonesuch"), Grant::Tls).unwrap_err();
+		assert!(err.to_string().contains("tamanu-central, msupply"), "{err}");
+		permit(&live, "x.supply.test", None, Grant::Tls).unwrap();
 		let err = permit(&live, "x.other.test", None, Grant::Tls).unwrap_err();
 		assert!(err.to_string().contains("this server's group"), "{err}");
 	}
