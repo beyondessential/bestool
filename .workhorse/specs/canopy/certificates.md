@@ -99,9 +99,13 @@ The DNS name is left to Caddy's own issuance, as any DNS name Canopy will not ce
 The daemon keeps asking about it on the steady schedule rather than sooner, which is how a lifted denial is noticed, and a handshake asking for it does not bring a pass forward.
 A chain already collected for a denied DNS name continues to be served until it expires, since a denial is not a revocation.
 
-The daemon keeps, for each DNS name, whether Canopy last refused it as undeclared or as denied, with the reason Canopy gave, until a later answer replaces it or the daemon stops asking about the DNS name.
+Requesting a DNS name by command ([Commands](#commands)) asks Canopy at once, whatever Canopy last refused it as, so an operator who has just declared a DNS name or lifted its denial need not wait for the steady schedule.
+
+The daemon keeps, for each DNS name, how Canopy last refused it, as undeclared, as denied, or otherwise, with the reason Canopy gave, until a later answer replaces it or the daemon stops asking about the DNS name.
+A failure that is not an answer about the DNS name, such as Canopy being unreachable or asking the daemon to slow down, replaces nothing.
 The record survives a daemon restart, so a DNS name waiting on an operator is not mistaken for a failing one before the daemon has asked again.
-That record is what the certificate healthcheck reads to tell a DNS name waiting on an operator from one whose collection is failing ([CHK-CCO](certificate-collection-check.md)), and it is readable without privilege, as reporting what this server holds is.
+That record is what the certificate healthcheck reads to tell a DNS name waiting on an operator from one whose collection is failing, and why a failing one is failing ([CHK-CCO](certificate-collection-check.md)).
+It is kept beside the collected chains, written only by the daemon and readable without privilege, as reporting what this server holds is.
 
 ## When the grant is absent or the server is paused
 

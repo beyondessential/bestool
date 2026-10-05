@@ -26,8 +26,9 @@ A site that does not name the daemon's endpoint can never be served from Canopy,
 
 An application's entry is matched to the application the check is running for by the application type, which is what Canopy puts on the wire for a reporter to correlate against; on a machine hosting a single application Canopy gives that entry as the answer itself.
 
-The check asks the daemon which DNS names Canopy last refused as undeclared or as denied ([TLS](certificates.md#undeclared-and-denied-dns-names)), and with what reason.
-Where the daemon cannot be asked, the check grades only the DNS names Canopy's answer says this application declares, since a DNS name it does not declare may be waiting on an operator and nothing here can tell, and it says in its detail that the daemon could not be asked.
+The check reads the daemon's record of which DNS names Canopy last refused, how, and with what reason ([TLS](certificates.md#undeclared-and-denied-dns-names)).
+It reads that record from where the daemon keeps it rather than asking the running daemon, since the record decides which DNS names go ungraded and an answer over the daemon's local interface could come from any process holding its port.
+Where the record cannot be read, the check grades only the DNS names Canopy's answer says this application declares, since a DNS name it does not declare may be waiting on an operator and nothing here can tell, and it says in its detail that the record could not be read.
 
 The entitlement, Caddy's configuration, and the collected chains are each one answer for the machine, so a sweep takes each once and every application's run of the check reads the same one.
 Two checks in a sweep cannot disagree about what the host serves or holds, and a machine carrying several applications costs one reading rather than one per application.

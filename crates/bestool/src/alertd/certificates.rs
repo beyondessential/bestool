@@ -549,25 +549,27 @@ impl CertificateState {
 		order.application_type = Some(target.application_type.clone());
 		order.asked_at = Some(now);
 		order.last_error = Some(why(&report));
-		match refusal {
-			Some(refusal) => {
-				order.state = match refusal.kind {
-					RefusalKind::Undeclared => "undeclared",
-					RefusalKind::Denied => "denied",
-					RefusalKind::Other => "refused",
-				}
-				.to_owned();
-				if refusal.kind.awaits_operator() {
-					order.last_error = None;
-				} else {
-					// A command naming a type canopy contradicts is answered by the
-					// report it gets back; asking again would only repeat it.
-					self.explicit.lock().await.remove(&target.name);
-				}
-				order.refusal = Some(refusal);
-			}
-			None => order.refusal = None,
+		// A failure that is not an answer about the DNS name leaves what canopy
+		// last said standing.
+		//
+		// spec: TLS#undeclared-and-denied-dns-names
+		let Some(refusal) = refusal else {
+			return;
+		};
+		order.state = match refusal.kind {
+			RefusalKind::Undeclared => "undeclared",
+			RefusalKind::Denied => "denied",
+			RefusalKind::Other => "refused",
 		}
+		.to_owned();
+		if refusal.kind.awaits_operator() {
+			order.last_error = None;
+		} else {
+			// A command naming a type canopy contradicts is answered by the
+			// report it gets back; asking again would only repeat it.
+			self.explicit.lock().await.remove(&target.name);
+		}
+		order.refusal = Some(refusal);
 	}
 
 	/// Record a pass that stood down.
@@ -2221,6 +2223,44 @@ mod tests {
 		assert_eq!(
 			orders["app.example.com"].reason(),
 			Some("reaching canopy: timed out")
+		);
+	}
+
+	/// A failure with no answer from canopy is not a later answer, so a refusal
+	/// it follows is kept, in memory and on disk.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	#[tokio::test]
+	async fn a_failure_with_no_answer_keeps_the_refusal() {
+		let (dir, state) = state();
+		state
+			.record_failure(
+				&target("app.example.com"),
+				refused(RefusalKind::Undeclared, "declare it"),
+				Timestamp::now(),
+			)
+			.await;
+		state.persist_refusals().await;
+		state
+			.record_failure(
+				&target("app.example.com"),
+				Failure {
+					refusal: None,
+					report: miette!("reaching canopy: timed out"),
+				},
+				Timestamp::now(),
+			)
+			.await;
+		state.persist_refusals().await;
+
+		let orders = state.orders.read().await;
+		assert!(orders["app.example.com"].awaits_operator());
+		assert_eq!(orders["app.example.com"].reason(), Some("declare it"));
+		drop(orders);
+		assert!(
+			certs::load_refusals(dir.path())
+				.await
+				.contains_key("app.example.com")
 		);
 	}
 
