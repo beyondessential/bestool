@@ -316,14 +316,24 @@ fn strings(value: &Value) -> Vec<String> {
 		.collect()
 }
 
+/// The port the per-site block names the daemon's certificate endpoint on.
+///
+/// spec: TLSD#the-certificate-endpoint
+const DAEMON_PORT: u16 = 8271;
+
 /// Whether a policy's `get_certificate` managers include one asking the
 /// daemon's `/certificate` endpoint over HTTP.
+///
+/// The port is part of the test: another local service answering on
+/// `/certificate` is not the daemon, and a site naming it is not certified from
+/// canopy.
 fn names_the_daemon(managers: &Value) -> bool {
 	managers.as_array().into_iter().flatten().any(|manager| {
 		manager["via"].as_str() == Some("http")
 			&& manager["url"].as_str().is_some_and(|url| {
 				Url::parse(url).is_ok_and(|url| {
 					url.path() == "/certificate"
+						&& url.port_or_known_default() == Some(DAEMON_PORT)
 						&& url
 							.host_str()
 							.is_some_and(|host| is_loopback(host.trim_matches(['[', ']'])))
@@ -773,6 +783,8 @@ mod tests {
 		for manager in [
 			json!({"via": "http", "url": "http://example.com/certificate"}),
 			json!({"via": "http", "url": "http://127.0.0.1:8271/other"}),
+			json!({"via": "http", "url": "http://127.0.0.1:9000/certificate"}),
+			json!({"via": "http", "url": "http://localhost/certificate"}),
 			json!({"via": "tailscale"}),
 		] {
 			let config = json!({"apps": {
