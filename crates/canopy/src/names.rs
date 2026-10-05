@@ -68,14 +68,19 @@ impl Refusal {
 	/// Read a refusal out of an error from canopy, where canopy answered with
 	/// one.
 	///
-	/// `None` for an error that is not a 4xx answer: a transport failure or a
-	/// server fault is not a refusal.
+	/// `None` for an error that is not a 4xx answer about the request: a
+	/// transport failure, a server fault, a timeout, and being asked to slow down
+	/// are not refusals.
 	pub fn from_error(err: &Error) -> Option<Self> {
 		Self::from_http(err.http()?)
 	}
 
 	pub fn from_http(err: &CanopyHttpError) -> Option<Self> {
-		if !err.status.is_client_error() {
+		if !err.status.is_client_error()
+			|| matches!(
+				err.status,
+				http::StatusCode::REQUEST_TIMEOUT | http::StatusCode::TOO_MANY_REQUESTS
+			) {
 			return None;
 		}
 		let kind = match problem_slug(err).as_deref() {
@@ -329,6 +334,17 @@ mod tests {
 		let refusal = Refusal::from_error(&mismatch).unwrap();
 		assert_eq!(refusal.kind, RefusalKind::Other);
 		assert!(refusal.reason.contains("tamanu-central"));
+	}
+
+	#[test]
+	fn a_timeout_or_being_asked_to_slow_down_is_not_a_refusal() {
+		for status in [408, 429] {
+			let err = refused(
+				status,
+				serde_json::json!({"type": "/errors/rate-limited", "title": "slow down"}),
+			);
+			assert_eq!(Refusal::from_error(&err), None, "{status}");
+		}
 	}
 
 	#[test]

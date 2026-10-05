@@ -565,8 +565,9 @@ impl CertificateState {
 		if refusal.kind.awaits_operator() {
 			order.last_error = None;
 		} else {
-			// A command naming a type canopy contradicts is answered by the
-			// report it gets back; asking again would only repeat it.
+			// Canopy answered the command that asked, with a type mismatch or a
+			// missing grant, and the report it gets back says so; asking again
+			// would only repeat it.
 			self.explicit.lock().await.remove(&target.name);
 		}
 		order.refusal = Some(refusal);
