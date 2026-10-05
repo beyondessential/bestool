@@ -153,11 +153,9 @@ fn owned_names(
 		.collect()
 }
 
-/// Whether the application's entitlement lists a declared name covering `name`.
-fn declares(app: &AppEntitlement, name: &str) -> bool {
-	app.registered_names
-		.iter()
-		.any(|declared| host_covers(&declared.to_ascii_lowercase(), name))
+/// Whether any of the application's declared names, lower-cased, covers `name`.
+fn declares(declared: &[String], name: &str) -> bool {
+	declared.iter().any(|declared| host_covers(declared, name))
 }
 
 /// Grade one application's DNS names: the certified ones it owns, that its
@@ -181,6 +179,11 @@ fn grade(
 	let mut graded: Vec<&String> = Vec::new();
 	let mut undeclared: Vec<Value> = Vec::new();
 	let mut denied: Vec<Value> = Vec::new();
+	let declared: Vec<String> = app
+		.registered_names
+		.iter()
+		.map(|name| name.to_ascii_lowercase())
+		.collect();
 	for name in owned.iter().filter(|name| app.covers(name)) {
 		match record {
 			Ok(record) => match record.refusal(name) {
@@ -192,7 +195,7 @@ fn grade(
 				}
 				_ => graded.push(name),
 			},
-			Err(_) if declares(app, name) => graded.push(name),
+			Err(_) if declares(&declared, name) => graded.push(name),
 			Err(_) => {}
 		}
 	}
