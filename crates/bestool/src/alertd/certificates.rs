@@ -1282,10 +1282,23 @@ impl BackgroundTask for CanopyNames {
 					// needs to be told that rather than handed a report that looks
 					// like the ask was taken. An application canopy has no entry for
 					// is left for canopy to refuse as a mismatch.
+					// So is one for an application that may not obtain certificates
+					// at all just now, which would otherwise be held back with nothing
+					// in the report to say why.
 					match entitlement.for_type(&application_type) {
 						Some(app) if !app.covers(&name) => {
 							return Err(miette!(
 								"{name} is not within a domain the {application_type} application's group controls"
+							));
+						}
+						Some(app) if !app.may_manage_tls => {
+							return Err(miette!(
+								"the {application_type} application may not obtain certificates from canopy"
+							));
+						}
+						Some(app) if app.paused => {
+							return Err(miette!(
+								"the {application_type} application is paused in canopy; no certificate is requested until the pause is lifted"
 							));
 						}
 						None if !entitlement.covers(&name) => {
@@ -2825,5 +2838,35 @@ mod tests {
 			}
 			_ => panic!("expected a refusal"),
 		}
+	}
+
+	/// A request for an application that is paused is refused with the reason,
+	/// rather than accepted and held back with nothing to say why.
+	///
+	/// spec: TLS#commands
+	#[tokio::test]
+	async fn requesting_for_a_paused_application_is_refused() {
+		let (_dir, state) = state();
+		*state.entitlement.write().await = Some(Entitlement::from_wire(&two_applications_wire(
+			"tam.test", true,
+		)));
+		let state = Arc::new(state);
+		let task = CanopyNames::new(state.clone());
+		let endpoints = task.http_endpoints();
+		let request = endpoints
+			.iter()
+			.find(|endpoint| endpoint.name == "request")
+			.unwrap();
+
+		let mut ctx = detached_ctx();
+		ctx.query.insert("name".into(), "x.tam.test".into());
+		ctx.query.insert("type".into(), "tamanu-central".into());
+		match (request.handler)(ctx).await {
+			TaskEndpointResponse::Error { message, .. } => {
+				assert!(message.contains("paused"), "{message}")
+			}
+			_ => panic!("expected a refusal"),
+		}
+		assert!(state.explicit.lock().await.is_empty());
 	}
 }
