@@ -131,7 +131,7 @@ pub async fn run(ctx: HostedCx) -> Check {
 		);
 	}
 
-	grade(&certs, Timestamp::now())
+	grade(certs, Timestamp::now())
 }
 
 /// The certificates serving a DNS name that belongs to the application of type
@@ -141,7 +141,11 @@ pub async fn run(ctx: HostedCx) -> Check {
 /// them, and one serving only unowned DNS names for none.
 ///
 /// spec: CHK-CCT
-fn belonging_to(certs: &[Certificate], ownership: &Ownership, type_slug: &str) -> Vec<Certificate> {
+fn belonging_to<'a>(
+	certs: &'a [Certificate],
+	ownership: &Ownership,
+	type_slug: &str,
+) -> Vec<&'a Certificate> {
 	certs
 		.iter()
 		.filter(|cert| {
@@ -149,11 +153,10 @@ fn belonging_to(certs: &[Certificate], ownership: &Ownership, type_slug: &str) -
 				.iter()
 				.any(|name| ownership.serves(name, type_slug))
 		})
-		.cloned()
 		.collect()
 }
 
-fn grade(certs: &[Certificate], now: Timestamp) -> Check {
+fn grade<'a>(certs: impl IntoIterator<Item = &'a Certificate>, now: Timestamp) -> Check {
 	let mut findings: Vec<(Sev, String)> = Vec::new();
 	let mut details: Vec<Value> = Vec::new();
 	let mut stats: Vec<Stat> = Vec::new();
@@ -463,7 +466,7 @@ mod tests {
 		)
 	}
 
-	fn names_of(certs: &[Certificate]) -> Vec<&str> {
+	fn names_of<'a>(certs: &[&'a Certificate]) -> Vec<&'a str> {
 		certs
 			.iter()
 			.flat_map(|cert| cert.names.iter().map(String::as_str))
