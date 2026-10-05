@@ -26,7 +26,9 @@ A handshake for a configured DNS name the daemon holds no chain for records that
 A DNS name recorded this way is subject to the same tests as one read from the configuration, so a handshake cannot conjure an order for a DNS name outside the server's reach.
 Caddy passes the client's own server name through for a site configured on a wildcard, so the DNS name reaching the daemon this way is remote input: the number of DNS names a handshake may leave waiting is bounded, and past the bound a new DNS name is dropped rather than an older one evicted, so a stream of invented DNS names cannot push out the DNS name a real client asked for.
 What a pass acts on still comes from Caddy's configuration; a DNS name recorded during a handshake only anticipates the next read of it.
-A pass that cannot read Caddy's configuration orders only the DNS names requested by command, and leaves what it knows about every other DNS name as it was, rather than reading Caddy as serving nothing.
+A pass that cannot read Caddy's configuration, or cannot tell which applications are on the host, orders only the DNS names requested by command, and leaves what it knows about every other DNS name as it was, rather than reading the host as serving nothing.
+The next pass waits for the retry interval rather than following on the next tick.
+The applications on the host are looked for again on each steady pass, and where looking fails the ones last found stand.
 
 A server standing down records nothing to act on, so the DNS names handshakes leave behind while it stands down do not bring a pass forward: it waits for the ordinary interval rather than asking again for an answer that cannot change until the grant returns or the pause lifts.
 

@@ -260,12 +260,13 @@ pub struct CertificateState {
 	/// and an entitlement request with it, on every tick until the grant
 	/// returns.
 	stood_down: RwLock<Option<Timestamp>>,
-	/// When a pass last could not read Caddy's configuration, where the last one
-	/// could not.
+	/// When a pass last could not establish what the host serves, where the last
+	/// one could not: Caddy's configuration or the applications on the host
+	/// could not be read.
 	///
 	/// Such a pass orders only what a command asked for, so a handshake's name
 	/// gets no attempt recorded and would otherwise wake a pass on every tick.
-	caddy_unread: RwLock<Option<Timestamp>>,
+	incomplete: RwLock<Option<Timestamp>>,
 	/// What went wrong on the last pass, where something did.
 	last_error: RwLock<Option<String>>,
 }
@@ -286,7 +287,7 @@ impl CertificateState {
 			keys: Mutex::new(None),
 			last_pass: RwLock::new(None),
 			stood_down: RwLock::new(None),
-			caddy_unread: RwLock::new(None),
+			incomplete: RwLock::new(None),
 			last_error: RwLock::new(None),
 		}
 	}
@@ -528,7 +529,7 @@ impl CertificateState {
 			return false;
 		}
 
-		if let Some(at) = *self.caddy_unread.read().await
+		if let Some(at) = *self.incomplete.read().await
 			&& (now - at).get_seconds() < PENDING_RETRY.as_secs() as i64
 		{
 			return false;
@@ -617,7 +618,7 @@ impl CertificateState {
 		*self.stood_down.write().await = None;
 
 		let (targets, complete) = self.targets(&entitlement, steady).await;
-		*self.caddy_unread.write().await = (!complete).then(Timestamp::now);
+		*self.incomplete.write().await = (!complete).then(Timestamp::now);
 		if complete {
 			let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
 			self.prune_orders(&names).await;
@@ -777,25 +778,48 @@ impl CertificateState {
 	/// Explicitly requested names are ordered whether or not Caddy serves them or
 	/// their site is hooked.
 	///
-	/// Where Caddy's configuration cannot be read, only the names a command asked
-	/// for are returned, since they are the ones that do not depend on it, and the
-	/// list is marked incomplete. Read as Caddy serving nothing, it would drop
-	/// every other name's order and refusal, and the handshake names waiting for
-	/// a pass.
+	/// Where Caddy's configuration or the applications on the host cannot be
+	/// read, only the names a command asked for are returned, since they are the
+	/// ones that depend on neither, and the list is marked incomplete. Read as
+	/// nothing served or nothing installed, either would drop every other name's
+	/// order and refusal, and the handshake names waiting for a pass.
 	///
 	/// spec: TLS#which-dns-names-are-certified
 	async fn targets(&self, entitlement: &Entitlement, steady: bool) -> (Vec<Target>, bool) {
-		match delivery::caddy_sites().await {
-			Ok(sites) => {
-				let applications = self.host_applications(steady).await;
-				(
-					self.targets_from(entitlement, &sites, &applications).await,
-					true,
-				)
-			}
+		let sites = match delivery::caddy_sites().await {
+			Ok(sites) => sites,
 			Err(err) => {
 				warn!(%err, "could not read Caddy's configuration; ordering only DNS names requested by command");
-				(self.explicit_targets(entitlement).await, false)
+				return (self.explicit_targets(entitlement).await, false);
+			}
+		};
+		let Some(applications) = self.host_applications(steady).await else {
+			return (self.explicit_targets(entitlement).await, false);
+		};
+		(
+			self.targets_from(entitlement, &sites, &applications).await,
+			true,
+		)
+	}
+
+	/// The applications on this host: discovered afresh on a steady pass or where
+	/// none have been, and as last discovered otherwise.
+	///
+	/// Where discovery fails, the applications last discovered stand; `None`
+	/// where there are none to fall back on.
+	async fn host_applications(&self, steady: bool) -> Option<Vec<HostApplication>> {
+		let known = self.applications.read().await.clone();
+		if !steady && known.is_some() {
+			return known;
+		}
+		match ownership::discover_host_applications().await {
+			Ok(found) => {
+				*self.applications.write().await = Some(found.clone());
+				Some(found)
+			}
+			Err(err) => {
+				warn!(%err, "could not discover the applications on this host");
+				known
 			}
 		}
 	}
@@ -814,17 +838,6 @@ impl CertificateState {
 				application_type: application_type.clone(),
 			})
 			.collect()
-	}
-
-	/// The applications on this host: discovered afresh on a steady pass or where
-	/// none have been, and as last discovered otherwise.
-	async fn host_applications(&self, steady: bool) -> Vec<HostApplication> {
-		if !steady && let Some(known) = self.applications.read().await.clone() {
-			return known;
-		}
-		let found = ownership::discover_host_applications().await;
-		*self.applications.write().await = Some(found.clone());
-		found
 	}
 
 	async fn targets_from(
@@ -2263,20 +2276,20 @@ mod tests {
 		assert!(!state.pass_due().await);
 	}
 
-	/// A pass that could not read Caddy's configuration backs off before the
-	/// next, rather than one waking on every tick for a handshake's name it
-	/// could not attempt.
+	/// A pass that could not read Caddy's configuration or the host's
+	/// applications backs off before the next, rather than one waking on every
+	/// tick for a handshake's name it could not attempt.
 	#[tokio::test]
-	async fn an_unread_caddy_configuration_backs_off_the_next_pass() {
+	async fn a_pass_that_could_not_read_what_the_host_serves_backs_off_the_next() {
 		let (_dir, state) = state();
 		*state.last_pass.write().await = Some(Timestamp::now());
 		state.note_wanted("app.example.com").await;
 		assert!(state.pass_due().await);
 
-		*state.caddy_unread.write().await = Some(Timestamp::now());
+		*state.incomplete.write().await = Some(Timestamp::now());
 		assert!(!state.pass_due().await);
 
-		*state.caddy_unread.write().await =
+		*state.incomplete.write().await =
 			Some(Timestamp::now() - std::time::Duration::from_secs(PENDING_RETRY.as_secs() + 1));
 		assert!(state.pass_due().await);
 	}
@@ -2480,7 +2493,7 @@ mod tests {
 	async fn the_host_applications_are_reused_between_steady_passes() {
 		let (_dir, state) = state();
 		*state.applications.write().await = Some(vec![msupply()]);
-		assert_eq!(state.host_applications(false).await, vec![msupply()]);
+		assert_eq!(state.host_applications(false).await, Some(vec![msupply()]));
 	}
 
 	/// The command an operator runs after declaring a DNS name, or lifting its

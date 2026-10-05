@@ -98,25 +98,28 @@ impl HostApplication {
 
 /// The applications on this machine that Caddy can be fronting: the Tamanu
 /// deployment its install says is here, and mSupply where it is installed.
-pub async fn discover_host_applications() -> Vec<HostApplication> {
+///
+/// An error where a Tamanu install could not be looked for or its
+/// configuration read, which is not the same as there being none: read as none,
+/// every DNS name of that Tamanu would be taken as belonging to no application.
+pub async fn discover_host_applications() -> Result<Vec<HostApplication>, String> {
 	let mut out = Vec::new();
 
 	match bestool_tamanu::try_find_tamanu(None).await {
-		Ok(Some((_, root))) => match bestool_tamanu::config::load_config(&root, None) {
-			Ok(config) => {
-				let kind = bestool_tamanu::detect_kind(&config, None).await;
-				out.push(HostApplication::tamanu(kind, &config));
-			}
-			Err(err) => tracing::debug!(%err, "could not read the Tamanu configuration"),
-		},
+		Ok(Some((_, root))) => {
+			let config = bestool_tamanu::config::load_config(&root, None)
+				.map_err(|err| format!("could not read the Tamanu configuration: {err}"))?;
+			let kind = bestool_tamanu::detect_kind(&config, None).await;
+			out.push(HostApplication::tamanu(kind, &config));
+		}
 		Ok(None) => {}
-		Err(err) => tracing::debug!(%err, "could not look for a Tamanu install"),
+		Err(err) => return Err(format!("could not look for a Tamanu install: {err}")),
 	}
 
 	if crate::msupply::installed() {
 		out.push(HostApplication::msupply());
 	}
-	out
+	Ok(out)
 }
 
 fn url_host(url: &Url) -> Option<String> {
