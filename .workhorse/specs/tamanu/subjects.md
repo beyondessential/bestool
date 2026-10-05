@@ -22,6 +22,8 @@ A machine running a Tamanu on a local Postgres therefore reports two application
 An application carries a **type**: the software it is and the role it plays, together, as a slug such as `tamanu-central`.
 Which duties it can have, which facts describe it, and which checks apply to it all follow from its type.
 
+An agent reports an mSupply application, of type `msupply`, on a machine where mSupply is installed.
+
 ## Identifying a subject
 
 A machine is identified by the identity its agent enrolled with, which the agent mints once and keeps.
@@ -59,6 +61,8 @@ Application checks are: everything that reads the application's own data, its HT
 The checks that grade the database server itself — whether it is reachable, what version it runs, how it is tuned, and whether its pages carry checksums — report for the Postgres application rather than for whatever uses it.
 A check reading an application's tables is about that application; a check grading the cluster is about the cluster.
 
+An mSupply application carries two checks: the Canopy certificate collection check ([CHK-CCO](../canopy/certificate-collection-check.md)) and the Caddy certificate check ([CHK-CCT](caddy-certs.md)), each grading the DNS names belonging to it ([NAM](../canopy/names.md#which-application-a-dns-name-belongs-to)).
+
 A concern that genuinely exists on both sides is two checks rather than one check with a conditional subject, so neither has a mode in which it reports the wrong subject's reading.
 
 Which checks apply to an application follows from its type, so a check written for one type is not run against another.
@@ -81,6 +85,8 @@ The facts reported alongside the checks split by subject on the same terms, so n
 A machine reports: its hostname, its uptime, its operating system kind, name, version and kernel, its architecture, whether it is virtualised and by what, its processor count, its total memory, its filesystems, its addresses and its IPv4, IPv6 and NAT64 reachability, its clock timezone, its billing tags, and the version of bestool running on it.
 
 An application reports: its product version, its type, its install root where it has one on disk, the version of the runtime it executes under, its canonical URL, its current sync tick, and its configured timezone.
+
+An mSupply application reports its type and its product version, read from the version its installation pins.
 
 A Postgres application reports its server version.
 That version belongs to the server rather than to what connects to it, so an application using a database does not report the database's version as one of its own facts.

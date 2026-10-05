@@ -7,16 +7,114 @@
 //! and paused state.
 //!
 //! [`Entitlement`] flattens both forms into one list, so nothing downstream has
-//! to know which shape came back. Asking is done on the union of that list,
-//! because nothing on this side ties a Caddy site to an application; reporting
-//! is done per entry, because canopy's answer says which application declares
-//! each name.
+//! to know which shape came back. Which application a DNS name belongs to is
+//! decided by the caller, from the site Caddy serves it on and from what each
+//! entry declares; [`Entitlement::for_type`] then gives that application's
+//! entry.
 //!
 //! spec: NAM
 
-use bes_canopy_api::schema::{ApplicationEntitlements, Entitlements, HeldCertificate};
+use bes_canopy_api::{
+	CanopyHttpError, Error,
+	schema::{ApplicationEntitlements, Entitlements, HeldCertificate},
+};
+use serde::{Deserialize, Serialize};
 
 use crate::certificates::name_within;
+
+/// How canopy refused a certificate request or an address registration.
+///
+/// Taken from the problem type in the refusal's body, never from the status:
+/// canopy answers about the DNS name, the application, and the machine with the
+/// same few statuses.
+///
+/// spec: NAM#how-canopy-resolves-a-request
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RefusalKind {
+	/// The request resolved to no single application, and is waiting for an
+	/// operator to declare the DNS name (`dns-name-undeclared`).
+	Undeclared,
+	/// An operator has denied the DNS name to this machine (`dns-name-denied`).
+	Denied,
+	/// Canopy cannot act on the DNS name for a reason on its own side, such as
+	/// no zone it manages covering it (`conflict`). The request as made is sound,
+	/// and an operator fixing canopy's configuration is what lets it through.
+	Conflict,
+	/// The request as made is refused: a type mismatch
+	/// (`dns-name-type-mismatch`), or a DNS name outside the group's domains
+	/// (`name-not-entitled`).
+	Other,
+}
+
+impl RefusalKind {
+	/// Whether the refusal is an operator's to act on rather than a fault on
+	/// this host.
+	pub fn awaits_operator(self) -> bool {
+		matches!(self, Self::Undeclared | Self::Denied)
+	}
+
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Undeclared => "undeclared",
+			Self::Denied => "denied",
+			Self::Conflict => "conflict",
+			Self::Other => "other",
+		}
+	}
+}
+
+/// A refusal canopy gave, with the reason it gave it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refusal {
+	pub kind: RefusalKind,
+	pub reason: String,
+}
+
+impl Refusal {
+	/// Read a refusal out of an error from canopy, where canopy answered with
+	/// one.
+	///
+	/// `None` for anything that is not an answer about the DNS name: a transport
+	/// failure, a server fault, being asked to slow down, and an answer about the
+	/// application or the machine, such as a pause, a missing grant, or an
+	/// identity canopy does not accept. Those are the same for every DNS name, so
+	/// read as a refusal one would overwrite what canopy last said about all of
+	/// them at once.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	pub fn from_error(err: &Error) -> Option<Self> {
+		Self::from_http(err.http()?)
+	}
+
+	pub fn from_http(err: &CanopyHttpError) -> Option<Self> {
+		if !err.status.is_client_error() {
+			return None;
+		}
+		let kind = match problem_slug(err).as_deref()? {
+			"dns-name-undeclared" => RefusalKind::Undeclared,
+			"dns-name-denied" => RefusalKind::Denied,
+			"conflict" => RefusalKind::Conflict,
+			"dns-name-type-mismatch" | "name-not-entitled" => RefusalKind::Other,
+			_ => return None,
+		};
+		let reason = err
+			.reason()
+			.unwrap_or_else(|| format!("canopy returned {} for {}", err.status, err.path));
+		Some(Self { kind, reason })
+	}
+}
+
+/// The last segment of the problem document's `type`, which is
+/// `/errors/<slug>`.
+fn problem_slug(err: &CanopyHttpError) -> Option<String> {
+	let document: serde_json::Value = serde_json::from_slice(&err.body).ok()?;
+	let uri = document.get("type")?.as_str()?;
+	uri.trim_end_matches('/')
+		.rsplit('/')
+		.next()
+		.map(str::to_owned)
+}
 
 /// One application's entitlement, whichever shape canopy answered in.
 #[derive(Clone, Debug)]
@@ -103,18 +201,6 @@ impl Entitlement {
 		}
 	}
 
-	/// Whether any application on this machine could obtain a certificate for
-	/// `name`.
-	///
-	/// The union is what this side asks on: nothing here knows which application
-	/// a Caddy site belongs to, so it errs towards asking and lets canopy —
-	/// which resolves the application from the name — refuse what it must.
-	///
-	/// spec: NAM#machines-hosting-several-applications
-	pub fn may_certify(&self, name: &str) -> bool {
-		self.applications.iter().any(|app| app.may_certify(name))
-	}
-
 	/// Whether any application holds the TLS grant at all, pause aside.
 	///
 	/// What a check skips on: a server that may not obtain certificates is not
@@ -150,7 +236,7 @@ impl Entitlement {
 	/// application, and that entry is the answer whatever the reporter calls it
 	/// — so it matches any type asked for.
 	///
-	/// spec: CHK-CCO#which-names-it-grades
+	/// spec: CHK-CCO#which-dns-names-it-grades
 	pub fn for_type(&self, type_slug: &str) -> Option<&AppEntitlement> {
 		self.applications
 			.iter()
@@ -214,6 +300,103 @@ fn from_application(app: &ApplicationEntitlements) -> AppEntitlement {
 mod tests {
 	use super::*;
 
+	fn refused(status: u16, body: serde_json::Value) -> Error {
+		Error::Http(CanopyHttpError {
+			status: http::StatusCode::from_u16(status).unwrap(),
+			path: "/certificates/request".into(),
+			body: serde_json::to_vec(&body).unwrap().into(),
+		})
+	}
+
+	#[test]
+	fn the_problem_type_decides_the_kind_not_the_status() {
+		let undeclared = refused(
+			403,
+			serde_json::json!({"type": "/errors/dns-name-undeclared", "title": "needs declaring"}),
+		);
+		let refusal = Refusal::from_error(&undeclared).unwrap();
+		assert_eq!(refusal.kind, RefusalKind::Undeclared);
+		assert_eq!(refusal.reason, "needs declaring");
+
+		let denied = refused(
+			403,
+			serde_json::json!({"type": "/errors/dns-name-denied", "title": "denied"}),
+		);
+		assert_eq!(
+			Refusal::from_error(&denied).unwrap().kind,
+			RefusalKind::Denied
+		);
+
+		// Also a 403, and an ordinary failure.
+		let not_entitled = refused(
+			403,
+			serde_json::json!({"type": "/errors/name-not-entitled", "title": "no grant"}),
+		);
+		assert_eq!(
+			Refusal::from_error(&not_entitled).unwrap().kind,
+			RefusalKind::Other
+		);
+
+		let mismatch = refused(
+			409,
+			serde_json::json!({"type": "/errors/dns-name-type-mismatch", "title": "this machine hosts tamanu-central"}),
+		);
+		let refusal = Refusal::from_error(&mismatch).unwrap();
+		assert_eq!(refusal.kind, RefusalKind::Other);
+		assert!(refusal.reason.contains("tamanu-central"));
+	}
+
+	#[test]
+	fn an_answer_not_about_the_dns_name_is_not_a_refusal() {
+		for (status, slug) in [
+			(401, "auth-failed"),
+			(403, "auth-insufficient-permissions"),
+			(403, "auth-tailnet-node-not-permitted"),
+			(400, "bad-request"),
+			(404, "resource-not-found"),
+			(409, "name-management-paused"),
+			(412, "device-has-no-server"),
+			(429, "rate-limited"),
+		] {
+			let err = refused(
+				status,
+				serde_json::json!({"type": format!("/errors/{slug}"), "title": slug}),
+			);
+			assert_eq!(Refusal::from_error(&err), None, "{status} {slug}");
+		}
+	}
+
+	#[test]
+	fn a_conflict_is_an_answer_about_the_dns_name() {
+		let err = refused(
+			409,
+			serde_json::json!({"type": "/errors/conflict", "title": "no zone covers it"}),
+		);
+		assert_eq!(
+			Refusal::from_error(&err).unwrap().kind,
+			RefusalKind::Conflict
+		);
+	}
+
+	#[test]
+	fn a_body_that_is_not_a_problem_document_is_not_a_refusal() {
+		let err = Error::Http(CanopyHttpError {
+			status: http::StatusCode::FORBIDDEN,
+			path: "/certificates/request".into(),
+			body: "nope".into(),
+		});
+		assert_eq!(Refusal::from_error(&err), None);
+	}
+
+	#[test]
+	fn a_server_fault_is_not_a_refusal() {
+		let err = refused(
+			500,
+			serde_json::json!({"type": "/errors/dns-name-undeclared", "title": "boom"}),
+		);
+		assert!(Refusal::from_error(&err).is_none());
+	}
+
 	fn held(name: &str) -> HeldCertificate {
 		HeldCertificate::builder()
 			.key_fingerprint("ff".to_string())
@@ -236,6 +419,10 @@ mod tests {
 			.build()
 	}
 
+	fn may(e: &Entitlement, name: &str) -> bool {
+		e.applications.iter().any(|app| app.may_certify(name))
+	}
+
 	#[test]
 	fn a_server_with_no_grants_gets_an_empty_answer_not_an_error() {
 		// Asking what one may do is not a privileged act, so nothing about the
@@ -244,7 +431,7 @@ mod tests {
 		let e = Entitlement::from_wire(&flat(&[], false, false));
 		assert!(e.applications.is_empty());
 		assert!(!e.holds_tls_grant());
-		assert!(!e.may_certify("app.example.com"));
+		assert!(!may(&e, "app.example.com"));
 		assert!(!e.fully_paused());
 	}
 
@@ -252,22 +439,22 @@ mod tests {
 	fn a_single_application_machine_is_answered_in_the_flat_fields() {
 		let e = Entitlement::from_wire(&flat(&["example.com"], true, false));
 		assert_eq!(e.applications.len(), 1);
-		assert!(e.may_certify("app.example.com"));
-		assert!(!e.may_certify("app.elsewhere.test"));
+		assert!(may(&e, "app.example.com"));
+		assert!(!may(&e, "app.elsewhere.test"));
 	}
 
 	#[test]
 	fn a_name_outside_the_groups_domains_is_not_acted_on() {
 		let e = Entitlement::from_wire(&flat(&["example.com"], true, false));
 		assert!(!e.covers("app.elsewhere.test"));
-		assert!(!e.may_certify("app.elsewhere.test"));
+		assert!(!may(&e, "app.elsewhere.test"));
 	}
 
 	#[test]
 	fn a_paused_server_asks_for_nothing_while_it_is_paused() {
 		let e = Entitlement::from_wire(&flat(&["example.com"], true, true));
 		assert!(e.fully_paused());
-		assert!(!e.may_certify("app.example.com"));
+		assert!(!may(&e, "app.example.com"));
 		// It still holds the grant, which is what keeps the pause distinct from
 		// a withdrawal for anything reading the two apart.
 		assert!(e.holds_tls_grant());
@@ -307,15 +494,15 @@ mod tests {
 	}
 
 	#[test]
-	fn a_machine_with_an_applications_list_acts_on_their_union() {
-		// Nothing on this side ties a Caddy site to an application, so the ask
-		// is the union: a name any application could act on is asked about.
+	fn a_machine_with_an_applications_list_answers_for_each_and_for_the_machine() {
+		// Which application a name is for is decided elsewhere; the entitlement
+		// answers for each entry and for the machine as a whole.
 		let e = Entitlement::from_wire(&applications());
 		assert_eq!(e.applications.len(), 2);
-		assert!(e.may_certify("a.one.test"));
+		assert!(may(&e, "a.one.test"));
 		// two.test holds DNS but not TLS, so it is covered but not certifiable.
 		assert!(e.covers("b.two.test"));
-		assert!(!e.may_certify("b.two.test"));
+		assert!(!may(&e, "b.two.test"));
 		assert!(e.holds_tls_grant());
 		assert!(e.holds_dns_grant());
 		assert_eq!(e.domains(), vec!["one.test", "two.test"]);
@@ -351,7 +538,7 @@ mod tests {
 		let mut e = Entitlement::from_wire(&applications());
 		e.applications[0].paused = true;
 		assert!(!e.fully_paused());
-		assert!(!e.may_certify("a.one.test"));
+		assert!(!may(&e, "a.one.test"));
 		assert!(e.for_type("tamanu-facility").unwrap().may_manage_dns);
 	}
 }

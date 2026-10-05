@@ -13,23 +13,32 @@
 //! result filed against the machine would reach the wrong people for one of
 //! them.
 //!
-//! Canopy's entitlement answer says which application declares each name, so a
-//! name is attributed from what canopy reports rather than guessed at from the
-//! host. The daemon asks across every application together, because nothing here
-//! ties a Caddy site to one; what it collected is still attributable, so asking
-//! as the machine and reporting per application are not in tension.
+//! Which application a DNS name belongs to is the shared ownership function's
+//! answer, from the Caddy site that serves it and then from what canopy says the
+//! application declares. The daemon orders for every application together, and
+//! what it collected is attributable, so asking as the machine and reporting per
+//! application are not in tension.
+//!
+//! A name canopy refused as undeclared or denied is not this host's to report,
+//! so it is listed and left ungraded; the daemon's record of canopy's refusals
+//! says which are which.
 //!
 //! spec: CHK-CCO
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use bestool_canopy::names::AppEntitlement;
+use bestool_canopy::names::{AppEntitlement, Refusal, RefusalKind};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 use tracing::debug;
 
-use super::TamanuCx;
-use crate::{Stat, check::Check};
+use super::HostedCx;
+use crate::{
+	Stat,
+	check::Check,
+	ownership::{Ownership, host_covers},
+	sweep_cache::RefusalRecord,
+};
 
 const NAME: &str = "canopy_certificates";
 
@@ -46,18 +55,18 @@ const NAME: &str = "canopy_certificates";
 /// way is never mistaken for a stalled collection.
 const RUNDOWN_FRACTION: f64 = 1.0 / 8.0;
 
-pub async fn run(ctx: TamanuCx) -> Check {
-	let Some(canopy) = ctx.canopy.as_deref() else {
+pub async fn run(ctx: HostedCx) -> Check {
+	if ctx.canopy.is_none() {
 		return Check::skip(
 			NAME,
 			"no canopy connectivity",
 			"this sweep has no canopy client, so what this server may do could not be asked",
 		);
-	};
+	}
 
 	// Asked once for the machine and shared: the answer covers every application
 	// on it, and this check runs once per application.
-	let entitlement = match ctx.sweep.entitlement(canopy).await {
+	let entitlement = match ctx.sweep.entitlement().await {
 		Ok(entitlement) => entitlement,
 		Err(err) => {
 			return Check::broken(NAME, "could not ask canopy what this server may do", err);
@@ -96,47 +105,124 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		);
 	}
 
-	let subjects = match ctx.sweep.caddy_subjects().await {
-		Some(subjects) => subjects,
-		None => {
-			return Check::skip(
-				NAME,
-				"caddy's configuration could not be read",
-				"which names this host answers on could not be established, so what it should be collecting is unknown",
-			);
-		}
+	// Both come from one reading of Caddy's configuration, so they are missing
+	// together.
+	let (Some(subjects), Some(ownership)) = (
+		ctx.sweep.caddy_subjects().await,
+		ctx.sweep.ownership().await,
+	) else {
+		return Check::skip(
+			NAME,
+			"caddy's configuration could not be read",
+			"which names this host answers on, and which application each belongs to, could not be established, so what it should be collecting is unknown",
+		);
 	};
+	let owned = owned_names(&subjects, &ownership, ctx.app.kind.type_slug());
 
 	if let Err(err) = ctx.sweep.canopy_chains().await {
 		return Check::broken(NAME, "could not read the collected chains", err);
 	}
 
+	// Read once for the machine and shared, like the entitlement above.
+	let record = ctx.sweep.refusals().await;
+
 	// Parsed once for the sweep, on the blocking pool, rather than decoded here
 	// per name per application.
 	let validity = ctx.sweep.canopy_chain_validity().await;
-	grade(app, &subjects, &validity, Timestamp::now())
+	grade(
+		app,
+		&owned,
+		&validity,
+		record.as_deref().map_err(String::as_str),
+		Timestamp::now(),
+	)
 }
 
-/// Grade one application's names: those Caddy serves that its entitlement
-/// covers.
+/// The certified DNS names that belong to the application of type `type_slug`.
 ///
-/// A name Caddy serves that this application's entitlement does not cover is not
-/// this check's business — nothing should be collecting a chain for it.
+/// spec: CHK-CCO#which-dns-names-it-grades
+fn owned_names(
+	certified: &BTreeSet<String>,
+	ownership: &Ownership,
+	type_slug: &str,
+) -> BTreeSet<String> {
+	certified
+		.iter()
+		.filter(|name| ownership.owner(name) == Some(type_slug))
+		.cloned()
+		.collect()
+}
+
+/// Whether any of the application's declared names, lower-cased, covers `name`.
+fn declares(declared: &[String], name: &str) -> bool {
+	declared.iter().any(|declared| host_covers(declared, name))
+}
+
+/// Grade one application's DNS names: the certified ones it owns, that its
+/// entitlement covers.
 ///
-/// spec: CHK-CCO#which-names-it-grades
+/// A name this application's entitlement does not cover is not this check's
+/// business — nothing should be collecting a chain for it. Where the daemon
+/// recorded Canopy refusing a name as undeclared or denied, the name is listed
+/// and left ungraded; where that record could not be read, only the names the
+/// application declares are graded, since any other may be waiting on an
+/// operator and nothing here can tell.
+///
+/// spec: CHK-CCO#which-dns-names-it-grades
 fn grade(
 	app: &AppEntitlement,
-	subjects: &BTreeSet<String>,
-	validity: &std::collections::BTreeMap<String, (i64, i64)>,
+	owned: &BTreeSet<String>,
+	validity: &BTreeMap<String, (i64, i64)>,
+	record: Result<&RefusalRecord, &str>,
 	now: Timestamp,
 ) -> Check {
-	let graded: Vec<&String> = subjects.iter().filter(|name| app.covers(name)).collect();
+	let mut graded: Vec<&String> = Vec::new();
+	let mut undeclared: Vec<Value> = Vec::new();
+	let mut denied: Vec<Value> = Vec::new();
+	let declared: Vec<String> = app
+		.registered_names
+		.iter()
+		.map(|name| name.to_ascii_lowercase())
+		.collect();
+	for name in owned.iter().filter(|name| app.covers(name)) {
+		match record {
+			Ok(record) => match record.refusal(name) {
+				Some(Refusal { kind, reason }) if *kind == RefusalKind::Undeclared => {
+					undeclared.push(json!({"name": name, "reason": reason}));
+				}
+				Some(Refusal { kind, reason }) if *kind == RefusalKind::Denied => {
+					denied.push(json!({"name": name, "reason": reason}));
+				}
+				_ => graded.push(name),
+			},
+			Err(_) if declares(&declared, name) => graded.push(name),
+			Err(_) => {}
+		}
+	}
+
+	let annotate = |check: Check| {
+		let mut check = check;
+		if !undeclared.is_empty() {
+			check = check.with_detail("undeclared", Value::Array(undeclared.clone()));
+		}
+		if !denied.is_empty() {
+			check = check.with_detail("denied", Value::Array(denied.clone()));
+		}
+		if let Err(err) = record {
+			check = check.with_detail(
+				"refusals",
+				json!({"read": false, "error": err, "note": "only names this application declares were graded"}),
+			);
+		}
+		check
+	};
+
 	if graded.is_empty() {
-		return Check::skip(
+		return annotate(Check::skip(
 			NAME,
 			"no name to collect for",
-			"no name this host serves sits within the domains this application's group controls",
-		);
+			"no DNS name this host serves sits within the domains this application's group controls and is one it is known to need a chain for",
+		));
 	}
 
 	let mut failures: Vec<String> = Vec::new();
@@ -146,16 +232,29 @@ fn grade(
 	for name in &graded {
 		let held = validity.get(name.as_str()).copied();
 		let canopy_says = app.certificate(name);
+		// A refusal other than undeclared or denied, such as a type mismatch or
+		// canopy unable to act on the DNS name, is why it is not being collected.
+		let refusal = record
+			.ok()
+			.and_then(|record| record.refusal(name))
+			.filter(|refusal| !refusal.kind.awaits_operator());
 		// While canopy is still retrying, it reports why the last attempt
 		// failed. Surfacing it is what shows an operator why issuance is stuck
 		// rather than only that nothing arrived.
 		let last_error = canopy_says.and_then(|held| held.last_error_reason());
+		let why = last_error
+			.iter()
+			.cloned()
+			.chain(refusal.map(|refusal| refusal.reason.clone()))
+			.collect::<Vec<_>>()
+			.join("; ");
+		let why = (!why.is_empty()).then_some(why);
 
 		let remaining_days = match held {
 			None => {
 				let mut reason = format!("{name}: no chain collected");
-				if let Some(err) = &last_error {
-					reason.push_str(&format!(" ({err})"));
+				if let Some(why) = &why {
+					reason.push_str(&format!(" ({why})"));
 				}
 				failures.push(reason);
 				None
@@ -170,10 +269,15 @@ fn grade(
 					let days = remaining as f64 / 86400.0;
 					let mut reason =
 						format!("{name}: chain expires in {days:.1}d (collection has stopped)");
-					if let Some(err) = &last_error {
-						reason.push_str(&format!(" ({err})"));
+					if let Some(why) = &why {
+						reason.push_str(&format!(" ({why})"));
 					}
 					failures.push(reason);
+				} else if let Some(refusal) = refusal {
+					failures.push(format!(
+						"{name}: canopy refused the last request ({})",
+						refusal.reason
+					));
 				}
 				Some(remaining as f64 / 86400.0)
 			}
@@ -191,9 +295,9 @@ fn grade(
 			"collected": held.is_some(),
 			"daysRemaining": remaining_days.map(|d| (d * 10.0).round() / 10.0),
 			"canopyHolds": canopy_says.is_some(),
-			"lastError": last_error,
+			"lastError": why,
 		}));
-		if last_error.is_some() {
+		if why.is_some() {
 			debug!(name = %name, "canopy reports this name's order failing");
 		}
 	}
@@ -204,7 +308,7 @@ fn grade(
 	} else {
 		Check::fail(NAME, format!("{n} name(s) checked"), failures.join("; "))
 	};
-	check
+	annotate(check)
 		.with_detail("names", Value::Array(details))
 		.with_stat(Stat::gauge("count", n as f64).help("Names graded for collection"))
 		.with_stats(stats)
@@ -231,14 +335,48 @@ impl HeldReason for bestool_canopy::schema::HeldCertificate {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::BTreeMap;
-
-	use bestool_canopy::certificates as certs;
+	use bestool_canopy::{certificates as certs, names::Entitlement};
 
 	use super::*;
-	use crate::check::CheckStatus;
+	use crate::{
+		check::CheckStatus,
+		ownership::{CaddySites, HostApplication},
+	};
 
 	const D: i64 = 86400;
+
+	/// Grading with a record of nothing refused.
+	fn grade(
+		app: &AppEntitlement,
+		owned: &BTreeSet<String>,
+		validity: &BTreeMap<String, (i64, i64)>,
+		now: Timestamp,
+	) -> Check {
+		super::grade(app, owned, validity, Ok(&RefusalRecord::default()), now)
+	}
+
+	fn record(name: &str, kind: RefusalKind, reason: &str) -> RefusalRecord {
+		RefusalRecord::from_stored(BTreeMap::from([(
+			name.to_owned(),
+			certs::StoredRefusal {
+				kind,
+				reason: reason.into(),
+				application_type: "tamanu-central".into(),
+				asked_at: None,
+			},
+		)]))
+	}
+
+	fn listed(check: &Check, key: &str) -> Vec<String> {
+		check
+			.details
+			.get(key)
+			.and_then(Value::as_array)
+			.into_iter()
+			.flatten()
+			.map(|row| row["name"].as_str().unwrap().to_owned())
+			.collect()
+	}
 
 	fn app(domains: &[&str], holds: &[&str]) -> AppEntitlement {
 		AppEntitlement {
@@ -409,5 +547,274 @@ mod tests {
 			CheckStatus::Fail(reason) => assert!(reason.contains("condemned the key"), "{reason}"),
 			other => panic!("expected a failure, got {other:?}"),
 		}
+	}
+
+	fn host(type_slug: &str, service: &str) -> HostApplication {
+		HostApplication {
+			type_slug: type_slug.into(),
+			canonical_hosts: BTreeSet::new(),
+			service_names: [service.to_owned()].into(),
+			shared_names: BTreeSet::new(),
+			local_ports: BTreeSet::new(),
+		}
+	}
+
+	fn proxying(host: &str, dial: &str) -> Value {
+		json!({
+			"match": [{"host": [host]}],
+			"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": dial}]}],
+		})
+	}
+
+	/// A host fronting Tamanu and mSupply, with a site that proxies to neither.
+	fn two_applications() -> Ownership {
+		let config = json!({"apps": {"http": {"servers": {"s": {"routes": [
+			proxying("central.example.com", "api.central.tamanu.internal:80"),
+			proxying("supply.example.com", "api.msupply.internal:80"),
+			proxying("stray.example.com", "something.else.internal:80"),
+		]}}}}});
+		Ownership::resolve(
+			&CaddySites::from_config(&config),
+			&[
+				host("tamanu-central", "api.central.tamanu.internal"),
+				host("msupply", "api.msupply.internal"),
+			],
+			&Entitlement::default(),
+		)
+	}
+
+	/// On a host with Tamanu and mSupply, each application's run grades only the
+	/// DNS names belonging to it.
+	///
+	/// spec: CHK-CCO#which-dns-names-it-grades
+	#[test]
+	fn each_application_grades_only_the_dns_names_belonging_to_it() {
+		let ownership = two_applications();
+		let certified = subjects(&[
+			"central.example.com",
+			"supply.example.com",
+			"stray.example.com",
+		]);
+
+		assert_eq!(
+			owned_names(&certified, &ownership, "tamanu-central"),
+			subjects(&["central.example.com"])
+		);
+		assert_eq!(
+			owned_names(&certified, &ownership, "msupply"),
+			subjects(&["supply.example.com"])
+		);
+	}
+
+	/// A type mismatch on an mSupply DNS name fails the mSupply run and leaves
+	/// the Tamanu run as it was.
+	///
+	/// spec: CHK-CCO#outcomes
+	#[test]
+	fn a_type_mismatch_fails_only_the_applications_run_owning_the_name() {
+		let ownership = two_applications();
+		let certified = subjects(&["central.example.com", "supply.example.com"]);
+		let status = record(
+			"supply.example.com",
+			RefusalKind::Other,
+			"this machine hosts tamanu-central",
+		);
+		let validity = chains(&[
+			("central.example.com", chain(60, 90)),
+			("supply.example.com", chain(60, 90)),
+		]);
+		let entitlement = app(
+			&["example.com"],
+			&["central.example.com", "supply.example.com"],
+		);
+
+		let tamanu = super::grade(
+			&entitlement,
+			&owned_names(&certified, &ownership, "tamanu-central"),
+			&validity,
+			Ok(&status),
+			now(),
+		);
+		assert!(matches!(tamanu.status, CheckStatus::Pass), "{tamanu:?}");
+
+		let msupply = super::grade(
+			&entitlement,
+			&owned_names(&certified, &ownership, "msupply"),
+			&validity,
+			Ok(&status),
+			now(),
+		);
+		match &msupply.status {
+			CheckStatus::Fail(reason) => {
+				assert!(reason.contains("supply.example.com"), "{reason}");
+				assert!(
+					reason.contains("this machine hosts tamanu-central"),
+					"{reason}"
+				);
+			}
+			other => panic!("expected a failure, got {other:?}"),
+		}
+	}
+
+	/// The reason for the refusal rides along with a name that has no chain.
+	#[test]
+	fn a_refusal_other_than_undeclared_or_denied_explains_a_missing_chain() {
+		let status = record(
+			"app.example.com",
+			RefusalKind::Other,
+			"this machine hosts msupply",
+		);
+		let check = super::grade(
+			&app(&["example.com"], &[]),
+			&subjects(&["app.example.com"]),
+			&BTreeMap::new(),
+			Ok(&status),
+			now(),
+		);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(reason.contains("no chain collected"), "{reason}");
+				assert!(reason.contains("this machine hosts msupply"), "{reason}");
+			}
+			other => panic!("expected a failure, got {other:?}"),
+		}
+	}
+
+	/// An undeclared name with no chain is listed, and the outcome and summary
+	/// are what they were without it.
+	///
+	/// spec: CHK-CCO#outcomes
+	#[test]
+	fn an_undeclared_name_is_listed_and_changes_neither_outcome_nor_summary() {
+		let validity = chains(&[("app.example.com", chain(60, 90))]);
+		let entitlement = app(&["example.com"], &["app.example.com"]);
+		let status = record(
+			"wait.example.com",
+			RefusalKind::Undeclared,
+			"needs declaring",
+		);
+
+		let with = super::grade(
+			&entitlement,
+			&subjects(&["app.example.com", "wait.example.com"]),
+			&validity,
+			Ok(&status),
+			now(),
+		);
+		let without = grade(
+			&entitlement,
+			&subjects(&["app.example.com"]),
+			&validity,
+			now(),
+		);
+
+		assert!(matches!(with.status, CheckStatus::Pass), "{with:?}");
+		assert_eq!(with.summary, without.summary);
+		assert_eq!(listed(&with, "undeclared"), vec!["wait.example.com"]);
+		assert_eq!(
+			with.details["undeclared"][0]["reason"],
+			json!("needs declaring")
+		);
+		assert_eq!(listed(&with, "names"), vec!["app.example.com"]);
+	}
+
+	/// A denial is an operator's decision against the name, whether or not a
+	/// chain is still held for it.
+	///
+	/// spec: CHK-CCO#outcomes
+	#[test]
+	fn a_denied_name_is_listed_whether_or_not_a_chain_is_held() {
+		let status = record("no.example.com", RefusalKind::Denied, "denied");
+		let entitlement = app(&["example.com"], &["app.example.com"]);
+		let names = subjects(&["app.example.com", "no.example.com"]);
+
+		for validity in [
+			chains(&[("app.example.com", chain(60, 90))]),
+			chains(&[
+				("app.example.com", chain(60, 90)),
+				("no.example.com", chain(60, 90)),
+			]),
+			chains(&[
+				("app.example.com", chain(60, 90)),
+				("no.example.com", chain(1, 90)),
+			]),
+		] {
+			let check = super::grade(&entitlement, &names, &validity, Ok(&status), now());
+			assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
+			assert_eq!(check.summary, "1 name(s) collected");
+			assert_eq!(listed(&check, "denied"), vec!["no.example.com"]);
+			assert!(listed(&check, "undeclared").is_empty());
+		}
+	}
+
+	/// An undeclared name does not shield a name beside it that has no chain.
+	///
+	/// spec: CHK-CCO#outcomes
+	#[test]
+	fn an_undeclared_name_beside_a_name_with_no_chain_fails_on_the_other_only() {
+		let status = record(
+			"wait.example.com",
+			RefusalKind::Undeclared,
+			"needs declaring",
+		);
+		let check = super::grade(
+			&app(&["example.com"], &[]),
+			&subjects(&["app.example.com", "wait.example.com"]),
+			&BTreeMap::new(),
+			Ok(&status),
+			now(),
+		);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(
+					reason.contains("app.example.com: no chain collected"),
+					"{reason}"
+				);
+				assert!(!reason.contains("wait.example.com"), "{reason}");
+			}
+			other => panic!("expected a failure, got {other:?}"),
+		}
+		assert_eq!(listed(&check, "undeclared"), vec!["wait.example.com"]);
+		assert_eq!(listed(&check, "names"), vec!["app.example.com"]);
+	}
+
+	/// With the refusal record unreadable a name that may be waiting on an
+	/// operator is not graded, and the detail says why.
+	///
+	/// spec: CHK-CCO#which-dns-names-it-grades
+	#[test]
+	fn with_the_refusal_record_unreadable_only_declared_names_are_graded() {
+		let mut entitlement = app(&["example.com"], &[]);
+		entitlement.registered_names = vec!["Declared.example.com".into()];
+
+		let check = super::grade(
+			&entitlement,
+			&subjects(&["declared.example.com", "other.example.com"]),
+			&BTreeMap::new(),
+			Err("permission denied"),
+			now(),
+		);
+		match &check.status {
+			CheckStatus::Fail(reason) => {
+				assert!(
+					reason.contains("declared.example.com: no chain"),
+					"{reason}"
+				);
+				assert!(!reason.contains("other.example.com"), "{reason}");
+			}
+			other => panic!("expected a failure, got {other:?}"),
+		}
+		assert_eq!(listed(&check, "names"), vec!["declared.example.com"]);
+		assert_eq!(check.details["refusals"]["read"], json!(false));
+
+		let none_declared = super::grade(
+			&app(&["example.com"], &[]),
+			&subjects(&["other.example.com"]),
+			&BTreeMap::new(),
+			Err("permission denied"),
+			now(),
+		);
+		assert!(matches!(none_declared.status, CheckStatus::Skip(_)));
+		assert_eq!(none_declared.details["refusals"]["read"], json!(false));
 	}
 }

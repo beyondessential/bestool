@@ -27,10 +27,11 @@ use std::{
 	time::Duration,
 };
 
+use bestool_alertd::ownership::{self, CaddySites, HostApplication, Ownership};
 use bestool_canopy::{
-	certificates::{self as certs, KeyPair, KeyStore},
-	names::Entitlement,
-	schema::{RegisterNameArgs, RegisteredName, RequestCertificateArgs},
+	certificates::{self as certs, KeyPair, KeyStore, StoredRefusal},
+	names::{AppEntitlement, Entitlement, Refusal, RefusalKind},
+	schema::{ApplicationType, RegisterNameArgs, RegisteredName, RequestCertificateArgs},
 };
 use futures::future::BoxFuture;
 use jiff::Timestamp;
@@ -87,6 +88,14 @@ const STEADY_INTERVAL: Duration = Duration::from_secs(30 * 60);
 /// let a stream of invented names push out the one a real client asked for.
 const WANTED_LIMIT: usize = 64;
 
+/// The most DNS names a command may have asked for at once.
+///
+/// What a command asked for is kept until it is collected and no longer served,
+/// so this is what stops requests that are never fulfilled from accumulating.
+/// A request past the bound is refused rather than an older one evicted, so the
+/// operator is told rather than a request already accepted being forgotten.
+const EXPLICIT_LIMIT: usize = 64;
+
 /// How soon a name whose order is pending is asked about again.
 ///
 /// Sooner than the steady interval, so an order in flight is collected promptly
@@ -94,10 +103,11 @@ const WANTED_LIMIT: usize = 64;
 /// an hour is not asked sixty times.
 const PENDING_RETRY: Duration = Duration::from_secs(120);
 
-/// What canopy said about one name, the last time it was asked.
+/// What canopy said about one DNS name, the last time it was asked.
 #[derive(Clone, Debug, Default)]
 pub struct Order {
-	/// `pending`, `issued`, `failed`, or `revoked`.
+	/// `pending`, `issued`, `failed`, or `revoked` as canopy reports an order, or
+	/// `undeclared`, `denied`, or `refused` where canopy refused the request.
 	pub state: String,
 	/// Why the last attempt failed, while canopy is still retrying. Surfaced
 	/// rather than retried into.
@@ -106,11 +116,166 @@ pub struct Order {
 	pub revoked: bool,
 	pub key_must_be_replaced: bool,
 	pub asked_at: Option<Timestamp>,
+	/// The type of the application the request carried.
+	pub application_type: Option<String>,
+	/// How canopy refused the last request, where it did.
+	pub refusal: Option<Refusal>,
 }
 
 impl Order {
 	fn pending(&self) -> bool {
 		self.state == "pending"
+	}
+
+	/// Why the order is not going through, from whichever side said so.
+	fn reason(&self) -> Option<&str> {
+		self.refusal
+			.as_ref()
+			.map(|refusal| refusal.reason.as_str())
+			.or(self.last_error.as_deref())
+	}
+}
+
+/// Whether a DNS name a command asked for may be ordered now, for the
+/// application the command named.
+fn explicit_orderable(entitlement: &Entitlement, name: &str, application_type: &str) -> bool {
+	entitlement
+		.for_type(application_type)
+		.is_some_and(|app| app.may_certify(name))
+}
+
+/// The grant a command needs from the application it names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grant {
+	Tls,
+	Dns,
+}
+
+impl Grant {
+	fn held_by(self, app: &AppEntitlement) -> bool {
+		match self {
+			Self::Tls => app.may_manage_tls,
+			Self::Dns => app.may_manage_dns,
+		}
+	}
+
+	fn held_by_any(self, entitlement: &Entitlement) -> bool {
+		match self {
+			Self::Tls => entitlement.holds_tls_grant(),
+			Self::Dns => entitlement.holds_dns_grant(),
+		}
+	}
+
+	fn describe(self) -> &'static str {
+		match self {
+			Self::Tls => "obtain certificates from canopy",
+			Self::Dns => "manage its own DNS records",
+		}
+	}
+}
+
+/// Whether a command may act on `name` for the application it names, before
+/// canopy is asked.
+///
+/// The application named is the one whose pause, grant, and domains apply,
+/// tested in the order canopy tests them. A type the machine hosts no
+/// application of is refused, naming the types it does host; a machine canopy
+/// answers for as one application matches whatever type is named, as canopy
+/// does. A command naming no application, which only a withdrawal does, is
+/// tested against the machine as a whole.
+///
+/// spec: NAM#how-canopy-resolves-a-request
+fn permit(
+	entitlement: &Entitlement,
+	name: &str,
+	application_type: Option<&str>,
+	grant: Grant,
+) -> Result<()> {
+	let named = match application_type {
+		Some(t) => match entitlement.for_type(t) {
+			Some(app) => Some((t, app)),
+			None => {
+				let hosted: Vec<&str> = entitlement
+					.applications
+					.iter()
+					.filter_map(|app| app.type_slug.as_deref())
+					.collect();
+				return Err(miette!(
+					"this machine hosts no {t} application; it hosts {}",
+					if hosted.is_empty() {
+						"none canopy knows of".to_owned()
+					} else {
+						hosted.join(", ")
+					}
+				));
+			}
+		},
+		None => None,
+	};
+	match named {
+		Some((application_type, app)) => {
+			if app.paused {
+				return Err(miette!(
+					"the {application_type} application is paused in canopy; nothing is asked for until the pause is lifted"
+				));
+			}
+			if !grant.held_by(app) {
+				return Err(miette!(
+					"the {application_type} application may not {}",
+					grant.describe()
+				));
+			}
+			if !app.covers(name) {
+				return Err(miette!(
+					"{name} is not within a domain the {application_type} application's group controls"
+				));
+			}
+		}
+		None => {
+			if !grant.held_by_any(entitlement) {
+				return Err(miette!("this server may not {}", grant.describe()));
+			}
+			if !entitlement.covers(name) {
+				return Err(miette!(
+					"{name} is not within a domain this server's group controls"
+				));
+			}
+		}
+	}
+	Ok(())
+}
+
+/// The order state a DNS name canopy refused shows as.
+fn refusal_state(kind: RefusalKind) -> &'static str {
+	match kind {
+		RefusalKind::Undeclared => "undeclared",
+		RefusalKind::Denied => "denied",
+		RefusalKind::Conflict | RefusalKind::Other => "refused",
+	}
+}
+
+/// A DNS name the daemon asks canopy about, and the application it asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Target {
+	name: String,
+	/// The type of the application the DNS name belongs to, which the request
+	/// carries.
+	application_type: String,
+}
+
+/// Why asking canopy about a DNS name did not go through.
+struct Failure {
+	/// How canopy refused, where it answered with a refusal.
+	refusal: Option<Refusal>,
+	report: miette::Report,
+}
+
+impl From<miette::Report> for Failure {
+	fn from(report: miette::Report) -> Self {
+		Self {
+			refusal: None,
+			report,
+		}
 	}
 }
 
@@ -153,11 +318,24 @@ pub struct CertificateState {
 	entitlement: RwLock<Option<Entitlement>>,
 	/// What canopy last said about each name asked about.
 	orders: RwLock<BTreeMap<String, Order>>,
-	/// Names a handshake or a command asked for that nothing is held for, so an
-	/// order follows. A backstop between passes rather than a discovery route:
-	/// Caddy only asks for names it is configured to serve, which a pass reads
-	/// from the same configuration.
+	/// DNS names a handshake asked for that nothing is held for, so an order
+	/// follows. A backstop between passes rather than a discovery route: Caddy
+	/// only asks for DNS names it is configured to serve, which a pass reads from
+	/// the same configuration.
 	wanted: Mutex<BTreeSet<String>>,
+	/// DNS names a command asked for, with the application type it named.
+	/// Ordered whether or not Caddy serves them or their site names the daemon's
+	/// endpoint, until the first chain arrives and then while Caddy serves them.
+	/// Kept on disk, so a restart does not forget a request still waiting.
+	explicit: Mutex<BTreeMap<String, String>>,
+	/// The requests last written to disk, so a pass writes only on a change.
+	persisted_requests: Mutex<BTreeMap<String, String>>,
+	/// The refusals last written to disk, so a pass writes only on a change.
+	persisted_refusals: Mutex<BTreeMap<String, StoredRefusal>>,
+	/// The applications on this host, as last discovered. Discovering them reads
+	/// the Tamanu install and may reach its container runtime or database, so a
+	/// steady pass does it and the passes between reuse what it found.
+	applications: RwLock<Option<Vec<HostApplication>>>,
 
 	/// The keys, held across passes so scrypt is not re-run every tick. Loaded
 	/// on the first pass and written through on change.
@@ -172,6 +350,13 @@ pub struct CertificateState {
 	/// and an entitlement request with it, on every tick until the grant
 	/// returns.
 	stood_down: RwLock<Option<Timestamp>>,
+	/// When a pass last could not establish what the host serves, where the last
+	/// one could not: Caddy's configuration or the applications on the host
+	/// could not be read.
+	///
+	/// Such a pass orders only what a command asked for, so a handshake's name
+	/// gets no attempt recorded and would otherwise wake a pass on every tick.
+	incomplete: RwLock<Option<Timestamp>>,
 	/// What went wrong on the last pass, where something did.
 	last_error: RwLock<Option<String>>,
 }
@@ -185,9 +370,14 @@ impl CertificateState {
 			entitlement: RwLock::new(None),
 			orders: RwLock::new(BTreeMap::new()),
 			wanted: Mutex::new(BTreeSet::new()),
+			explicit: Mutex::new(BTreeMap::new()),
+			persisted_requests: Mutex::new(BTreeMap::new()),
+			persisted_refusals: Mutex::new(BTreeMap::new()),
+			applications: RwLock::new(None),
 			keys: Mutex::new(None),
 			last_pass: RwLock::new(None),
 			stood_down: RwLock::new(None),
+			incomplete: RwLock::new(None),
 			last_error: RwLock::new(None),
 		}
 	}
@@ -236,7 +426,7 @@ impl CertificateState {
 	/// configuration, so a handshake cannot conjure an order for a name outside
 	/// the server's reach.
 	///
-	/// spec: TLS#which-names-are-certified
+	/// spec: TLS#which-dns-names-are-certified
 	pub async fn note_wanted(&self, name: &str) {
 		let name = name.trim_end_matches('.').to_ascii_lowercase();
 		if certs::plausible_name(&name).is_err() {
@@ -256,6 +446,41 @@ impl CertificateState {
 		}
 		if wanted.insert(name.clone()) {
 			debug!(name, "recorded a name asked for during a handshake");
+		}
+	}
+
+	/// Record a DNS name a command asked for, with the application type it named.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	async fn note_explicit(&self, name: &str, application_type: String) -> Result<()> {
+		// What a restart kept is read first, so the bound counts it and the write
+		// below does not replace it.
+		self.load_from_disk().await?;
+		{
+			let mut explicit = self.explicit.lock().await;
+			if explicit.len() >= EXPLICIT_LIMIT && !explicit.contains_key(name) {
+				return Err(miette!(
+					"{EXPLICIT_LIMIT} DNS names requested by command are already being collected; no more can be requested until some are"
+				));
+			}
+			explicit.insert(name.to_owned(), application_type);
+		}
+		self.persist_requests().await;
+		Ok(())
+	}
+
+	/// Keep the DNS names a command asked for, where they changed.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	async fn persist_requests(&self) {
+		let now = self.explicit.lock().await.clone();
+		let mut persisted = self.persisted_requests.lock().await;
+		if *persisted == now {
+			return;
+		}
+		match certs::store_requests(&self.dir, &now).await {
+			Ok(()) => *persisted = now,
+			Err(err) => warn!(%err, "could not keep the DNS names requested by command"),
 		}
 	}
 
@@ -298,9 +523,80 @@ impl CertificateState {
 			);
 		}
 		info!(names = held.len(), "loaded the chains this host holds");
+		drop(held);
+
+		// A DNS name waiting on an operator is not mistaken for a failing one
+		// before the daemon has asked again.
+		//
+		// spec: TLS#undeclared-and-denied-dns-names
+		let kept = certs::load_refusals(&self.dir).await;
+		{
+			let mut orders = self.orders.write().await;
+			for (name, kept) in &kept {
+				orders.entry(name.clone()).or_insert_with(|| Order {
+					state: refusal_state(kept.kind).to_owned(),
+					asked_at: kept.asked_at.as_deref().and_then(|at| at.parse().ok()),
+					application_type: Some(kept.application_type.clone()),
+					refusal: Some(Refusal {
+						kind: kept.kind,
+						reason: kept.reason.clone(),
+					}),
+					..Order::default()
+				});
+			}
+		}
+		*self.persisted_refusals.lock().await = kept;
+
+		// A request a command made is not forgotten by a restart before its first
+		// chain arrives.
+		//
+		// spec: TLS#which-dns-names-are-certified
+		let requests = certs::load_requests(&self.dir).await;
+		{
+			let mut explicit = self.explicit.lock().await;
+			for (name, application_type) in &requests {
+				explicit
+					.entry(name.clone())
+					.or_insert_with(|| application_type.clone());
+			}
+		}
+		*self.persisted_requests.lock().await = requests;
 
 		*keys = Some(store);
 		Ok(())
+	}
+
+	/// Keep the refusals canopy gave, where they changed.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	async fn persist_refusals(&self) {
+		let now: BTreeMap<String, StoredRefusal> = self
+			.orders
+			.read()
+			.await
+			.iter()
+			.filter_map(|(name, order)| {
+				let refusal = order.refusal.as_ref()?;
+				Some((
+					name.clone(),
+					StoredRefusal {
+						kind: refusal.kind,
+						reason: refusal.reason.clone(),
+						application_type: order.application_type.clone().unwrap_or_default(),
+						asked_at: order.asked_at.map(|at| at.to_string()),
+					},
+				))
+			})
+			.collect();
+
+		let mut persisted = self.persisted_refusals.lock().await;
+		if *persisted == now {
+			return;
+		}
+		match certs::store_refusals(&self.dir, &now).await {
+			Ok(()) => *persisted = now,
+			Err(err) => warn!(%err, "could not keep the refusals canopy gave"),
+		}
 	}
 
 	/// Whether a pass is due: an order in flight, a name asked for and not held,
@@ -323,12 +619,38 @@ impl CertificateState {
 			return false;
 		}
 
+		if let Some(at) = *self.incomplete.read().await
+			&& (now - at).get_seconds() < PENDING_RETRY.as_secs() as i64
+		{
+			return false;
+		}
+
 		// Each name asked for is tested rather than the set merely being
 		// non-empty: a name whose last attempt failed is still asked for, and
 		// waking a full pass — which asks canopy what this server may do before
 		// it does anything else — on every tick until it succeeds is what the
 		// per-name backoff exists to stop.
-		let wanted: Vec<String> = self.wanted.lock().await.iter().cloned().collect();
+		let mut wanted: Vec<String> = self.wanted.lock().await.iter().cloned().collect();
+		{
+			// A name whose application is paused or without the grant is kept, but
+			// waits for the steady pass that finds it lifted. One already holding a
+			// chain is renewed on the ordinary schedule.
+			let entitlement = self.entitlement.read().await;
+			let held = self.held.read().await;
+			wanted.extend(
+				self.explicit
+					.lock()
+					.await
+					.iter()
+					.filter(|(name, application_type)| {
+						!held.contains_key(*name)
+							&& entitlement
+								.as_ref()
+								.is_none_or(|e| explicit_orderable(e, name, application_type))
+					})
+					.map(|(name, _)| name.clone()),
+			);
+		}
 		for name in &wanted {
 			if self.name_due(name, now).await {
 				return true;
@@ -369,8 +691,12 @@ impl CertificateState {
 
 	/// One collection pass: what may be certified, asked about and collected.
 	///
+	/// A steady pass asks about every DNS name; any other asks about the ones
+	/// due, and about `asked`, the one a command asked for, whatever canopy last
+	/// said about it.
+	///
 	/// spec: TLS#requesting-and-collecting
-	async fn pass(&self, ctx: &TaskContext, steady: bool) -> Result<()> {
+	async fn pass(&self, ctx: &TaskContext, steady: bool, asked: Option<&str>) -> Result<()> {
 		self.load_from_disk().await?;
 		let entitlement = self.refresh_entitlement(ctx).await?;
 
@@ -381,43 +707,86 @@ impl CertificateState {
 		}
 		*self.stood_down.write().await = None;
 
-		let names = self.target_names(&entitlement).await;
+		let (targets, complete) = self.targets(&entitlement, steady).await;
+		*self.incomplete.write().await = (!complete).then(Timestamp::now);
+		if complete {
+			let names: Vec<String> = targets.iter().map(|t| t.name.clone()).collect();
+			self.prune_orders(&names).await;
+		}
+		self.persist_refusals().await;
+		self.persist_requests().await;
 
-		self.prune_orders(&names).await;
-
-		if names.is_empty() {
-			debug!("no name to certify on this host");
+		if targets.is_empty() {
+			debug!("no DNS name to certify on this host");
 			return Ok(());
 		}
 
 		let now = Timestamp::now();
-		for name in names {
-			let due = steady || self.name_due(&name, now).await;
-			if !due {
+		for target in targets {
+			if !self.target_due(&target.name, steady, asked, now).await {
 				continue;
 			}
-			match self.collect_one(ctx, &name).await {
+			match self.collect_one(ctx, &target).await {
 				Ok(()) => {
-					self.wanted.lock().await.remove(&name);
+					self.wanted.lock().await.remove(&target.name);
 				}
-				Err(err) => {
-					// One name failing must not stop the rest: a stuck order on
-					// one site is not a reason to leave every other name
-					// uncollected.
-					warn!(name, %err, "could not collect a certificate");
-					let mut orders = self.orders.write().await;
-					let order = orders.entry(name.clone()).or_default();
-					order.last_error = Some(why(&err));
-					// Stamped although canopy recorded nothing, so a failed
-					// attempt backs off exactly as a pending order does. The
-					// name stays asked-for: dropping it on a transient failure
-					// would leave a name Caddy is serving waiting out the steady
-					// interval for its first chain.
-					order.asked_at = Some(now);
+				Err(failure) => {
+					// One DNS name failing must not stop the rest: a stuck order on
+					// one site is not a reason to leave every other one uncollected.
+					self.record_failure(&target, failure, now).await;
 				}
 			}
 		}
+		self.persist_refusals().await;
+		self.persist_requests().await;
 		Ok(())
+	}
+
+	/// Record why asking about a DNS name did not go through.
+	///
+	/// Stamped although canopy recorded nothing, so a failed attempt backs off
+	/// exactly as a pending order does. The DNS name stays asked-for: dropping it
+	/// on a transient failure would leave one Caddy is serving waiting out the
+	/// steady interval for its first chain.
+	async fn record_failure(&self, target: &Target, failure: Failure, now: Timestamp) {
+		let Failure { refusal, report } = failure;
+		match refusal.as_ref().map(|refusal| refusal.kind) {
+			// Waiting on an operator rather than failing: not a fault on this host.
+			Some(kind) if kind.awaits_operator() => {
+				info!(
+					name = target.name,
+					kind = kind.as_str(),
+					"canopy needs an operator to act on this DNS name"
+				);
+			}
+			_ => warn!(name = target.name, err = %why(&report), "could not collect a certificate"),
+		}
+
+		let mut orders = self.orders.write().await;
+		let order = orders.entry(target.name.clone()).or_default();
+		order.application_type = Some(target.application_type.clone());
+		order.asked_at = Some(now);
+		order.last_error = Some(why(&report));
+		// A failure that is not an answer about the DNS name leaves what canopy
+		// last said standing.
+		//
+		// spec: TLS#undeclared-and-denied-dns-names
+		let Some(refusal) = refusal else {
+			return;
+		};
+		order.state = refusal_state(refusal.kind).to_owned();
+		if refusal.kind.awaits_operator() {
+			order.last_error = None;
+		} else if refusal.kind == RefusalKind::Other {
+			// The request as made is refused, with a type mismatch or a DNS name
+			// outside the group's domains, and the report says so; asking again
+			// would only repeat it. Canopy unable to act for a reason on its own
+			// side keeps the request, for when that is put right.
+			//
+			// spec: TLS#which-dns-names-are-certified
+			self.explicit.lock().await.remove(&target.name);
+		}
+		order.refusal = Some(refusal);
 	}
 
 	/// Record a pass that stood down.
@@ -449,6 +818,23 @@ impl CertificateState {
 			.retain(|name, _| targets.contains(name) || held.contains_key(name));
 	}
 
+	/// Whether a pass asks about one DNS name.
+	///
+	/// A DNS name a command asked for is asked about at once, even one waiting
+	/// on an operator: the operator who has just declared it, or lifted its
+	/// denial, is the one asking.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	async fn target_due(
+		&self,
+		name: &str,
+		steady: bool,
+		asked: Option<&str>,
+		now: Timestamp,
+	) -> bool {
+		steady || asked == Some(name) || self.name_due(name, now).await
+	}
+
 	/// Whether one name is due to be asked about outside a steady pass.
 	///
 	/// A name nothing has been attempted for is due at once, which is what makes
@@ -457,9 +843,24 @@ impl CertificateState {
 	/// governs, so neither a pending order nor a failing one is asked about every
 	/// tick.
 	async fn name_due(&self, name: &str, now: Timestamp) -> bool {
-		let wanted = self.wanted.lock().await.contains(name);
+		// A name a command asked for is pressing only until its first chain
+		// arrives; from then on it is renewed like any other.
+		//
+		// Each lock is taken and released in its own statement: elsewhere `held` is
+		// taken before `wanted` and `explicit`, and holding either of those while
+		// waiting on `held` could deadlock against a pass.
+		let handshake = self.wanted.lock().await.contains(name);
+		let requested = self.explicit.lock().await.contains_key(name);
+		let wanted = handshake || (requested && !self.held.read().await.contains_key(name));
 		match self.orders.read().await.get(name) {
 			None => true,
+			// Refused, so only the steady schedule asks again: asking sooner earns
+			// the same answer. Canopy shows an operator an undeclared request only
+			// while the machine keeps making it, and a lifted denial or a corrected
+			// configuration is noticed the same way.
+			//
+			// spec: TLS#undeclared-and-denied-dns-names
+			Some(order) if order.refusal.is_some() => false,
 			Some(order) if wanted || order.pending() => order
 				.asked_at
 				.is_none_or(|at| (now - at).get_seconds() >= PENDING_RETRY.as_secs() as i64),
@@ -467,42 +868,150 @@ impl CertificateState {
 		}
 	}
 
-	/// The names to certify: a site address Caddy serves, or one a handshake
-	/// asked for, that the entitlement covers.
+	/// The DNS names to certify, each with the application it is for.
 	///
-	/// A name meeting one test and not the other is left to Caddy's own
-	/// issuance.
+	/// A DNS name is a hooked site address, or one a handshake asked for, that
+	/// belongs to an application on the host which could certify it. One meeting
+	/// some of those tests and not the rest is left to Caddy's own issuance.
+	/// Explicitly requested names are ordered whether or not Caddy serves them or
+	/// their site is hooked.
 	///
-	/// spec: TLS#which-names-are-certified
-	async fn target_names(&self, entitlement: &Entitlement) -> Vec<String> {
-		let mut names: BTreeSet<String> = delivery::caddy_subjects().await.unwrap_or_else(|err| {
-			debug!(%err, "could not read Caddy's active subjects");
-			BTreeSet::new()
-		});
-		// A name is recorded during a handshake before any entitlement has been
-		// asked for, so the test is applied here rather than there — and a name
-		// this entitlement will never order for is dropped from the record as
-		// well as from the list. Left there it would keep `pass_due` true on
-		// every tick, which spends a full entitlement request a minute on a name
-		// that can never be ordered for.
-		{
-			let mut wanted = self.wanted.lock().await;
-			wanted.retain(|name| entitlement.may_certify(name));
-			names.extend(wanted.iter().cloned());
-		}
+	/// Where Caddy's configuration or the applications on the host cannot be
+	/// read, only the names a command asked for are returned, since they are the
+	/// ones that depend on neither, and the list is marked incomplete. Read as
+	/// nothing served or nothing installed, either would drop every other name's
+	/// order and refusal, and the handshake names waiting for a pass.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	async fn targets(&self, entitlement: &Entitlement, steady: bool) -> (Vec<Target>, bool) {
+		let sites = match delivery::caddy_sites().await {
+			Ok(sites) => sites,
+			Err(err) => {
+				warn!(%err, "could not read Caddy's configuration; ordering only DNS names requested by command");
+				return (self.explicit_targets(entitlement).await, false);
+			}
+		};
+		let Some(applications) = self.host_applications(steady).await else {
+			return (self.explicit_targets(entitlement).await, false);
+		};
+		(
+			self.targets_from(entitlement, &sites, &applications).await,
+			true,
+		)
+	}
 
-		names
-			.into_iter()
-			.filter(|name| certs::plausible_name(name).is_ok() && entitlement.may_certify(name))
+	/// The applications on this host: discovered afresh on a steady pass or where
+	/// none have been, and as last discovered otherwise.
+	///
+	/// Where discovery fails, the applications last discovered stand; `None`
+	/// where there are none to fall back on.
+	async fn host_applications(&self, steady: bool) -> Option<Vec<HostApplication>> {
+		let known = self.applications.read().await.clone();
+		if !steady && known.is_some() {
+			return known;
+		}
+		match ownership::discover_host_applications().await {
+			Ok(found) => {
+				*self.applications.write().await = Some(found.clone());
+				Some(found)
+			}
+			Err(err) => {
+				warn!(%err, "could not discover the applications on this host");
+				known
+			}
+		}
+	}
+
+	/// The DNS names a command asked for that may be ordered now.
+	async fn explicit_targets(&self, entitlement: &Entitlement) -> Vec<Target> {
+		self.explicit
+			.lock()
+			.await
+			.iter()
+			.filter(|(name, application_type)| {
+				explicit_orderable(entitlement, name, application_type)
+			})
+			.map(|(name, application_type)| Target {
+				name: name.clone(),
+				application_type: application_type.clone(),
+			})
 			.collect()
 	}
 
-	/// Ask canopy for one name, and take what comes back.
+	async fn targets_from(
+		&self,
+		entitlement: &Entitlement,
+		sites: &CaddySites,
+		applications: &[HostApplication],
+	) -> Vec<Target> {
+		let ownership = Ownership::resolve(sites, applications, entitlement);
+		let certifiable = |name: &str| {
+			let owner = ownership.owner(name)?;
+			entitlement
+				.for_type(owner)
+				.is_some_and(|app| app.may_certify(name))
+				.then(|| owner.to_owned())
+		};
+
+		let mut names: BTreeSet<String> = sites.hooked_addresses();
+		// A name is recorded during a handshake before any entitlement has been
+		// asked for, so the test is applied here rather than there, and a name this
+		// entitlement will never order for is dropped from the record as well as
+		// from the list. Left there it would keep `pass_due` true on every tick,
+		// which spends a full entitlement request a minute on a name that can never
+		// be ordered for.
+		{
+			let mut wanted = self.wanted.lock().await;
+			wanted.retain(|name| certifiable(name).is_some());
+			names.extend(wanted.iter().cloned());
+		}
+
+		let mut targets: BTreeMap<String, Target> = names
+			.into_iter()
+			.filter(|name| certs::plausible_name(name).is_ok())
+			.filter_map(|name| {
+				let application_type = certifiable(&name)?;
+				Some((
+					name.clone(),
+					Target {
+						name,
+						application_type,
+					},
+				))
+			})
+			.collect();
+
+		// A name a command asked for carries the application the command named,
+		// whatever its site says. It is kept until its first chain arrives and then
+		// while Caddy serves it, through a pause or a withdrawn grant, which are
+		// canopy's to lift; it is ordered only while its application may certify
+		// it.
+		//
+		// spec: TLS#which-dns-names-are-certified
+		{
+			let held = self.held.read().await;
+			self.explicit.lock().await.retain(|name, application_type| {
+				let wanted_still = !held.contains_key(name) || sites.serves(name);
+				let within = entitlement
+					.for_type(application_type)
+					.is_some_and(|app| app.covers(name));
+				wanted_still && within
+			});
+		}
+		for target in self.explicit_targets(entitlement).await {
+			targets.insert(target.name.clone(), target);
+		}
+
+		targets.into_values().collect()
+	}
+
+	/// Ask canopy for one DNS name, and take what comes back.
 	///
-	/// Request and collect are the same call and it is safe to repeat: a name
+	/// Request and collect are the same call and it is safe to repeat: a DNS name
 	/// and key canopy already holds a certificate for is answered from what it
 	/// holds rather than ordered again.
-	async fn collect_one(&self, ctx: &TaskContext, name: &str) -> Result<()> {
+	async fn collect_one(&self, ctx: &TaskContext, target: &Target) -> Result<(), Failure> {
+		let name = target.name.as_str();
 		let client = ctx
 			.canopy_client
 			.as_ref()
@@ -510,16 +1019,26 @@ impl CertificateState {
 
 		let key = self.key_for(name).await?;
 		let csr = certs::signing_request(name, &key)?;
-		let answer = client
+		let answer = match client
 			.certificates_request(
 				&RequestCertificateArgs::builder()
 					.csr(csr)
 					.name(name.to_owned())
+					.application_type(ApplicationType::from(target.application_type.clone()))
 					.build(),
 			)
 			.await
-			.into_diagnostic()
-			.wrap_err_with(|| format!("asking canopy to certify {name}"))?;
+		{
+			Ok(answer) => answer,
+			Err(err) => {
+				let refusal = Refusal::from_error(&err);
+				let report = Result::<(), _>::Err(err)
+					.into_diagnostic()
+					.wrap_err_with(|| format!("asking canopy to certify {name}"))
+					.unwrap_err();
+				return Err(Failure { refusal, report });
+			}
+		};
 
 		let not_after = answer.not_after.as_deref().and_then(certs::parse_not_after);
 		let order = Order {
@@ -529,6 +1048,8 @@ impl CertificateState {
 			revoked: answer.revoked,
 			key_must_be_replaced: answer.key_must_be_replaced,
 			asked_at: Some(Timestamp::now()),
+			application_type: Some(target.application_type.clone()),
+			refusal: None,
 		};
 		if let Some(ref err) = order.last_error {
 			warn!(name, error = %err, state = %order.state, "canopy reports this order failing");
@@ -675,6 +1196,9 @@ impl CertificateState {
 					"revoked": order.revoked,
 					"keyMustBeReplaced": order.key_must_be_replaced,
 					"askedAt": order.asked_at.map(|at| at.to_string()),
+					"applicationType": order.application_type,
+					"refusal": order.refusal.as_ref().map(|refusal| refusal.kind.as_str()),
+					"reason": order.reason(),
 				})
 			})
 			.collect();
@@ -709,13 +1233,17 @@ impl CertificateState {
 		})
 	}
 
-	/// Publish the addresses a name resolves to, or withdraw it with none.
+	/// Publish the addresses a DNS name resolves to, or withdraw it with none.
 	///
-	/// spec: NAM#registering-addresses-for-a-name
+	/// A registration names the application it is for; a withdrawal names only
+	/// the DNS name.
+	///
+	/// spec: NAM#registering-addresses-for-a-dns-name
 	async fn register_name(
 		&self,
 		ctx: &TaskContext,
 		name: &str,
+		application_type: Option<&str>,
 		addresses: Vec<String>,
 	) -> Result<RegisteredName> {
 		certs::plausible_name(name)?;
@@ -740,20 +1268,16 @@ impl CertificateState {
 			.ok_or_else(|| miette!("no canopy client; this host is not enrolled"))?;
 
 		let entitlement = self.entitlement(ctx).await?;
-		if !entitlement.holds_dns_grant() {
-			return Err(miette!("this server may not manage its own DNS records"));
-		}
-		if !entitlement.covers(name) {
-			return Err(miette!(
-				"{name} is not within a domain this server's group controls"
-			));
-		}
+		permit(&entitlement, name, application_type, Grant::Dns)?;
 
 		let answer = client
 			.names_register(
 				&RegisterNameArgs::builder()
 					.addresses(addresses)
 					.name(name.to_owned())
+					.maybe_application_type(
+						application_type.map(|t| ApplicationType::from(t.to_owned())),
+					)
 					.build(),
 			)
 			.await
@@ -862,7 +1386,7 @@ impl BackgroundTask for CanopyNames {
 				}
 			};
 
-			match self.state.pass(ctx, steady).await {
+			match self.state.pass(ctx, steady, None).await {
 				Ok(()) => {
 					*self.state.last_error.write().await = None;
 				}
@@ -885,7 +1409,7 @@ impl BackgroundTask for CanopyNames {
 			}),
 			guarded_endpoint("collect", self.state.clone(), |state, ctx| {
 				Box::pin(async move {
-					state.pass(&ctx, true).await?;
+					state.pass(&ctx, true, None).await?;
 					*state.last_pass.write().await = Some(Timestamp::now());
 					Ok(state.report().await)
 				})
@@ -895,17 +1419,18 @@ impl BackgroundTask for CanopyNames {
 					let name = required(&ctx, "name")?;
 					certs::plausible_name(&name)?;
 					let name = name.to_ascii_lowercase();
-					// A name outside the group's domains is refused rather than
-					// recorded: a pass would drop it, and the operator needs to
-					// be told that rather than handed a report that looks like
-					// the ask was taken.
-					if !state.entitlement(&ctx).await?.covers(&name) {
-						return Err(miette!(
-							"{name} is not within a domain this server's group controls"
-						));
-					}
-					state.wanted.lock().await.insert(name);
-					state.pass(&ctx, false).await?;
+					// A DNS name cannot be attributed from Caddy's configuration
+					// ahead of its site, so the command says which application it is
+					// for.
+					let application_type = required(&ctx, "type")?;
+					let entitlement = state.entitlement(&ctx).await?;
+					// Refused rather than recorded where the named application could
+					// not have it ordered: a pass would drop it or hold it back, and the
+					// operator needs to be told that rather than handed a report that
+					// looks like the ask was taken.
+					permit(&entitlement, &name, Some(&application_type), Grant::Tls)?;
+					state.note_explicit(&name, application_type).await?;
+					state.pass(&ctx, false, Some(&name)).await?;
 					Ok(state.report().await)
 				})
 			}),
@@ -932,7 +1457,10 @@ impl BackgroundTask for CanopyNames {
 							"registering {name} needs at least one address; use dns-withdraw to take its records down"
 						));
 					}
-					let answer = state.register_name(&ctx, &name, addresses).await?;
+					let application_type = required(&ctx, "type")?;
+					let answer = state
+						.register_name(&ctx, &name, Some(&application_type), addresses)
+						.await?;
 					Ok(registered(&answer))
 				})
 			}),
@@ -941,7 +1469,7 @@ impl BackgroundTask for CanopyNames {
 					let name = required(&ctx, "name")?;
 					// An empty address list is what withdraws a name: the
 					// records come down and the name is freed.
-					let answer = state.register_name(&ctx, &name, Vec::new()).await?;
+					let answer = state.register_name(&ctx, &name, None, Vec::new()).await?;
 					Ok(registered(&answer))
 				})
 			}),
@@ -1016,6 +1544,13 @@ fn wrap(
 mod tests {
 	use super::*;
 
+	fn awaits_operator(order: &Order) -> bool {
+		order
+			.refusal
+			.as_ref()
+			.is_some_and(|refusal| refusal.kind.awaits_operator())
+	}
+
 	fn state() -> (tempfile::TempDir, CertificateState) {
 		let dir = tempfile::tempdir().unwrap();
 		let state = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
@@ -1046,6 +1581,98 @@ mod tests {
 			restart: None,
 			query: Default::default(),
 		}
+	}
+
+	fn central() -> HostApplication {
+		HostApplication {
+			type_slug: "tamanu-central".into(),
+			canonical_hosts: BTreeSet::new(),
+			service_names: ["api.central.tamanu.internal".to_owned()].into(),
+			shared_names: BTreeSet::new(),
+			local_ports: BTreeSet::new(),
+		}
+	}
+
+	/// Caddy sites proxying to Tamanu central, with the daemon's endpoint named for
+	/// `hooked` of them.
+	fn sites(all: &[&str], hooked: &[&str]) -> CaddySites {
+		let routes: Vec<Value> = all
+			.iter()
+			.map(|host| {
+				json!({
+					"match": [{ "host": [host] }],
+					"handle": [{ "handler": "reverse_proxy", "dynamic_upstreams": {
+						"source": "a", "name": "api.central.tamanu.internal", "port": "3000" } }],
+				})
+			})
+			.collect();
+		let policies = if hooked.is_empty() {
+			json!([])
+		} else {
+			json!([{
+				"subjects": hooked,
+				"get_certificate": [{ "via": "http", "url": "http://127.0.0.1:8271/certificate" }],
+			}])
+		};
+		CaddySites::from_config(&json!({"apps": {
+			"http": { "servers": { "s": { "routes": routes } } },
+			"tls": { "automation": { "policies": policies } },
+		}}))
+	}
+
+	/// Canopy's answer for a host with two applications: one holding the TLS grant
+	/// over `one.test`, one without it over `two.test`.
+	fn applications_wire() -> bestool_canopy::schema::Entitlements {
+		use bestool_canopy::schema::{ApplicationEntitlements, Entitlements};
+
+		let app = |type_slug: &str, domain: &str, tls: bool| {
+			ApplicationEntitlements::builder()
+				.certificates(vec![])
+				.domains(vec![domain.to_string()])
+				.may_manage_dns(false)
+				.may_manage_tls(tls)
+				.paused(false)
+				.registered_names(vec![])
+				.type_(type_slug.parse().unwrap())
+				.build()
+		};
+		Entitlements::builder()
+			.applications(vec![
+				app("tamanu-central", "one.test", true),
+				app("tamanu-facility", "two.test", false),
+			])
+			.certificates(vec![])
+			.domains(vec![])
+			.may_manage_dns(false)
+			.may_manage_tls(false)
+			.paused(false)
+			.registered_names(vec![])
+			.build()
+	}
+
+	fn target(name: &str) -> Target {
+		Target {
+			name: name.into(),
+			application_type: "tamanu-central".into(),
+		}
+	}
+
+	fn refused(kind: RefusalKind, reason: &str) -> Failure {
+		Failure {
+			refusal: Some(Refusal {
+				kind,
+				reason: reason.into(),
+			}),
+			report: miette!("asking canopy to certify: canopy returned 403 Forbidden: {reason}"),
+		}
+	}
+
+	fn names(targets: &[Target]) -> Vec<&str> {
+		targets.iter().map(|t| t.name.as_str()).collect()
+	}
+
+	async fn entitled(state: &CertificateState) -> Entitlement {
+		state.entitlement.read().await.clone().unwrap()
 	}
 
 	async fn hold(state: &CertificateState, name: &str, usable: bool) {
@@ -1167,8 +1794,8 @@ mod tests {
 
 	/// A name recorded during a handshake that the entitlement turns out not to
 	/// cover leaves the record as well as the target list: kept, it would make a
-	/// pass due on every tick and spend an entitlement request each time on a
-	/// name that can never be ordered for.
+	/// pass due on every tick and spend an entitlement request each time on a name
+	/// that can never be ordered for.
 	#[tokio::test]
 	async fn a_name_the_entitlement_does_not_cover_is_dropped_from_the_record() {
 		let (_dir, state) = state();
@@ -1176,8 +1803,11 @@ mod tests {
 		state.note_wanted("app.elsewhere.test").await;
 		assert!(state.pass_due().await);
 
-		let entitlement = state.entitlement.read().await.clone().unwrap();
-		assert!(state.target_names(&entitlement).await.is_empty());
+		let none = sites(&["app.elsewhere.test"], &[]);
+		let targets = state
+			.targets_from(&entitled(&state).await, &none, &[central()])
+			.await;
+		assert!(targets.is_empty());
 
 		// Nothing is waiting on a pass any more, so the steady interval governs
 		// again rather than every tick making one due.
@@ -1187,17 +1817,28 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn a_recorded_name_is_still_subject_to_the_entitlement() {
+	async fn a_recorded_name_is_still_subject_to_the_entitlement_and_to_ownership() {
 		// A handshake cannot conjure an order for a name outside the server's
-		// reach: the recorded name meets the same test as one read from Caddy.
+		// reach: the recorded name meets the same tests as one read from Caddy.
 		let (_dir, state) = state();
 		with_entitlement(&state, &["example.com"], true, false).await;
 		state.note_wanted("app.elsewhere.test").await;
 		state.note_wanted("app.example.com").await;
+		state.note_wanted("nobody.example.com").await;
 
-		let entitlement = state.entitlement.read().await.clone().unwrap();
-		let names = state.target_names(&entitlement).await;
-		assert_eq!(names, vec!["app.example.com".to_string()]);
+		// The site is not hooked: a handshake only happens for a hooked one, so the
+		// recorded name needs no hook of its own.
+		let seen = sites(&["app.elsewhere.test", "app.example.com"], &[]);
+		let targets = state
+			.targets_from(&entitled(&state).await, &seen, &[central()])
+			.await;
+		assert_eq!(
+			targets,
+			vec![Target {
+				name: "app.example.com".into(),
+				application_type: "tamanu-central".into(),
+			}]
+		);
 	}
 
 	/// A condemned key takes precedence over everything else the answer carries.
@@ -1291,7 +1932,7 @@ mod tests {
 	/// would take a production name's records down while reading as a publish
 	/// that had worked. Withdrawing is its own endpoint, asked for deliberately.
 	///
-	/// spec: NAM#registering-addresses-for-a-name
+	/// spec: NAM#registering-addresses-for-a-dns-name
 	#[tokio::test]
 	async fn registering_with_no_address_is_refused_rather_than_withdrawing() {
 		let (_dir, state) = state();
@@ -1387,7 +2028,7 @@ mod tests {
 	async fn what_canopy_said_about_a_name_no_longer_in_play_is_dropped() {
 		let (_dir, state) = state();
 		with_entitlement(&state, &["example.com"], true, false).await;
-		let entitlement = state.entitlement.read().await.clone().unwrap();
+		let entitlement = entitled(&state).await;
 		hold(&state, "held.example.com", true).await;
 
 		for name in ["gone.example.com", "held.example.com", "app.example.com"] {
@@ -1399,12 +2040,11 @@ mod tests {
 				},
 			);
 		}
-		// Caddy's admin API is not running under the test, so the set a handshake
-		// feeds is the whole of the target list.
-		state.note_wanted("app.example.com").await;
-		let targets = state.target_names(&entitlement).await;
-		assert_eq!(targets, vec!["app.example.com".to_string()]);
-		state.prune_orders(&targets).await;
+		let seen = sites(&["app.example.com"], &["app.example.com"]);
+		let targets = state.targets_from(&entitlement, &seen, &[central()]).await;
+		assert_eq!(names(&targets), vec!["app.example.com"]);
+		let kept: Vec<String> = targets.into_iter().map(|t| t.name).collect();
+		state.prune_orders(&kept).await;
 
 		let orders = state.orders.read().await;
 		assert!(orders.contains_key("app.example.com"), "a target is kept");
@@ -1422,7 +2062,7 @@ mod tests {
 	/// refused here rather than at whichever client happened to call: the daemon
 	/// is the component holding the DNS grant.
 	///
-	/// spec: NAM#registering-addresses-for-a-name
+	/// spec: NAM#registering-addresses-for-a-dns-name
 	#[tokio::test]
 	async fn an_address_that_is_not_an_ip_is_refused_before_canopy_sees_it() {
 		let (_dir, state) = state();
@@ -1432,6 +2072,7 @@ mod tests {
 			.register_name(
 				&detached_ctx(),
 				"app.example.com",
+				Some("tamanu-central"),
 				vec!["203.0.113.5".into(), "not-an-address".into()],
 			)
 			.await
@@ -1445,7 +2086,12 @@ mod tests {
 		// Well-formed addresses get past the parse and fail for the reason they
 		// should: this host has no DNS grant and no canopy client.
 		let err = state
-			.register_name(&detached_ctx(), "app.example.com", vec!["::1".into()])
+			.register_name(
+				&detached_ctx(),
+				"app.example.com",
+				Some("tamanu-central"),
+				vec!["::1".into()],
+			)
 			.await
 			.unwrap_err();
 		assert!(!why(&err).contains("is not an IP address"), "{}", why(&err));
@@ -1479,23 +2125,293 @@ mod tests {
 		assert_eq!(stands_down(&entitled), None);
 	}
 
-	/// A name has to meet both tests: Caddy serving it, and the entitlement
-	/// covering it. One without the other is left to Caddy's own issuance.
+	/// A name has to meet every test: a hooked site, an owner, and an entitlement
+	/// that covers it. One without the rest is left to Caddy's own issuance.
+	///
+	/// spec: TLS#which-dns-names-are-certified
 	#[tokio::test]
-	async fn a_name_meeting_one_test_and_not_the_other_is_not_ordered_for() {
+	async fn a_name_failing_any_test_is_not_ordered_for() {
 		let (_dir, state) = state();
 		with_entitlement(&state, &["example.com"], true, false).await;
-		let entitlement = state.entitlement.read().await.clone().unwrap();
+		let entitlement = entitled(&state).await;
 
-		// Caddy's admin API is not running under this test, so the subjects it
-		// would contribute are empty: a name the entitlement covers that Caddy
-		// does not serve produces no order.
-		assert!(state.target_names(&entitlement).await.is_empty());
+		// Hooked and owned, but outside the domains.
+		let outside = sites(&["app.elsewhere.test"], &["app.elsewhere.test"]);
+		assert!(
+			state
+				.targets_from(&entitlement, &outside, &[central()])
+				.await
+				.is_empty()
+		);
 
-		// And a subject the entitlement does not cover is dropped even when it
-		// reaches the task by the one route a test can drive.
-		state.note_wanted("app.elsewhere.test").await;
-		assert!(state.target_names(&entitlement).await.is_empty());
+		// Owned and covered, but the site does not name the daemon's endpoint.
+		let unhooked = sites(&["app.example.com"], &[]);
+		assert!(
+			state
+				.targets_from(&entitlement, &unhooked, &[central()])
+				.await
+				.is_empty()
+		);
+
+		// Hooked and covered, but no application on the host owns it.
+		let hooked = sites(&["app.example.com"], &["app.example.com"]);
+		assert!(
+			state
+				.targets_from(&entitlement, &hooked, &[])
+				.await
+				.is_empty()
+		);
+
+		// A host where no site names the endpoint orders nothing at all.
+		assert!(
+			state
+				.targets_from(&entitlement, &CaddySites::default(), &[central()])
+				.await
+				.is_empty()
+		);
+
+		// And all of them together is ordered, for the owner.
+		let targets = state
+			.targets_from(&entitlement, &hooked, &[central()])
+			.await;
+		assert_eq!(names(&targets), vec!["app.example.com"]);
+		assert_eq!(targets[0].application_type, "tamanu-central");
+	}
+
+	/// An explicit request is ordered whether or not Caddy serves the name or its
+	/// site names the endpoint, until its first chain arrives, and after that
+	/// while Caddy serves it.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn an_explicit_request_is_kept_until_its_first_chain_and_then_while_caddy_serves_it() {
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+		let entitlement = entitled(&state).await;
+		state
+			.explicit
+			.lock()
+			.await
+			.insert("pre.example.com".into(), "msupply".into());
+
+		// Caddy knows nothing of it yet, and the application named is the one
+		// asked for, whatever the host's own attribution would say.
+		let targets = state
+			.targets_from(&entitlement, &CaddySites::default(), &[central()])
+			.await;
+		assert_eq!(
+			targets,
+			vec![Target {
+				name: "pre.example.com".into(),
+				application_type: "msupply".into(),
+			}]
+		);
+
+		// Collected, and Caddy serves it on a site with no hook: still collected.
+		hold(&state, "pre.example.com", true).await;
+		let unhooked = sites(&["pre.example.com"], &[]);
+		let targets = state
+			.targets_from(&entitlement, &unhooked, &[central()])
+			.await;
+		assert_eq!(names(&targets), vec!["pre.example.com"]);
+		assert_eq!(targets[0].application_type, "msupply");
+
+		// Collected and no longer served: collection stops.
+		let targets = state
+			.targets_from(&entitlement, &CaddySites::default(), &[central()])
+			.await;
+		assert!(targets.is_empty());
+		assert!(state.explicit.lock().await.is_empty());
+	}
+
+	/// The application named by a command is the one whose entitlement applies. A
+	/// request kept for a type the machine no longer hosts is dropped.
+	#[tokio::test]
+	async fn an_explicit_request_is_held_to_the_application_it_names() {
+		let (_dir, state) = state();
+		*state.entitlement.write().await = Some(Entitlement::from_wire(&applications_wire()));
+		let entitlement = entitled(&state).await;
+		let mut explicit = state.explicit.lock().await;
+		explicit.insert("a.one.test".into(), "tamanu-central".into());
+		explicit.insert("c.one.test".into(), "nonesuch".into());
+		// Named for the application that holds no TLS grant: not ordered.
+		explicit.insert("b.two.test".into(), "tamanu-facility".into());
+		drop(explicit);
+
+		let targets = state
+			.targets_from(&entitlement, &CaddySites::default(), &[])
+			.await;
+		assert_eq!(names(&targets), vec!["a.one.test"]);
+		let explicit = state.explicit.lock().await;
+		// Not ordered, but kept for when the grant arrives.
+		assert!(explicit.contains_key("b.two.test"));
+		assert!(!explicit.contains_key("c.one.test"));
+	}
+
+	/// With Caddy's configuration unreadable, what is known about the other names
+	/// is left as it was rather than read as Caddy serving nothing.
+	#[tokio::test]
+	async fn an_unreadable_caddy_configuration_orders_only_requested_names_and_drops_nothing() {
+		if delivery::caddy_sites().await.is_ok() {
+			// A Caddy is answering on this machine; the case cannot be staged.
+			return;
+		}
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+		let entitlement = entitled(&state).await;
+		state.note_wanted("hooked.example.com").await;
+		state
+			.record_failure(
+				&target("wait.example.com"),
+				refused(RefusalKind::Undeclared, "declare it"),
+				Timestamp::now(),
+			)
+			.await;
+		state
+			.note_explicit("pre.example.com", "tamanu-central".into())
+			.await
+			.unwrap();
+
+		let (targets, complete) = state.targets(&entitlement, false).await;
+		assert!(!complete);
+		assert_eq!(names(&targets), vec!["pre.example.com"]);
+		assert!(state.wanted.lock().await.contains("hooked.example.com"));
+		assert!(state.orders.read().await.contains_key("wait.example.com"));
+	}
+
+	/// A request a command made survives a restart until its first chain
+	/// arrives.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn a_request_by_command_survives_a_restart() {
+		let dir = tempfile::tempdir().unwrap();
+		let before = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
+		before
+			.note_explicit("pre.example.com", "msupply".into())
+			.await
+			.unwrap();
+
+		let after = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
+		after
+			.note_explicit("other.example.com", "msupply".into())
+			.await
+			.unwrap();
+		let explicit = after.explicit.lock().await.clone();
+		assert_eq!(explicit["pre.example.com"], "msupply");
+		assert!(explicit.contains_key("other.example.com"));
+		assert_eq!(certs::load_requests(dir.path()).await, explicit);
+	}
+
+	/// Once its first chain arrives, a requested name is renewed on the ordinary
+	/// schedule rather than asked about on the pending backoff.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn a_requested_name_with_a_chain_is_not_pressing() {
+		let (_dir, state) = state();
+		*state.last_pass.write().await = Some(Timestamp::now());
+		state
+			.note_explicit("pre.example.com", "tamanu-central".into())
+			.await
+			.unwrap();
+		let long_ago = Timestamp::now() - std::time::Duration::from_secs(3600);
+		state.orders.write().await.insert(
+			"pre.example.com".into(),
+			Order {
+				state: "issued".into(),
+				asked_at: Some(long_ago),
+				..Order::default()
+			},
+		);
+		assert!(state.name_due("pre.example.com", Timestamp::now()).await);
+
+		hold(&state, "pre.example.com", true).await;
+		assert!(!state.name_due("pre.example.com", Timestamp::now()).await);
+		assert!(!state.pass_due().await);
+	}
+
+	/// A pass that could not read Caddy's configuration or the host's
+	/// applications backs off before the next, rather than one waking on every
+	/// tick for a handshake's name it could not attempt.
+	#[tokio::test]
+	async fn a_pass_that_could_not_read_what_the_host_serves_backs_off_the_next() {
+		let (_dir, state) = state();
+		*state.last_pass.write().await = Some(Timestamp::now());
+		state.note_wanted("app.example.com").await;
+		assert!(state.pass_due().await);
+
+		*state.incomplete.write().await = Some(Timestamp::now());
+		assert!(!state.pass_due().await);
+
+		*state.incomplete.write().await =
+			Some(Timestamp::now() - std::time::Duration::from_secs(PENDING_RETRY.as_secs() + 1));
+		assert!(state.pass_due().await);
+	}
+
+	/// Past the bound a new request is refused, and one already accepted can
+	/// still be asked again.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn requests_by_command_are_bounded() {
+		let (_dir, state) = state();
+		for n in 0..EXPLICIT_LIMIT {
+			state
+				.note_explicit(&format!("n{n}.example.com"), "msupply".into())
+				.await
+				.unwrap();
+		}
+		assert!(
+			state
+				.note_explicit("over.example.com", "msupply".into())
+				.await
+				.is_err()
+		);
+		state
+			.note_explicit("n0.example.com", "tamanu-central".into())
+			.await
+			.unwrap();
+		assert_eq!(
+			state.explicit.lock().await["n0.example.com"],
+			"tamanu-central"
+		);
+	}
+
+	/// A pause on the named application holds a requested name back without
+	/// forgetting it, and neither it nor the name wakes a pass in the meantime.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn an_explicit_request_waits_out_its_applications_pause() {
+		let (_dir, state) = state();
+		*state.last_pass.write().await = Some(Timestamp::now());
+		let mut wire = applications_wire();
+		wire.applications[0].paused = true;
+		*state.entitlement.write().await = Some(Entitlement::from_wire(&wire));
+		let paused = entitled(&state).await;
+		let type_slug = paused.applications[0].type_slug.clone().unwrap();
+		let name = format!("pre.{}", paused.applications[0].domains[0]);
+		state
+			.explicit
+			.lock()
+			.await
+			.insert(name.clone(), type_slug.clone());
+
+		assert!(!state.pass_due().await);
+		let targets = state
+			.targets_from(&paused, &CaddySites::default(), &[])
+			.await;
+		assert!(!names(&targets).contains(&name.as_str()));
+		assert!(state.explicit.lock().await.contains_key(&name));
+
+		*state.entitlement.write().await = Some(Entitlement::from_wire(&applications_wire()));
+		let lifted = entitled(&state).await;
+		assert!(state.pass_due().await);
+		let targets = state
+			.targets_from(&lifted, &CaddySites::default(), &[])
+			.await;
+		assert!(names(&targets).contains(&name.as_str()));
 	}
 
 	#[tokio::test]
@@ -1587,5 +2503,648 @@ mod tests {
 		let state = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
 		state.load_from_disk().await.unwrap();
 		assert!(state.serve("app.example.com").await.is_none());
+	}
+
+	/// A request canopy refuses as undeclared is waiting on an operator, not
+	/// failing: the order shows it with the reason canopy gave, and the DNS name
+	/// is asked about on the steady schedule and no sooner.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	#[tokio::test]
+	async fn an_undeclared_refusal_is_recorded_and_not_asked_again_between_steady_passes() {
+		let (_dir, state) = state();
+		*state.last_pass.write().await = Some(Timestamp::now());
+		state.note_wanted("app.example.com").await;
+		assert!(state.pass_due().await);
+
+		let long_ago = Timestamp::now() - std::time::Duration::from_secs(3600);
+		state
+			.record_failure(
+				&target("app.example.com"),
+				refused(RefusalKind::Undeclared, "declare it in canopy"),
+				long_ago,
+			)
+			.await;
+
+		let orders = state.orders.read().await;
+		let order = &orders["app.example.com"];
+		assert_eq!(order.state, "undeclared");
+		assert_eq!(order.reason(), Some("declare it in canopy"));
+		assert_eq!(order.application_type.as_deref(), Some("tamanu-central"));
+		drop(orders);
+
+		// Still asked for, and long past any retry backoff, yet neither the name
+		// nor a handshake for it brings a pass forward.
+		assert!(state.wanted.lock().await.contains("app.example.com"));
+		assert!(!state.name_due("app.example.com", Timestamp::now()).await);
+		assert!(!state.pass_due().await);
+		state.note_wanted("app.example.com").await;
+		assert!(!state.pass_due().await);
+	}
+
+	/// A pass between steady ones reuses the applications last discovered rather
+	/// than discovering them again.
+	#[tokio::test]
+	async fn the_host_applications_are_reused_between_steady_passes() {
+		let (_dir, state) = state();
+		*state.applications.write().await = Some(vec![msupply()]);
+		assert_eq!(state.host_applications(false).await, Some(vec![msupply()]));
+	}
+
+	/// The command an operator runs after declaring a DNS name, or lifting its
+	/// denial, asks canopy at once rather than waiting for the steady schedule.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	#[tokio::test]
+	async fn a_name_a_command_asks_for_is_due_even_while_waiting_on_an_operator() {
+		let (_dir, state) = state();
+		for (name, kind) in [
+			("a.example.com", RefusalKind::Undeclared),
+			("b.example.com", RefusalKind::Denied),
+		] {
+			state
+				.record_failure(
+					&target(name),
+					refused(kind, "an operator's"),
+					Timestamp::now(),
+				)
+				.await;
+			let now = Timestamp::now();
+			assert!(!state.target_due(name, false, None, now).await);
+			assert!(
+				!state
+					.target_due(name, false, Some("other.example.com"), now)
+					.await
+			);
+			assert!(state.target_due(name, false, Some(name), now).await);
+			assert!(state.target_due(name, true, None, now).await);
+		}
+	}
+
+	#[tokio::test]
+	async fn a_denied_refusal_is_held_the_same_way_and_keeps_the_chain_in_hand() {
+		let (_dir, state) = state();
+		with_entitlement(&state, &["example.com"], true, false).await;
+		hold(&state, "app.example.com", true).await;
+		state
+			.record_failure(
+				&target("app.example.com"),
+				refused(RefusalKind::Denied, "an operator denied this"),
+				Timestamp::now(),
+			)
+			.await;
+
+		let orders = state.orders.read().await;
+		assert_eq!(orders["app.example.com"].state, "denied");
+		assert!(awaits_operator(&orders["app.example.com"]));
+		drop(orders);
+		assert!(!state.name_due("app.example.com", Timestamp::now()).await);
+
+		// A denial is not a revocation.
+		assert!(state.serve("app.example.com").await.is_some());
+	}
+
+	/// A later answer replaces the refusal, and the name is due again like any
+	/// other.
+	#[tokio::test]
+	async fn an_accepted_request_replaces_the_refusal() {
+		let (_dir, state) = state();
+		state
+			.record_failure(
+				&target("app.example.com"),
+				refused(RefusalKind::Undeclared, "declare it"),
+				Timestamp::now(),
+			)
+			.await;
+		assert!(awaits_operator(
+			&state.orders.read().await["app.example.com"]
+		));
+
+		state.orders.write().await.insert(
+			"app.example.com".into(),
+			Order {
+				state: "pending".into(),
+				asked_at: Some(Timestamp::now() - std::time::Duration::from_secs(300)),
+				application_type: Some("tamanu-central".into()),
+				..Order::default()
+			},
+		);
+		assert!(!awaits_operator(
+			&state.orders.read().await["app.example.com"]
+		));
+		assert!(state.name_due("app.example.com", Timestamp::now()).await);
+	}
+
+	/// A type mismatch and `name-not-entitled` are ordinary failures: shown with
+	/// canopy's reason, asked about again only on the steady schedule, and not
+	/// mistaken for an operator being waited on.
+	#[tokio::test]
+	async fn any_other_refusal_is_an_ordinary_failure_with_canopys_reason() {
+		let (_dir, state) = state();
+		state
+			.explicit
+			.lock()
+			.await
+			.insert("app.example.com".into(), "msupply".into());
+		state
+			.record_failure(
+				&target("app.example.com"),
+				refused(RefusalKind::Other, "this machine hosts tamanu-central"),
+				Timestamp::now(),
+			)
+			.await;
+
+		let orders = state.orders.read().await;
+		let order = &orders["app.example.com"];
+		assert_eq!(order.state, "refused");
+		assert!(!awaits_operator(order));
+		assert_eq!(order.reason(), Some("this machine hosts tamanu-central"));
+		assert!(order.last_error.is_some());
+		drop(orders);
+
+		// The command that named the type was answered by this report.
+		assert!(state.explicit.lock().await.is_empty());
+		state.note_wanted("app.example.com").await;
+		assert!(
+			!state
+				.name_due(
+					"app.example.com",
+					Timestamp::now() + std::time::Duration::from_secs(3600)
+				)
+				.await
+		);
+	}
+
+	/// Canopy unable to act on a requested DNS name for a reason on its own side
+	/// keeps the request, asked about again on the steady schedule.
+	///
+	/// spec: TLS#which-dns-names-are-certified
+	#[tokio::test]
+	async fn a_conflict_keeps_the_request_for_the_steady_schedule() {
+		let (_dir, state) = state();
+		*state.last_pass.write().await = Some(Timestamp::now());
+		state
+			.note_explicit("pre.example.com", "tamanu-central".into())
+			.await
+			.unwrap();
+		let long_ago = Timestamp::now() - std::time::Duration::from_secs(3600);
+		state
+			.record_failure(
+				&target("pre.example.com"),
+				refused(RefusalKind::Conflict, "no zone covers it"),
+				long_ago,
+			)
+			.await;
+
+		assert!(state.explicit.lock().await.contains_key("pre.example.com"));
+		assert_eq!(
+			state.orders.read().await["pre.example.com"].reason(),
+			Some("no zone covers it")
+		);
+		assert!(!state.name_due("pre.example.com", Timestamp::now()).await);
+		assert!(!state.pass_due().await);
+		assert!(
+			state
+				.target_due(
+					"pre.example.com",
+					false,
+					Some("pre.example.com"),
+					Timestamp::now()
+				)
+				.await
+		);
+	}
+
+	/// A failure with no answer from canopy keeps whatever state the order had,
+	/// so a pending order is still retried.
+	#[tokio::test]
+	async fn a_failure_with_no_answer_keeps_the_order_state() {
+		let (_dir, state) = state();
+		state.orders.write().await.insert(
+			"app.example.com".into(),
+			Order {
+				state: "pending".into(),
+				..Order::default()
+			},
+		);
+		state
+			.record_failure(
+				&target("app.example.com"),
+				Failure {
+					refusal: None,
+					report: miette!("reaching canopy: timed out"),
+				},
+				Timestamp::now(),
+			)
+			.await;
+		let orders = state.orders.read().await;
+		assert!(orders["app.example.com"].pending());
+		assert!(orders["app.example.com"].refusal.is_none());
+		assert_eq!(
+			orders["app.example.com"].reason(),
+			Some("reaching canopy: timed out")
+		);
+	}
+
+	/// A failure with no answer from canopy is not a later answer, so a refusal
+	/// it follows is kept, in memory and on disk.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	#[tokio::test]
+	async fn a_failure_with_no_answer_keeps_the_refusal() {
+		let (dir, state) = state();
+		state
+			.record_failure(
+				&target("app.example.com"),
+				refused(RefusalKind::Undeclared, "declare it"),
+				Timestamp::now(),
+			)
+			.await;
+		state.persist_refusals().await;
+		state
+			.record_failure(
+				&target("app.example.com"),
+				Failure {
+					refusal: None,
+					report: miette!("reaching canopy: timed out"),
+				},
+				Timestamp::now(),
+			)
+			.await;
+		state.persist_refusals().await;
+
+		let orders = state.orders.read().await;
+		assert!(awaits_operator(&orders["app.example.com"]));
+		assert_eq!(orders["app.example.com"].reason(), Some("declare it"));
+		drop(orders);
+		assert!(
+			certs::load_refusals(dir.path())
+				.await
+				.contains_key("app.example.com")
+		);
+	}
+
+	/// A DNS name waiting on an operator is not mistaken for a failing one before
+	/// the daemon has asked again.
+	///
+	/// spec: TLS#undeclared-and-denied-dns-names
+	#[tokio::test]
+	async fn refusals_survive_a_restart() {
+		let dir = tempfile::tempdir().unwrap();
+		let before = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
+		before
+			.record_failure(
+				&target("a.example.com"),
+				refused(RefusalKind::Undeclared, "declare it"),
+				Timestamp::now(),
+			)
+			.await;
+		before
+			.record_failure(
+				&target("b.example.com"),
+				refused(RefusalKind::Denied, "denied"),
+				Timestamp::now(),
+			)
+			.await;
+		before
+			.record_failure(
+				&target("c.example.com"),
+				refused(RefusalKind::Other, "mismatch"),
+				Timestamp::now(),
+			)
+			.await;
+		before.persist_refusals().await;
+
+		let after = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
+		after.load_from_disk().await.unwrap();
+		let orders = after.orders.read().await;
+		assert_eq!(orders["a.example.com"].state, "undeclared");
+		assert_eq!(orders["a.example.com"].reason(), Some("declare it"));
+		assert_eq!(orders["b.example.com"].state, "denied");
+		assert!(orders["a.example.com"].application_type.is_some());
+		assert_eq!(orders["c.example.com"].state, "refused");
+		assert_eq!(orders["c.example.com"].reason(), Some("mismatch"));
+		assert!(!awaits_operator(&orders["c.example.com"]));
+	}
+
+	/// A refusal is dropped once the DNS name leaves the set the daemon asks
+	/// about, from memory and from disk.
+	#[tokio::test]
+	async fn a_refusal_for_a_name_no_longer_asked_about_is_dropped() {
+		let dir = tempfile::tempdir().unwrap();
+		let state = CertificateState::new(dir.path().to_path_buf(), peer::Permitted::default());
+		state
+			.record_failure(
+				&target("a.example.com"),
+				refused(RefusalKind::Undeclared, "declare it"),
+				Timestamp::now(),
+			)
+			.await;
+		state.persist_refusals().await;
+		assert!(!certs::load_refusals(dir.path()).await.is_empty());
+
+		state.prune_orders(&[]).await;
+		state.persist_refusals().await;
+		assert!(state.orders.read().await.is_empty());
+		assert!(certs::load_refusals(dir.path()).await.is_empty());
+	}
+
+	#[tokio::test]
+	async fn the_status_report_carries_the_refusal_the_reason_and_the_type_sent() {
+		let (_dir, state) = state();
+		state
+			.record_failure(
+				&target("a.example.com"),
+				refused(RefusalKind::Undeclared, "declare it"),
+				Timestamp::now(),
+			)
+			.await;
+		let report = state.report().await;
+		let row = &report["orders"][0];
+		assert_eq!(row["name"], "a.example.com");
+		assert_eq!(row["state"], "undeclared");
+		assert_eq!(row["refusal"], "undeclared");
+		assert_eq!(row["reason"], "declare it");
+		assert_eq!(row["applicationType"], "tamanu-central");
+	}
+
+	/// The status endpoint is open: reporting what this server holds needs no
+	/// privilege.
+	#[test]
+	fn only_the_status_endpoint_is_open() {
+		let (_dir, state) = state();
+		let task = CanopyNames::new(Arc::new(state));
+		for endpoint in task.http_endpoints() {
+			assert_eq!(
+				endpoint.name == "status",
+				!endpoint.guarded,
+				"{}",
+				endpoint.name
+			);
+		}
+	}
+
+	fn msupply() -> HostApplication {
+		HostApplication {
+			type_slug: "msupply".into(),
+			service_names: ["api.msupply.internal".to_owned()].into(),
+			..central()
+		}
+	}
+
+	/// Two applications on one box, both holding the TLS grant: `a.shared.test`
+	/// and `b.shared.test` are Tamanu central's and mSupply's by their sites.
+	fn two_applications_wire(
+		central_covers: &str,
+		central_paused: bool,
+	) -> bestool_canopy::schema::Entitlements {
+		use bestool_canopy::schema::{ApplicationEntitlements, Entitlements};
+
+		let app = |type_slug: &str, domain: &str, paused: bool| {
+			ApplicationEntitlements::builder()
+				.certificates(vec![])
+				.domains(vec![domain.to_string()])
+				.may_manage_dns(false)
+				.may_manage_tls(true)
+				.paused(paused)
+				.registered_names(vec![])
+				.type_(type_slug.parse().unwrap())
+				.build()
+		};
+		Entitlements::builder()
+			.applications(vec![
+				app("tamanu-central", central_covers, central_paused),
+				app("msupply", "supply.test", false),
+			])
+			.certificates(vec![])
+			.domains(vec![])
+			.may_manage_dns(false)
+			.may_manage_tls(false)
+			.paused(false)
+			.registered_names(vec![])
+			.build()
+	}
+
+	fn hooked_sites(hosts: &[(&str, &str)]) -> CaddySites {
+		let routes: Vec<Value> = hosts
+			.iter()
+			.map(|(host, upstream)| {
+				json!({
+					"match": [{ "host": [host] }],
+					"handle": [{ "handler": "reverse_proxy", "dynamic_upstreams": {
+						"source": "a", "name": upstream, "port": "3000" } }],
+				})
+			})
+			.collect();
+		let subjects: Vec<&str> = hosts.iter().map(|(host, _)| *host).collect();
+		CaddySites::from_config(&json!({"apps": {
+			"http": { "servers": { "s": { "routes": routes } } },
+			"tls": { "automation": { "policies": [{
+				"subjects": subjects,
+				"get_certificate": [{ "via": "http", "url": "http://127.0.0.1:8271/certificate" }],
+			}] } },
+		}}))
+	}
+
+	/// Every request carries the type of the application the DNS name belongs to,
+	/// and is tested against that application's entitlement rather than the
+	/// union.
+	///
+	/// spec: NAM#which-application-a-dns-name-belongs-to
+	#[tokio::test]
+	async fn each_dns_name_is_requested_for_the_application_it_belongs_to() {
+		let (_dir, state) = state();
+		let entitlement = Entitlement::from_wire(&two_applications_wire("tam.test", false));
+		let seen = hooked_sites(&[
+			("a.tam.test", "api.central.tamanu.internal"),
+			("b.supply.test", "api.msupply.internal"),
+			// Attributed to mSupply, under a domain only Tamanu central covers.
+			("c.tam.test", "api.msupply.internal"),
+		]);
+		let targets = state
+			.targets_from(&entitlement, &seen, &[central(), msupply()])
+			.await;
+		let by_name: Vec<(&str, &str)> = targets
+			.iter()
+			.map(|t| (t.name.as_str(), t.application_type.as_str()))
+			.collect();
+		assert_eq!(
+			by_name,
+			vec![
+				("a.tam.test", "tamanu-central"),
+				("b.supply.test", "msupply")
+			]
+		);
+	}
+
+	#[tokio::test]
+	async fn a_dns_name_declared_by_an_application_is_requested_for_it() {
+		use bestool_canopy::schema::{ApplicationEntitlements, Entitlements};
+
+		let (_dir, state) = state();
+		let declaring = ApplicationEntitlements::builder()
+			.certificates(vec![])
+			.domains(vec!["supply.test".to_string()])
+			.may_manage_dns(false)
+			.may_manage_tls(true)
+			.paused(false)
+			.registered_names(vec!["decl.supply.test".to_string()])
+			.type_("msupply".parse().unwrap())
+			.build();
+		let entitlement = Entitlement::from_wire(
+			&Entitlements::builder()
+				.applications(vec![declaring])
+				.certificates(vec![])
+				.domains(vec![])
+				.may_manage_dns(false)
+				.may_manage_tls(false)
+				.paused(false)
+				.registered_names(vec![])
+				.build(),
+		);
+		// A site no application is attributed, hooked, serving a declared name.
+		let seen = hooked_sites(&[("decl.supply.test", "10.0.0.9:9000")]);
+		let targets = state
+			.targets_from(&entitlement, &seen, &[central(), msupply()])
+			.await;
+		assert_eq!(
+			targets,
+			vec![Target {
+				name: "decl.supply.test".into(),
+				application_type: "msupply".into(),
+			}]
+		);
+	}
+
+	/// One application being paused leaves the other collecting, and the server
+	/// stands down only when none holds the grant or every one is paused.
+	///
+	/// spec: NAM#machines-hosting-several-applications
+	#[tokio::test]
+	async fn a_paused_application_is_skipped_and_the_server_stands_down_only_when_all_are() {
+		let (_dir, state) = state();
+		let mut entitlement = Entitlement::from_wire(&two_applications_wire("tam.test", true));
+		let seen = hooked_sites(&[
+			("a.tam.test", "api.central.tamanu.internal"),
+			("b.supply.test", "api.msupply.internal"),
+		]);
+		let targets = state
+			.targets_from(&entitlement, &seen, &[central(), msupply()])
+			.await;
+		assert_eq!(names(&targets), vec!["b.supply.test"]);
+		assert_eq!(stands_down(&entitlement), None);
+
+		entitlement.applications[1].paused = true;
+		assert_eq!(
+			stands_down(&entitlement),
+			Some("canopy reports this server paused")
+		);
+
+		entitlement.applications[1].paused = false;
+		entitlement
+			.applications
+			.iter_mut()
+			.for_each(|app| app.may_manage_tls = false);
+		assert_eq!(
+			stands_down(&entitlement),
+			Some("this server holds no TLS grant")
+		);
+	}
+
+	/// The domain test is against the named application, even where another
+	/// application on the host covers the DNS name.
+	///
+	/// spec: TLS#commands
+	#[tokio::test]
+	async fn requesting_outside_the_named_applications_domains_is_refused() {
+		let (_dir, state) = state();
+		*state.entitlement.write().await = Some(Entitlement::from_wire(&two_applications_wire(
+			"tam.test", false,
+		)));
+		let task = CanopyNames::new(Arc::new(state));
+		let endpoints = task.http_endpoints();
+		let request = endpoints
+			.iter()
+			.find(|endpoint| endpoint.name == "request")
+			.unwrap();
+
+		let ask = |name: &str, application_type: Option<&str>| {
+			let mut ctx = detached_ctx();
+			ctx.query.insert("name".into(), name.into());
+			if let Some(application_type) = application_type {
+				ctx.query.insert("type".into(), application_type.into());
+			}
+			(request.handler)(ctx)
+		};
+
+		// mSupply covers `supply.test`, Tamanu central does not.
+		match ask("x.supply.test", Some("tamanu-central")).await {
+			TaskEndpointResponse::Error { message, .. } => {
+				assert!(message.contains("tamanu-central"), "{message}")
+			}
+			_ => panic!("expected a refusal"),
+		}
+		// And a request that does not say which application is refused outright.
+		match ask("x.tam.test", None).await {
+			TaskEndpointResponse::Error { message, .. } => {
+				assert!(message.contains("`type`"), "{message}")
+			}
+			_ => panic!("expected a refusal"),
+		}
+	}
+
+	/// Both commands are held to the named application's pause, grant, and
+	/// domains, in that order; a type canopy has no entry for is held to the
+	/// machine's.
+	///
+	/// spec: NAM#how-canopy-resolves-a-request
+	#[test]
+	fn a_command_is_permitted_by_the_application_it_names() {
+		let paused = Entitlement::from_wire(&two_applications_wire("tam.test", true));
+		let err = permit(&paused, "x.tam.test", Some("tamanu-central"), Grant::Tls).unwrap_err();
+		assert!(err.to_string().contains("paused"), "{err}");
+
+		let live = Entitlement::from_wire(&two_applications_wire("tam.test", false));
+		permit(&live, "x.tam.test", Some("tamanu-central"), Grant::Tls).unwrap();
+		let err = permit(&live, "x.tam.test", Some("tamanu-central"), Grant::Dns).unwrap_err();
+		assert!(err.to_string().contains("DNS records"), "{err}");
+		let err = permit(&live, "x.supply.test", Some("tamanu-central"), Grant::Tls).unwrap_err();
+		assert!(err.to_string().contains("tamanu-central"), "{err}");
+
+		let err = permit(&live, "x.supply.test", Some("nonesuch"), Grant::Tls).unwrap_err();
+		assert!(err.to_string().contains("tamanu-central, msupply"), "{err}");
+		permit(&live, "x.supply.test", None, Grant::Tls).unwrap();
+		let err = permit(&live, "x.other.test", None, Grant::Tls).unwrap_err();
+		assert!(err.to_string().contains("this server's group"), "{err}");
+	}
+
+	/// A request for an application that is paused is refused with the reason,
+	/// rather than accepted and held back with nothing to say why.
+	///
+	/// spec: TLS#commands
+	#[tokio::test]
+	async fn requesting_for_a_paused_application_is_refused() {
+		let (_dir, state) = state();
+		*state.entitlement.write().await = Some(Entitlement::from_wire(&two_applications_wire(
+			"tam.test", true,
+		)));
+		let state = Arc::new(state);
+		let task = CanopyNames::new(state.clone());
+		let endpoints = task.http_endpoints();
+		let request = endpoints
+			.iter()
+			.find(|endpoint| endpoint.name == "request")
+			.unwrap();
+
+		let mut ctx = detached_ctx();
+		ctx.query.insert("name".into(), "x.tam.test".into());
+		ctx.query.insert("type".into(), "tamanu-central".into());
+		match (request.handler)(ctx).await {
+			TaskEndpointResponse::Error { message, .. } => {
+				assert!(message.contains("paused"), "{message}")
+			}
+			_ => panic!("expected a refusal"),
+		}
+		assert!(state.explicit.lock().await.is_empty());
 	}
 }

@@ -32,9 +32,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tracing::debug;
 
-use crate::machine_store::{
-	decrypt_bytes, encrypt_bytes, machine_passphrase, remove_if_present, write_atomic,
-	write_atomic_private,
+use crate::{
+	machine_store::{
+		decrypt_bytes, encrypt_bytes, machine_passphrase, remove_if_present, write_atomic,
+		write_atomic_private,
+	},
+	names::RefusalKind,
 };
 
 /// The key type this module generates and hands back.
@@ -219,6 +222,122 @@ pub async fn store_keys(dir: &Path, keys: &KeyStore) -> Result<()> {
 	// chains beside it are read by an unprivileged `bestool tamanu doctor`, but
 	// the keys they cover are the root daemon's alone.
 	write_atomic_private(&key_store_file(dir), &ciphertext).await
+}
+
+fn refusals_file(dir: &Path) -> PathBuf {
+	dir.join("canopy-certificate-refusals.json")
+}
+
+/// What canopy last refused a name for, kept so a restart does not mistake a
+/// name waiting on an operator for a failing one before it has asked again, and
+/// so the certificate healthcheck can tell why a name is not being collected
+/// without asking the running daemon.
+///
+/// spec: TLS#undeclared-and-denied-dns-names
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredRefusal {
+	pub kind: RefusalKind,
+	pub reason: String,
+	/// The application type the refused request carried.
+	pub application_type: String,
+	/// When canopy was last asked, as RFC 3339.
+	pub asked_at: Option<String>,
+}
+
+/// Read the refusals kept for each name, or none where there is no file.
+///
+/// A file that is there and cannot be read or parsed is an error rather than
+/// none, so a reader grading names by it can tell an empty record from one it
+/// could not see.
+pub async fn read_refusals(dir: &Path) -> Result<BTreeMap<String, StoredRefusal>> {
+	let path = refusals_file(dir);
+	let bytes = match tokio::fs::read(&path).await {
+		Ok(bytes) => bytes,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+		Err(err) => {
+			return Err(err)
+				.into_diagnostic()
+				.wrap_err_with(|| format!("reading {}", path.display()));
+		}
+	};
+	serde_json::from_slice(&bytes)
+		.into_diagnostic()
+		.wrap_err_with(|| format!("parsing {}", path.display()))
+}
+
+/// [`read_refusals`], reading a file that cannot be read as none.
+///
+/// For the daemon, whose refusals come back on the next steady pass, so losing
+/// them costs a few minutes' misreading rather than a daemon that will not
+/// collect.
+pub async fn load_refusals(dir: &Path) -> BTreeMap<String, StoredRefusal> {
+	read_refusals(dir).await.unwrap_or_else(|err| {
+		debug!(%err, "could not read the kept refusals");
+		BTreeMap::new()
+	})
+}
+
+/// Write the refusals to keep, dropping the file where there are none.
+pub async fn store_refusals(dir: &Path, refusals: &BTreeMap<String, StoredRefusal>) -> Result<()> {
+	let path = refusals_file(dir);
+	if refusals.is_empty() {
+		remove_if_present(&path).await?;
+		return Ok(());
+	}
+	tokio::fs::create_dir_all(dir)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("creating {}", dir.display()))?;
+	let body = serde_json::to_vec_pretty(refusals)
+		.into_diagnostic()
+		.wrap_err("serialising the kept refusals")?;
+	write_atomic(&path, &body).await
+}
+
+fn requests_file(dir: &Path) -> PathBuf {
+	dir.join("canopy-certificate-requests.json")
+}
+
+/// Read the DNS names a command asked for, each with the application type it
+/// named, or none where there is no file.
+///
+/// A file that cannot be read or parsed reads as none, as the refusals do: the
+/// daemon starting without them is better than not starting.
+///
+/// spec: TLS#which-dns-names-are-certified
+pub async fn load_requests(dir: &Path) -> BTreeMap<String, String> {
+	let path = requests_file(dir);
+	let bytes = match tokio::fs::read(&path).await {
+		Ok(bytes) => bytes,
+		Err(err) => {
+			if err.kind() != std::io::ErrorKind::NotFound {
+				debug!(path = %path.display(), %err, "could not read the requested names");
+			}
+			return BTreeMap::new();
+		}
+	};
+	serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+		debug!(path = %path.display(), %err, "could not parse the requested names");
+		BTreeMap::new()
+	})
+}
+
+/// Write the DNS names a command asked for, dropping the file where there are
+/// none.
+pub async fn store_requests(dir: &Path, requests: &BTreeMap<String, String>) -> Result<()> {
+	let path = requests_file(dir);
+	if requests.is_empty() {
+		remove_if_present(&path).await?;
+		return Ok(());
+	}
+	tokio::fs::create_dir_all(dir)
+		.await
+		.into_diagnostic()
+		.wrap_err_with(|| format!("creating {}", dir.display()))?;
+	let body = serde_json::to_vec_pretty(requests)
+		.into_diagnostic()
+		.wrap_err("serialising the requested names")?;
+	write_atomic(&path, &body).await
 }
 
 /// The file a name's collected chain is kept in.
@@ -418,6 +537,55 @@ pub fn plausible_name(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[tokio::test]
+	async fn kept_refusals_round_trip_and_an_empty_set_removes_the_file() {
+		let dir = tempfile::tempdir().unwrap();
+		assert!(load_refusals(dir.path()).await.is_empty());
+
+		let mut kept = BTreeMap::new();
+		kept.insert(
+			"app.example.com".to_owned(),
+			StoredRefusal {
+				kind: RefusalKind::Undeclared,
+				reason: "needs declaring".into(),
+				application_type: "msupply".into(),
+				asked_at: Some("2026-10-06T00:00:00Z".into()),
+			},
+		);
+		store_refusals(dir.path(), &kept).await.unwrap();
+		assert_eq!(load_refusals(dir.path()).await, kept);
+
+		store_refusals(dir.path(), &BTreeMap::new()).await.unwrap();
+		assert!(!refusals_file(dir.path()).exists());
+	}
+
+	#[tokio::test]
+	async fn requested_names_round_trip_and_none_removes_the_file() {
+		let dir = tempfile::tempdir().unwrap();
+		assert!(load_requests(dir.path()).await.is_empty());
+
+		let requests = BTreeMap::from([("pre.example.com".to_owned(), "msupply".to_owned())]);
+		store_requests(dir.path(), &requests).await.unwrap();
+		assert_eq!(load_requests(dir.path()).await, requests);
+
+		store_requests(dir.path(), &BTreeMap::new()).await.unwrap();
+		assert!(!requests_file(dir.path()).exists());
+	}
+
+	/// The daemon reads an unparseable record as none; a reader grading by it is
+	/// told it could not read it, which is not the same as no file at all.
+	#[tokio::test]
+	async fn an_unparseable_refusals_file_reads_as_none_to_the_daemon_only() {
+		let dir = tempfile::tempdir().unwrap();
+		assert!(read_refusals(dir.path()).await.unwrap().is_empty());
+
+		tokio::fs::write(refusals_file(dir.path()), b"not json")
+			.await
+			.unwrap();
+		assert!(load_refusals(dir.path()).await.is_empty());
+		assert!(read_refusals(dir.path()).await.is_err());
+	}
 
 	#[test]
 	fn a_signing_request_carries_exactly_the_one_name() {
