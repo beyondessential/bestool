@@ -292,7 +292,9 @@ impl CaddySites {
 }
 
 /// Whether a configured address (possibly a wildcard) answers for `name`.
-fn host_covers(pattern: &str, name: &str) -> bool {
+///
+/// A wildcard stands for exactly one label.
+pub fn host_covers(pattern: &str, name: &str) -> bool {
 	if pattern == name {
 		return true;
 	}
@@ -500,6 +502,28 @@ impl Ownership {
 				.map(String::as_str)
 		}
 		lookup(&self.attributed, &name).or_else(|| lookup(&self.declared, &name))
+	}
+
+	/// The types of the applications a certificate for `cert_name` serves.
+	///
+	/// A certificate for a wildcard serves every known DNS name the wildcard
+	/// covers, so it belongs to each application owning one of them, as well as
+	/// to the owner of the wildcard itself.
+	///
+	/// spec: CHK-CCT
+	pub fn owners_served_by(&self, cert_name: &str) -> BTreeSet<&str> {
+		let cert_name = normalise(cert_name);
+		let mut owners: BTreeSet<&str> = self.owner(&cert_name).into_iter().collect();
+		if cert_name.starts_with("*.") {
+			for name in self.attributed.keys().chain(self.declared.keys()) {
+				if host_covers(&cert_name, name)
+					&& let Some(owner) = self.owner(name)
+				{
+					owners.insert(owner);
+				}
+			}
+		}
+		owners
 	}
 }
 
