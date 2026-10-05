@@ -2324,4 +2324,213 @@ mod tests {
 			);
 		}
 	}
+
+	fn msupply() -> HostApplication {
+		HostApplication {
+			type_slug: "msupply".into(),
+			service_names: ["api.msupply.internal".to_owned()].into(),
+			..central()
+		}
+	}
+
+	/// Two applications on one box, both holding the TLS grant: `a.shared.test`
+	/// and `b.shared.test` are Tamanu central's and mSupply's by their sites.
+	fn two_applications_wire(
+		central_covers: &str,
+		central_paused: bool,
+	) -> bestool_canopy::schema::Entitlements {
+		use bestool_canopy::schema::{ApplicationEntitlements, Entitlements};
+
+		let app = |type_slug: &str, domain: &str, paused: bool| {
+			ApplicationEntitlements::builder()
+				.certificates(vec![])
+				.domains(vec![domain.to_string()])
+				.may_manage_dns(false)
+				.may_manage_tls(true)
+				.paused(paused)
+				.registered_names(vec![])
+				.type_(type_slug.parse().unwrap())
+				.build()
+		};
+		Entitlements::builder()
+			.applications(vec![
+				app("tamanu-central", central_covers, central_paused),
+				app("msupply", "supply.test", false),
+			])
+			.certificates(vec![])
+			.domains(vec![])
+			.may_manage_dns(false)
+			.may_manage_tls(false)
+			.paused(false)
+			.registered_names(vec![])
+			.build()
+	}
+
+	fn hooked_sites(hosts: &[(&str, &str)]) -> CaddySites {
+		let routes: Vec<Value> = hosts
+			.iter()
+			.map(|(host, upstream)| {
+				json!({
+					"match": [{ "host": [host] }],
+					"handle": [{ "handler": "reverse_proxy", "dynamic_upstreams": {
+						"source": "a", "name": upstream, "port": "3000" } }],
+				})
+			})
+			.collect();
+		let subjects: Vec<&str> = hosts.iter().map(|(host, _)| *host).collect();
+		CaddySites::from_config(&json!({"apps": {
+			"http": { "servers": { "s": { "routes": routes } } },
+			"tls": { "automation": { "policies": [{
+				"subjects": subjects,
+				"get_certificate": [{ "via": "http", "url": "http://127.0.0.1:8271/certificate" }],
+			}] } },
+		}}))
+	}
+
+	/// Every request carries the type of the application the DNS name belongs to,
+	/// and is tested against that application's entitlement rather than the
+	/// union.
+	///
+	/// spec: NAM#which-application-a-dns-name-belongs-to
+	#[tokio::test]
+	async fn each_dns_name_is_requested_for_the_application_it_belongs_to() {
+		let (_dir, state) = state();
+		let entitlement = Entitlement::from_wire(&two_applications_wire("tam.test", false));
+		let seen = hooked_sites(&[
+			("a.tam.test", "api.central.tamanu.internal"),
+			("b.supply.test", "api.msupply.internal"),
+			// Attributed to mSupply, under a domain only Tamanu central covers.
+			("c.tam.test", "api.msupply.internal"),
+		]);
+		let targets = state
+			.targets_from(&entitlement, &seen, &[central(), msupply()])
+			.await;
+		let by_name: Vec<(&str, &str)> = targets
+			.iter()
+			.map(|t| (t.name.as_str(), t.application_type.as_str()))
+			.collect();
+		assert_eq!(
+			by_name,
+			vec![
+				("a.tam.test", "tamanu-central"),
+				("b.supply.test", "msupply")
+			]
+		);
+	}
+
+	#[tokio::test]
+	async fn a_dns_name_declared_by_an_application_is_requested_for_it() {
+		use bestool_canopy::schema::{ApplicationEntitlements, Entitlements};
+
+		let (_dir, state) = state();
+		let declaring = ApplicationEntitlements::builder()
+			.certificates(vec![])
+			.domains(vec!["supply.test".to_string()])
+			.may_manage_dns(false)
+			.may_manage_tls(true)
+			.paused(false)
+			.registered_names(vec!["decl.supply.test".to_string()])
+			.type_("msupply".parse().unwrap())
+			.build();
+		let entitlement = Entitlement::from_wire(
+			&Entitlements::builder()
+				.applications(vec![declaring])
+				.certificates(vec![])
+				.domains(vec![])
+				.may_manage_dns(false)
+				.may_manage_tls(false)
+				.paused(false)
+				.registered_names(vec![])
+				.build(),
+		);
+		// A site no application is attributed, hooked, serving a declared name.
+		let seen = hooked_sites(&[("decl.supply.test", "10.0.0.9:9000")]);
+		let targets = state
+			.targets_from(&entitlement, &seen, &[central(), msupply()])
+			.await;
+		assert_eq!(
+			targets,
+			vec![Target {
+				name: "decl.supply.test".into(),
+				application_type: "msupply".into(),
+			}]
+		);
+	}
+
+	/// One application being paused leaves the other collecting, and the server
+	/// stands down only when none holds the grant or every one is paused.
+	///
+	/// spec: NAM#machines-hosting-several-applications
+	#[tokio::test]
+	async fn a_paused_application_is_skipped_and_the_server_stands_down_only_when_all_are() {
+		let (_dir, state) = state();
+		let mut entitlement = Entitlement::from_wire(&two_applications_wire("tam.test", true));
+		let seen = hooked_sites(&[
+			("a.tam.test", "api.central.tamanu.internal"),
+			("b.supply.test", "api.msupply.internal"),
+		]);
+		let targets = state
+			.targets_from(&entitlement, &seen, &[central(), msupply()])
+			.await;
+		assert_eq!(names(&targets), vec!["b.supply.test"]);
+		assert_eq!(stands_down(&entitlement), None);
+
+		entitlement.applications[1].paused = true;
+		assert_eq!(
+			stands_down(&entitlement),
+			Some("canopy reports this server paused")
+		);
+
+		entitlement.applications[1].paused = false;
+		entitlement
+			.applications
+			.iter_mut()
+			.for_each(|app| app.may_manage_tls = false);
+		assert_eq!(
+			stands_down(&entitlement),
+			Some("this server holds no TLS grant")
+		);
+	}
+
+	/// The domain test is against the named application, even where another
+	/// application on the host covers the DNS name.
+	///
+	/// spec: TLS#commands
+	#[tokio::test]
+	async fn requesting_outside_the_named_applications_domains_is_refused() {
+		let (_dir, state) = state();
+		*state.entitlement.write().await = Some(Entitlement::from_wire(&two_applications_wire(
+			"tam.test", false,
+		)));
+		let task = CanopyNames::new(Arc::new(state));
+		let endpoints = task.http_endpoints();
+		let request = endpoints
+			.iter()
+			.find(|endpoint| endpoint.name == "request")
+			.unwrap();
+
+		let ask = |name: &str, application_type: Option<&str>| {
+			let mut ctx = detached_ctx();
+			ctx.query.insert("name".into(), name.into());
+			if let Some(application_type) = application_type {
+				ctx.query.insert("type".into(), application_type.into());
+			}
+			(request.handler)(ctx)
+		};
+
+		// mSupply covers `supply.test`, Tamanu central does not.
+		match ask("x.supply.test", Some("tamanu-central")).await {
+			TaskEndpointResponse::Error { message, .. } => {
+				assert!(message.contains("tamanu-central"), "{message}")
+			}
+			_ => panic!("expected a refusal"),
+		}
+		// And a request that does not say which application is refused outright.
+		match ask("x.tam.test", None).await {
+			TaskEndpointResponse::Error { message, .. } => {
+				assert!(message.contains("`type`"), "{message}")
+			}
+			_ => panic!("expected a refusal"),
+		}
+	}
 }

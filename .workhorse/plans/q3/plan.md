@@ -80,3 +80,15 @@ Headings renamed:
 - `NAM#registering-addresses-for-a-name` → `NAM#registering-addresses-for-a-dns-name` (`crates/bestool/src/alertd/certificates.rs`)
 - `TLS#which-names-are-certified` → `TLS#which-dns-names-are-certified` (`crates/bestool/src/alertd/certificates.rs`, `crates/bestool/src/alertd/certificates/delivery.rs`)
 - `CHK-CCO#which-names-it-grades` → `CHK-CCO#which-dns-names-it-grades` (`crates/alertd/src/sweep_cache.rs`, `crates/alertd/src/checks/canopy_certificates.rs`, `crates/canopy/src/names.rs`)
+
+## Build checklist
+
+- [x] Bump bes-canopy-api to 1.1.0
+- [x] Refusal classification from the problem type, and the persisted undeclared/denied record (`crates/canopy`)
+- [x] Shared ownership function and Caddy site attribution (`crates/alertd/src/ownership.rs`)
+- [x] Daemon: per-owner requests carrying the type, explicit requests, refusal record, steady-only asking, status report
+- [x] Hook-filtered Caddy subjects in the daemon and the sweep cache
+- [x] `canopy certs request` and `canopy dns register` take a required `--type`; the report shows type, state and reason
+- [x] mSupply application: kind, discovery, facts, and the two certificate checks
+- [x] `canopy_certificates` and `caddy_certs` graded per application through ownership
+- [x] Spec references renamed to the DNS-name headings

@@ -186,18 +186,6 @@ impl Entitlement {
 		}
 	}
 
-	/// Whether any application on this machine could obtain a certificate for
-	/// `name`.
-	///
-	/// The union is what this side asks on: nothing here knows which application
-	/// a Caddy site belongs to, so it errs towards asking and lets canopy —
-	/// which resolves the application from the name — refuse what it must.
-	///
-	/// spec: NAM#machines-hosting-several-applications
-	pub fn may_certify(&self, name: &str) -> bool {
-		self.applications.iter().any(|app| app.may_certify(name))
-	}
-
 	/// Whether any application holds the TLS grant at all, pause aside.
 	///
 	/// What a check skips on: a server that may not obtain certificates is not
@@ -233,7 +221,7 @@ impl Entitlement {
 	/// application, and that entry is the answer whatever the reporter calls it
 	/// — so it matches any type asked for.
 	///
-	/// spec: CHK-CCO#which-names-it-grades
+	/// spec: CHK-CCO#which-dns-names-it-grades
 	pub fn for_type(&self, type_slug: &str) -> Option<&AppEntitlement> {
 		self.applications
 			.iter()
@@ -386,6 +374,10 @@ mod tests {
 			.build()
 	}
 
+	fn may(e: &Entitlement, name: &str) -> bool {
+		e.applications.iter().any(|app| app.may_certify(name))
+	}
+
 	#[test]
 	fn a_server_with_no_grants_gets_an_empty_answer_not_an_error() {
 		// Asking what one may do is not a privileged act, so nothing about the
@@ -394,7 +386,7 @@ mod tests {
 		let e = Entitlement::from_wire(&flat(&[], false, false));
 		assert!(e.applications.is_empty());
 		assert!(!e.holds_tls_grant());
-		assert!(!e.may_certify("app.example.com"));
+		assert!(!may(&e, "app.example.com"));
 		assert!(!e.fully_paused());
 	}
 
@@ -402,22 +394,22 @@ mod tests {
 	fn a_single_application_machine_is_answered_in_the_flat_fields() {
 		let e = Entitlement::from_wire(&flat(&["example.com"], true, false));
 		assert_eq!(e.applications.len(), 1);
-		assert!(e.may_certify("app.example.com"));
-		assert!(!e.may_certify("app.elsewhere.test"));
+		assert!(may(&e, "app.example.com"));
+		assert!(!may(&e, "app.elsewhere.test"));
 	}
 
 	#[test]
 	fn a_name_outside_the_groups_domains_is_not_acted_on() {
 		let e = Entitlement::from_wire(&flat(&["example.com"], true, false));
 		assert!(!e.covers("app.elsewhere.test"));
-		assert!(!e.may_certify("app.elsewhere.test"));
+		assert!(!may(&e, "app.elsewhere.test"));
 	}
 
 	#[test]
 	fn a_paused_server_asks_for_nothing_while_it_is_paused() {
 		let e = Entitlement::from_wire(&flat(&["example.com"], true, true));
 		assert!(e.fully_paused());
-		assert!(!e.may_certify("app.example.com"));
+		assert!(!may(&e, "app.example.com"));
 		// It still holds the grant, which is what keeps the pause distinct from
 		// a withdrawal for anything reading the two apart.
 		assert!(e.holds_tls_grant());
@@ -457,15 +449,15 @@ mod tests {
 	}
 
 	#[test]
-	fn a_machine_with_an_applications_list_acts_on_their_union() {
-		// Nothing on this side ties a Caddy site to an application, so the ask
-		// is the union: a name any application could act on is asked about.
+	fn a_machine_with_an_applications_list_answers_for_each_and_for_the_machine() {
+		// Which application a name is for is decided elsewhere; the entitlement
+		// answers for each entry and for the machine as a whole.
 		let e = Entitlement::from_wire(&applications());
 		assert_eq!(e.applications.len(), 2);
-		assert!(e.may_certify("a.one.test"));
+		assert!(may(&e, "a.one.test"));
 		// two.test holds DNS but not TLS, so it is covered but not certifiable.
 		assert!(e.covers("b.two.test"));
-		assert!(!e.may_certify("b.two.test"));
+		assert!(!may(&e, "b.two.test"));
 		assert!(e.holds_tls_grant());
 		assert!(e.holds_dns_grant());
 		assert_eq!(e.domains(), vec!["one.test", "two.test"]);
@@ -501,7 +493,7 @@ mod tests {
 		let mut e = Entitlement::from_wire(&applications());
 		e.applications[0].paused = true;
 		assert!(!e.fully_paused());
-		assert!(!e.may_certify("a.one.test"));
+		assert!(!may(&e, "a.one.test"));
 		assert!(e.for_type("tamanu-facility").unwrap().may_manage_dns);
 	}
 }

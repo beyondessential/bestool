@@ -1,4 +1,4 @@
-//! `bestool canopy dns` — publishing the addresses a name resolves to.
+//! `bestool canopy dns` — publishing the addresses a DNS name resolves to.
 //!
 //! Canopy publishes an A record per IPv4 address and an AAAA record per IPv6
 //! one, so a machine needs no access to a DNS zone of its own. Registration is
@@ -34,25 +34,31 @@ pub struct DnsArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 enum Command {
-	/// Report the names canopy holds registrations for on this server.
+	/// Report the DNS names canopy holds registrations for on this server.
 	Show,
 
-	/// Publish the addresses a name resolves to.
+	/// Publish the addresses a DNS name resolves to.
 	///
-	/// Replaces whatever was registered for the name before. The name must sit
-	/// within a domain this server's group controls, and a name another server
-	/// already holds is refused.
+	/// Replaces whatever was registered for the DNS name before. The DNS name
+	/// must sit within a domain the named application's group controls, and one
+	/// another application already declares is refused.
 	Register {
-		/// The name to publish records at.
+		/// The DNS name to publish records at.
 		name: String,
+
+		/// The type of the application the DNS name is for, such as
+		/// `tamanu-facility` or `msupply`.
+		#[arg(long = "type", short = 't', required = true)]
+		application_type: String,
+
 		/// Every external address this server is reachable at.
 		#[arg(required = true)]
 		addresses: Vec<std::net::IpAddr>,
 	},
 
-	/// Take a name's records down and free the name.
+	/// Take a DNS name's records down and free the DNS name.
 	Withdraw {
-		/// The name to withdraw.
+		/// The DNS name to withdraw.
 		name: String,
 	},
 }
@@ -61,10 +67,15 @@ pub async fn run(args: DnsArgs, _ctx: Context) -> Result<()> {
 	let (endpoint, query) = match args.command.clone().unwrap_or(Command::Show) {
 		Command::Show => ("status", Vec::new()),
 		Command::Withdraw { name } => ("dns-withdraw", vec![("name", name)]),
-		Command::Register { name, addresses } => (
+		Command::Register {
+			name,
+			application_type,
+			addresses,
+		} => (
 			"dns-register",
 			vec![
 				("name", name),
+				("type", application_type),
 				(
 					"addresses",
 					addresses
@@ -135,5 +146,27 @@ fn registered(answer: &Value) {
 	);
 	if let Some(err) = answer["lastError"].as_str() {
 		println!("  last publish failed: {err}");
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn registering_needs_an_application_type_and_withdrawing_does_not() {
+		assert!(DnsArgs::try_parse_from(["dns", "register", "a.example.com", "203.0.113.5"]).is_err());
+		assert!(
+			DnsArgs::try_parse_from([
+				"dns",
+				"register",
+				"a.example.com",
+				"--type",
+				"msupply",
+				"203.0.113.5"
+			])
+			.is_ok()
+		);
+		assert!(DnsArgs::try_parse_from(["dns", "withdraw", "a.example.com"]).is_ok());
 	}
 }

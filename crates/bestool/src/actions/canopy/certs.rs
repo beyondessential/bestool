@@ -3,8 +3,8 @@
 //!
 //! Collection is the daemon's, on a schedule: a certificate is obtained before
 //! it is needed rather than while a client waits. These commands report what
-//! that has produced, pre-provision a name, and run a collection without waiting
-//! for the next tick.
+//! that has produced, pre-provision a DNS name, and run a collection without
+//! waiting for the next tick.
 //!
 //! spec: TLS#commands
 
@@ -38,13 +38,21 @@ enum Command {
 	/// Report the certificates canopy holds and the chains this host serves.
 	List,
 
-	/// Ask canopy to certify a name, without waiting for it to be discovered.
+	/// Ask canopy to certify a DNS name, without waiting for it to be discovered.
 	///
-	/// The name still has to be one this server's entitlement covers; this is
-	/// for pre-provisioning, not for reaching past the grant.
+	/// The DNS name still has to be one the named application's entitlement
+	/// covers; this is for pre-provisioning, not for reaching past the grant.
 	Request {
-		/// The name to certify.
+		/// The DNS name to certify.
 		name: String,
+
+		/// The type of the application the DNS name is for, such as
+		/// `tamanu-facility` or `msupply`.
+		///
+		/// A DNS name requested ahead of its site cannot be attributed from
+		/// Caddy's configuration, so the application is named here.
+		#[arg(long = "type", short = 't', required = true)]
+		application_type: String,
 	},
 
 	/// Run a collection now rather than waiting for the schedule.
@@ -55,7 +63,13 @@ pub async fn run(args: CertsArgs, _ctx: Context) -> Result<()> {
 	let (endpoint, query) = match args.command.clone().unwrap_or(Command::List) {
 		Command::List => ("status", Vec::new()),
 		Command::Collect => ("collect", Vec::new()),
-		Command::Request { name } => ("request", vec![("name", name)]),
+		Command::Request {
+			name,
+			application_type,
+		} => (
+			"request",
+			vec![("name", name), ("type", application_type)],
+		),
 	};
 
 	// Requesting and collecting spend orders at the authority, so they go as a
@@ -124,22 +138,14 @@ fn report(answer: &Value) {
 		.unwrap_or_default();
 	list("Certificates canopy holds", &canopy);
 
-	// Only orders still in flight or reporting an error are worth the space: an
-	// issued order is already covered by the chain above it.
+	// Only orders still in flight, refused or reporting an error are worth the
+	// space: an issued order is already covered by the chain above it.
 	let orders: Vec<String> = answer["orders"]
 		.as_array()
 		.map(|rows| {
 			rows.iter()
-				.filter(|row| {
-					row["state"].as_str() != Some("issued") || !row["lastError"].is_null()
-				})
-				.map(|row| {
-					let mut line = format!("{} — {}", text(row, "name"), text(row, "state"));
-					if let Some(err) = row["lastError"].as_str() {
-						line.push_str(&format!(": {err}"));
-					}
-					line
-				})
+				.filter(|row| row["state"].as_str() != Some("issued") || !row["reason"].is_null())
+				.map(order_line)
 				.collect()
 		})
 		.unwrap_or_default();
@@ -149,5 +155,68 @@ fn report(answer: &Value) {
 
 	if let Some(err) = answer["lastError"].as_str() {
 		println!("Last pass failed: {err}");
+	}
+}
+
+/// One order: the DNS name, what state it is in, the application type the
+/// request carried, and the reason canopy gave where it gave one.
+///
+/// A request that never reached an answer has no state of canopy's, and is
+/// reported as failed rather than with an empty one.
+///
+/// spec: TLS#commands
+fn order_line(row: &Value) -> String {
+	let state = row["state"]
+		.as_str()
+		.filter(|state| !state.is_empty())
+		.unwrap_or("failed");
+	let mut line = format!("{} — {state}", text(row, "name"));
+	if let Some(application_type) = row["applicationType"].as_str() {
+		line.push_str(&format!(" (as {application_type})"));
+	}
+	if let Some(reason) = row["reason"].as_str() {
+		line.push_str(&format!(": {reason}"));
+	}
+	line
+}
+
+#[cfg(test)]
+mod tests {
+	use serde_json::json;
+
+	use super::*;
+
+	#[test]
+	fn a_refusal_shows_as_its_state_with_canopys_reason_and_the_type_sent() {
+		let line = order_line(&json!({
+			"name": "app.example.com",
+			"state": "undeclared",
+			"applicationType": "msupply",
+			"reason": "declare app.example.com on an application",
+		}));
+		assert_eq!(
+			line,
+			"app.example.com — undeclared (as msupply): declare app.example.com on an application"
+		);
+	}
+
+	#[test]
+	fn an_order_with_no_state_is_failed_not_blank() {
+		let line = order_line(&json!({
+			"name": "app.example.com",
+			"state": "",
+			"reason": "reaching canopy: timed out",
+		}));
+		assert_eq!(line, "app.example.com — failed: reaching canopy: timed out");
+	}
+
+	#[test]
+	fn requesting_needs_an_application_type() {
+		use clap::Parser as _;
+		assert!(CertsArgs::try_parse_from(["certs", "request", "app.example.com"]).is_err());
+		assert!(
+			CertsArgs::try_parse_from(["certs", "request", "app.example.com", "--type", "msupply"])
+				.is_ok()
+		);
 	}
 }
