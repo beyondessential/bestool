@@ -74,7 +74,7 @@ A server publishes the addresses a DNS name resolves to by registering them with
 A machine needs no access to the DNS zone of its own.
 
 A registration names one DNS name, the addresses it resolves to, and the type of the application it is for, and replaces whatever addresses were registered for that DNS name before.
-The DNS name must sit within a domain the group controls and the server must hold the DNS grant.
+The DNS name must sit within a domain the named application's group controls, the application must hold the DNS grant, and it must not be paused; a registration failing any of these is refused, naming which, before Canopy is asked.
 
 A DNS name belongs to one application across the whole fleet, so registering a DNS name another application already declares is refused, and the refusal is reported with the reason Canopy gave rather than worked around.
 Two hosts cannot both publish addresses for one DNS name, which is what stops a DNS name being pulled between them.

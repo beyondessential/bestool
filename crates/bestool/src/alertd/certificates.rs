@@ -30,7 +30,7 @@ use std::{
 use bestool_alertd::ownership::{self, CaddySites, HostApplication, Ownership};
 use bestool_canopy::{
 	certificates::{self as certs, KeyPair, KeyStore, StoredRefusal},
-	names::{Entitlement, Refusal, RefusalKind},
+	names::{AppEntitlement, Entitlement, Refusal, RefusalKind},
 	schema::{ApplicationType, RegisterNameArgs, RegisteredName, RequestCertificateArgs},
 };
 use futures::future::BoxFuture;
@@ -153,6 +153,85 @@ fn explicit_orderable(entitlement: &Entitlement, name: &str, application_type: &
 	entitlement
 		.for_type(application_type)
 		.is_none_or(|app| app.may_certify(name))
+}
+
+/// The grant a command needs from the application it names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grant {
+	Tls,
+	Dns,
+}
+
+impl Grant {
+	fn held_by(self, app: &AppEntitlement) -> bool {
+		match self {
+			Self::Tls => app.may_manage_tls,
+			Self::Dns => app.may_manage_dns,
+		}
+	}
+
+	fn held_by_any(self, entitlement: &Entitlement) -> bool {
+		match self {
+			Self::Tls => entitlement.holds_tls_grant(),
+			Self::Dns => entitlement.holds_dns_grant(),
+		}
+	}
+
+	fn describe(self) -> &'static str {
+		match self {
+			Self::Tls => "obtain certificates from canopy",
+			Self::Dns => "manage its own DNS records",
+		}
+	}
+}
+
+/// Whether a command may act on `name` for the application it names, before
+/// canopy is asked.
+///
+/// The application named is the one whose pause, grant, and domains apply,
+/// tested in the order canopy tests them. One canopy's answer has no entry for
+/// is tested against the machine as a whole and left for canopy to refuse as a
+/// type mismatch, which names the types the machine does have.
+///
+/// spec: NAM#how-canopy-resolves-a-request
+fn permit(
+	entitlement: &Entitlement,
+	name: &str,
+	application_type: Option<&str>,
+	grant: Grant,
+) -> Result<()> {
+	let named = application_type.and_then(|t| Some((t, entitlement.for_type(t)?)));
+	match named {
+		Some((application_type, app)) => {
+			if app.paused {
+				return Err(miette!(
+					"the {application_type} application is paused in canopy; nothing is asked for until the pause is lifted"
+				));
+			}
+			if !grant.held_by(app) {
+				return Err(miette!(
+					"the {application_type} application may not {}",
+					grant.describe()
+				));
+			}
+			if !app.covers(name) {
+				return Err(miette!(
+					"{name} is not within a domain the {application_type} application's group controls"
+				));
+			}
+		}
+		None => {
+			if !grant.held_by_any(entitlement) {
+				return Err(miette!("this server may not {}", grant.describe()));
+			}
+			if !entitlement.covers(name) {
+				return Err(miette!(
+					"{name} is not within a domain this server's group controls"
+				));
+			}
+		}
+	}
+	Ok(())
 }
 
 /// The order state a DNS name canopy refused shows as.
@@ -1170,33 +1249,7 @@ impl CertificateState {
 			.ok_or_else(|| miette!("no canopy client; this host is not enrolled"))?;
 
 		let entitlement = self.entitlement(ctx).await?;
-		// The application named is the one whose grant and domains apply. One the
-		// machine has no entry for is left for canopy to refuse as a type
-		// mismatch, which names the types the machine does have.
-		match application_type.and_then(|t| entitlement.for_type(t)) {
-			Some(app) => {
-				if !app.may_manage_dns {
-					return Err(miette!(
-						"this application may not manage its own DNS records"
-					));
-				}
-				if !app.covers(name) {
-					return Err(miette!(
-						"{name} is not within a domain this application's group controls"
-					));
-				}
-			}
-			None => {
-				if !entitlement.holds_dns_grant() {
-					return Err(miette!("this server may not manage its own DNS records"));
-				}
-				if !entitlement.covers(name) {
-					return Err(miette!(
-						"{name} is not within a domain this server's group controls"
-					));
-				}
-			}
-		}
+		permit(&entitlement, name, application_type, Grant::Dns)?;
 
 		let answer = client
 			.names_register(
@@ -1352,37 +1405,11 @@ impl BackgroundTask for CanopyNames {
 					// for.
 					let application_type = required(&ctx, "type")?;
 					let entitlement = state.entitlement(&ctx).await?;
-					// A DNS name outside the named application's domains is refused
-					// rather than recorded: a pass would drop it, and the operator
-					// needs to be told that rather than handed a report that looks
-					// like the ask was taken. An application canopy has no entry for
-					// is left for canopy to refuse as a mismatch.
-					// So is one for an application that may not obtain certificates
-					// at all just now, which would otherwise be held back with nothing
-					// in the report to say why.
-					match entitlement.for_type(&application_type) {
-						Some(app) if !app.covers(&name) => {
-							return Err(miette!(
-								"{name} is not within a domain the {application_type} application's group controls"
-							));
-						}
-						Some(app) if !app.may_manage_tls => {
-							return Err(miette!(
-								"the {application_type} application may not obtain certificates from canopy"
-							));
-						}
-						Some(app) if app.paused => {
-							return Err(miette!(
-								"the {application_type} application is paused in canopy; no certificate is requested until the pause is lifted"
-							));
-						}
-						None if !entitlement.covers(&name) => {
-							return Err(miette!(
-								"{name} is not within a domain this server's group controls"
-							));
-						}
-						_ => {}
-					}
+					// Refused rather than recorded where the named application could
+					// not have it ordered: a pass would drop it or hold it back, and the
+					// operator needs to be told that rather than handed a report that
+					// looks like the ask was taken.
+					permit(&entitlement, &name, Some(&application_type), Grant::Tls)?;
 					state.note_explicit(&name, application_type).await?;
 					state.pass(&ctx, false, Some(&name)).await?;
 					Ok(state.report().await)
@@ -2983,6 +3010,29 @@ mod tests {
 			}
 			_ => panic!("expected a refusal"),
 		}
+	}
+
+	/// Both commands are held to the named application's pause, grant, and
+	/// domains, in that order; a type canopy has no entry for is held to the
+	/// machine's.
+	///
+	/// spec: NAM#how-canopy-resolves-a-request
+	#[test]
+	fn a_command_is_permitted_by_the_application_it_names() {
+		let paused = Entitlement::from_wire(&two_applications_wire("tam.test", true));
+		let err = permit(&paused, "x.tam.test", Some("tamanu-central"), Grant::Tls).unwrap_err();
+		assert!(err.to_string().contains("paused"), "{err}");
+
+		let live = Entitlement::from_wire(&two_applications_wire("tam.test", false));
+		permit(&live, "x.tam.test", Some("tamanu-central"), Grant::Tls).unwrap();
+		let err = permit(&live, "x.tam.test", Some("tamanu-central"), Grant::Dns).unwrap_err();
+		assert!(err.to_string().contains("DNS records"), "{err}");
+		let err = permit(&live, "x.supply.test", Some("tamanu-central"), Grant::Tls).unwrap_err();
+		assert!(err.to_string().contains("tamanu-central"), "{err}");
+
+		permit(&live, "x.supply.test", Some("nonesuch"), Grant::Tls).unwrap();
+		let err = permit(&live, "x.other.test", None, Grant::Tls).unwrap_err();
+		assert!(err.to_string().contains("this server's group"), "{err}");
 	}
 
 	/// A request for an application that is paused is refused with the reason,
