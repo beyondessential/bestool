@@ -81,6 +81,8 @@ pub struct SweepCache {
 	caddy_config: OnceCell<Option<Arc<Value>>>,
 	/// The sites in that configuration, parsed once.
 	caddy_sites: OnceCell<Option<Arc<CaddySites>>>,
+	/// The addresses of those sites that are certified from canopy.
+	caddy_subjects: OnceCell<Option<Arc<BTreeSet<String>>>>,
 	/// Which application each DNS name belongs to.
 	ownership: OnceCell<Option<Arc<Ownership>>>,
 	/// What Canopy last refused each DNS name for, or why the daemon's record of
@@ -158,7 +160,10 @@ impl SweepCache {
 	///
 	/// spec: TLS#which-dns-names-are-certified
 	pub async fn caddy_subjects(&self) -> Option<Arc<BTreeSet<String>>> {
-		Some(Arc::new(self.caddy_sites().await?.hooked_addresses()))
+		self.caddy_subjects
+			.get_or_init(|| async { Some(Arc::new(self.caddy_sites().await?.hooked_addresses())) })
+			.await
+			.clone()
 	}
 
 	/// Which application each DNS name belongs to, or `None` where Caddy's
@@ -348,7 +353,10 @@ mod tests {
 			!subjects.contains("plain.example.com"),
 			"a site that does not name the daemon is not certified"
 		);
-		assert!(cache.caddy_subjects().await.is_some());
+		assert!(Arc::ptr_eq(
+			&subjects,
+			&cache.caddy_subjects().await.unwrap()
+		));
 		assert!(cache.ownership(None).await.is_some());
 		assert_eq!(hits.load(Ordering::SeqCst), 1);
 	}
