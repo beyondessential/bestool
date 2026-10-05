@@ -308,7 +308,8 @@ Follower snapshots are recognised by the backup type they carry, as a tag or as 
 
 The `postgresql` method's restore is a full automated swap: it stops the cluster, moves the existing data directory aside (kept, not deleted), moves the restored tree into place with the right ownership and permissions, starts the cluster via plain crash recovery, and verifies it accepts connections.
 A WAL reset is only attempted as a logged last resort if the cluster will not start.
-The `simple` method's restore lays the files back at its path or a given target.
+The `simple` method's restore lays the files back at its path or a given target, moving anything already there aside to `<target>.old` (kept, not deleted).
+Each restore replaces the `.old` left by the one before, so a host keeps one displaced copy per target.
 The `tamanu_secret_key` method's restore lays the key back where this host keeps it, described below.
 
 ### Restore hooks
