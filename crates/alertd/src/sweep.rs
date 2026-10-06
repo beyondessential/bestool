@@ -38,6 +38,7 @@ use crate::{
 	store,
 	subject::{ApplicationKind, ApplicationRef, Subject},
 	sweep_cache::SweepCache,
+	tupaia,
 };
 
 /// The name bestool's daemon reports under.
@@ -563,14 +564,15 @@ fn host_applications(
 /// A Tamanu deployment is one; the Postgres under it is another, whether a
 /// Tamanu uses it or the host has nothing but a `DATABASE_URL`. A cluster
 /// reached at a remote address is still reported, keyed apart so no key claims
-/// this machine hosts it. mSupply stands apart from both: it is reported
-/// wherever it is installed, with no database and no targets at all.
+/// this machine hosts it. mSupply and Tupaia stand apart from both: each is
+/// reported wherever it is installed, with no database and no targets at all.
 ///
 /// spec: SUBJ
 fn sweep_applications(
 	targets: Option<&SweepTargets>,
 	tamanu_kind: Option<ApiServerKind>,
 	msupply_installed: bool,
+	tupaia_installed: bool,
 ) -> Vec<ApplicationRef> {
 	let mut applications = Vec::new();
 	if let Some(targets) = targets {
@@ -581,6 +583,9 @@ fn sweep_applications(
 	}
 	if msupply_installed {
 		applications.push(ApplicationRef::msupply());
+	}
+	if tupaia_installed {
+		applications.push(ApplicationRef::tupaia());
 	}
 	applications
 }
@@ -933,6 +938,7 @@ pub async fn perform_sweep(
 		targets.as_ref(),
 		tamanu.as_ref().map(|t| t.kind),
 		msupply_installed,
+		tupaia::installed(),
 	);
 
 	// The machine's own context. It carries which Tamanu is installed here —
@@ -960,7 +966,8 @@ pub async fn perform_sweep(
 	//
 	// A cluster and a deployment exist only where the sweep resolved targets, so
 	// there is nothing to build their contexts from without them. mSupply needs
-	// none: it has no database and no supervised services.
+	// none: it has no database and no supervised services. Tupaia needs none
+	// either, carrying no checks of its own.
 	//
 	// One cache per sweep, so the readings that are the machine's — Canopy's
 	// entitlement, Caddy's configuration, the collected chains — are taken once
@@ -997,6 +1004,7 @@ pub async fn perform_sweep(
 					},
 				);
 			}
+			(ApplicationKind::Tupaia, _) => {}
 			// `sweep_applications` yields these only alongside targets.
 			(
 				ApplicationKind::Postgres
@@ -1152,6 +1160,9 @@ pub async fn perform_sweep(
 				}
 				ApplicationKind::Msupply => serde_json::to_value(&server_info::MsupplyInfo {
 					msupply_version: msupply::version(),
+				}),
+				ApplicationKind::Tupaia => serde_json::to_value(&server_info::TupaiaInfo {
+					tupaia_version: tupaia::version(),
 				}),
 			};
 			Ok((app.clone(), info.into_diagnostic()?))
@@ -2377,16 +2388,17 @@ mod tests {
 	#[test]
 	fn msupply_is_an_application_even_with_no_targets() {
 		assert_eq!(
-			sweep_applications(None, None, true),
+			sweep_applications(None, None, true, false),
 			vec![ApplicationRef::msupply()]
 		);
-		assert!(sweep_applications(None, None, false).is_empty());
+		assert!(sweep_applications(None, None, false, false).is_empty());
 	}
 
 	#[test]
 	fn a_tamanu_only_host_does_not_report_msupply() {
 		let targets = targets_for("postgresql://u@localhost/tamanu", true);
-		let applications = sweep_applications(Some(&targets), Some(ApiServerKind::Central), false);
+		let applications =
+			sweep_applications(Some(&targets), Some(ApiServerKind::Central), false, false);
 		assert_eq!(
 			applications,
 			vec![
@@ -2399,7 +2411,8 @@ mod tests {
 	#[test]
 	fn msupply_sits_beside_tamanu_and_postgres() {
 		let targets = targets_for("postgresql://u@localhost/tamanu", true);
-		let applications = sweep_applications(Some(&targets), Some(ApiServerKind::Facility), true);
+		let applications =
+			sweep_applications(Some(&targets), Some(ApiServerKind::Facility), true, false);
 		assert_eq!(
 			applications,
 			vec![
@@ -2410,7 +2423,7 @@ mod tests {
 		);
 
 		let generic = targets_for("postgresql://u@localhost/other", false);
-		let applications = sweep_applications(Some(&generic), None, true);
+		let applications = sweep_applications(Some(&generic), None, true, false);
 		assert_eq!(
 			applications,
 			vec![
@@ -2426,7 +2439,7 @@ mod tests {
 	/// spec: SUBJ
 	#[test]
 	fn an_msupply_host_runs_exactly_the_two_certificate_checks() {
-		let applications = sweep_applications(None, None, true);
+		let applications = sweep_applications(None, None, true, false);
 		let mut names = Vec::new();
 		for entry in checks::all() {
 			for dispatch in dispatches_for(&entry.run, &applications) {
@@ -2505,6 +2518,75 @@ mod tests {
 	#[test]
 	fn an_unpinned_msupply_version_is_absent() {
 		let info = serde_json::to_value(server_info::MsupplyInfo::default()).unwrap();
+		assert_eq!(info, serde_json::json!({}));
+	}
+
+	#[test]
+	fn tupaia_is_an_application_even_with_no_targets() {
+		assert_eq!(
+			sweep_applications(None, None, false, true),
+			vec![ApplicationRef::tupaia()]
+		);
+		let targets = targets_for("postgresql://u@localhost/tamanu", true);
+		assert!(
+			!sweep_applications(Some(&targets), Some(ApiServerKind::Central), true, false)
+				.contains(&ApplicationRef::tupaia())
+		);
+	}
+
+	/// On a host with Tupaia and nothing else, no application check runs, while
+	/// every machine check still does.
+	///
+	/// spec: SUBJ
+	#[test]
+	fn a_tupaia_host_runs_only_machine_checks() {
+		let applications = sweep_applications(None, None, false, true);
+		let registry = checks::all();
+		let mut machine_checks = 0;
+		for entry in &registry {
+			for dispatch in dispatches_for(&entry.run, &applications) {
+				match dispatch.subject() {
+					Subject::Machine => machine_checks += 1,
+					Subject::Application(app) => {
+						panic!("{} ran for {app:?}", entry.name)
+					}
+				}
+			}
+		}
+		let expected = registry
+			.iter()
+			.filter(|entry| matches!(entry.run, checks::Run::Machine(_)))
+			.count();
+		assert_eq!(machine_checks, expected);
+		assert!(machine_checks > 0);
+	}
+
+	/// A Tupaia application reports its type and its checked-out commit, and
+	/// none of another application's facts.
+	///
+	/// spec: SUBJ
+	#[test]
+	fn tupaia_reports_its_type_and_version_only() {
+		let commit = "0123456789abcdef0123456789abcdef01234567";
+		let details = vec![(
+			ApplicationRef::tupaia(),
+			serde_json::to_value(server_info::TupaiaInfo {
+				tupaia_version: Some(commit.into()),
+			})
+			.unwrap(),
+		)];
+		let payload = build_payload(&machine_info(), &details, &[]).unwrap();
+		let report = payload
+			.applications
+			.as_ref()
+			.unwrap()
+			.get("host-tupaia")
+			.unwrap();
+		assert_eq!(report.type_, "tupaia");
+		assert_eq!(report.detail.len(), 1);
+		assert_eq!(report.detail.get("tupaiaVersion").unwrap(), commit);
+
+		let info = serde_json::to_value(server_info::TupaiaInfo::default()).unwrap();
 		assert_eq!(info, serde_json::json!({}));
 	}
 

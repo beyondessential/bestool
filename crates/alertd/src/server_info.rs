@@ -159,6 +159,21 @@ pub struct MsupplyInfo {
 	pub msupply_version: Option<String>,
 }
 
+/// The Tupaia installation's own facts.
+///
+/// Its type travels with the application report rather than here, and the
+/// checked-out commit, as its product version, is the only other thing it
+/// reports.
+///
+/// spec: SUBJ
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TupaiaInfo {
+	/// The full hash of the checked-out commit, absent when it cannot be read.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub tupaia_version: Option<String>,
+}
+
 /// Optional inputs sourced from the Tamanu DB / config that aren't trivially
 /// available at gather time. Doctor populates these from its own DB connection.
 #[derive(Debug, Clone, Default)]

@@ -24,6 +24,12 @@ Which duties it can have, which facts describe it, and which checks apply to it 
 
 An agent reports an mSupply application, of type `msupply`, on a machine where mSupply is installed.
 
+An agent reports a Tupaia application, of type `tupaia`, on a machine where Tupaia is installed.
+Tupaia is installed on a machine whose `/home/ubuntu/tupaia/package.json` exists and gives its `name` as `tupaia`, the name of the Tupaia monorepo root.
+
+> [!NOTE]
+> A machine with no applications can never be ranked, so its issues never reach an incident; reporting Tupaia is what lets a Tupaia host's machine checks alert.
+
 ## Identifying a subject
 
 A machine is identified by the identity its agent enrolled with, which the agent mints once and keeps.
@@ -63,6 +69,12 @@ A check reading an application's tables is about that application; a check gradi
 
 An mSupply application carries two checks: the Canopy certificate collection check ([CHK-CCO](../canopy/certificate-collection-check.md)) and the Caddy certificate check ([CHK-CCT](caddy-certs.md)), each grading the DNS names belonging to it ([NAM](../canopy/names.md#which-application-a-dns-name-belongs-to)).
 
+A Tupaia application carries no checks of its own.
+Its machine carries the machine checks as any other machine does, and no Tamanu or Postgres check runs for it.
+
+> [!NOTE]
+> Tupaia is fronted by a web server other than Caddy and uses a database on another machine, so neither the certificate checks nor the database checks have anything of Tupaia's to grade.
+
 A concern that genuinely exists on both sides is two checks rather than one check with a conditional subject, so neither has a mode in which it reports the wrong subject's reading.
 
 Which checks apply to an application follows from its type, so a check written for one type is not run against another.
@@ -87,6 +99,9 @@ A machine reports: its hostname, its uptime, its operating system kind, name, ve
 An application reports: its product version, its type, its install root where it has one on disk, the version of the runtime it executes under, its canonical URL, its current sync tick, and its configured timezone.
 
 An mSupply application reports its type and its product version, read from the version its installation pins.
+
+A Tupaia application reports its type and, as its product version, the full hash of the commit its checkout has checked out.
+Its product version is absent when that commit cannot be determined.
 
 A Postgres application reports its server version.
 That version belongs to the server rather than to what connects to it, so an application using a database does not report the database's version as one of its own facts.
