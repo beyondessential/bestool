@@ -48,7 +48,14 @@ A request refused as a type mismatch is such a failure, and the reason names the
 
 A DNS name Canopy refused as undeclared or as denied is not graded, whether or not a chain is held for it.
 Canopy shows an operator an undeclared request itself, and a denial is an operator's decision against the DNS name, so neither is this host's to report.
-Each is listed in the check's detail as undeclared or denied, and changes neither the outcome nor the summary.
+Each is reported as a skipped instance whose detail says whether it was undeclared or denied, with Canopy's reason, and changes neither the outcome nor the summary.
+
+## Reporting
+
+The check reports one instance per DNS name it lists, keyed by the DNS name, as described in [CHK](../tamanu/healthchecks.md), so one name failing to collect is graded and silenced without quieting the others.
+A graded name is passed or failed.
+Its detail carries whether a chain is collected, the days remaining, whether Canopy holds a certificate for it, and the reason its order is failing, if any.
+Where the refusal record could not be read, the check's detail says so and that only declared names were graded.
 
 ## When it skips
 

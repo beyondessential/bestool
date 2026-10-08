@@ -31,7 +31,8 @@ The check skips when Caddy's configuration cannot be read, which is how a host n
 A certificate is graded on expiry only once it is inside the window its holder should have renewed it in.
 Before that point no renewal has been attempted and a modest remaining life is expected, so grading it would fire on every certificate in the fleet partway through its life.
 
-Inside that window the thresholds scale with the certificate's own lifetime rather than being fixed durations, warning while there is room to recover and failing as the remaining life runs down.
+The window opens when a third of the certificate's lifetime remains.
+Inside it the thresholds scale with the certificate's own lifetime rather than being fixed durations: the check warns when seven thirtieths of the lifetime remain and fails when seven ninetieths do, which is three weeks and one week for a ninety-day certificate.
 A certificate's lifetime is not fixed across the fleet: a short-lived profile and a long-lived one both occur, and a fixed threshold would fire far too late for the first and far too early for the second.
 
 ## Served against configured
@@ -40,6 +41,15 @@ The check completes a handshake against the host itself and compares the certifi
 A mismatch warns: it means the serving process has not picked up a certificate that has already been renewed.
 
 The handshake is made to the host's own address so the name resolves to the local server rather than out to the internet, which is what makes the comparison about this host.
+
+## Reporting
+
+The check reports one instance per certificate it grades, as described in [CHK](healthchecks.md), so one certificate running out is graded and silenced without quieting the others.
+An instance is keyed by the certificate's DNS names, sorted and joined, or by where it was loaded from when it names none, so the key stays the same across renewals.
+Its label is the DNS names.
+An instance is passed, warning or failed by its own expiry and served-against-configured grades, the worse of the two, and its detail carries the DNS names, the source, where it was loaded from, when it expires, the days remaining, its lifetime, and whether the served certificate matched.
+
+The numeric telemetry the check declares is described in [MET](metrics.md).
 
 ## Certificates from Canopy
 
