@@ -16,7 +16,7 @@
 //!
 //! spec: SUB
 
-use std::{collections::BTreeMap, fmt};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -513,7 +513,7 @@ pub trait HttpRuntime: Send + Sync {
 
 	/// The certificates in force for this application, whatever issues and
 	/// serves them.
-	async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable>;
+	async fn certificates(&self) -> Result<Arc<Vec<Certificate>>, Unavailable>;
 }
 
 #[cfg(test)]
@@ -615,8 +615,8 @@ pub mod fake {
 			self.counters.clone()
 		}
 
-		async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable> {
-			self.certificates.clone()
+		async fn certificates(&self) -> Result<Arc<Vec<Certificate>>, Unavailable> {
+			self.certificates.clone().map(Arc::new)
 		}
 	}
 

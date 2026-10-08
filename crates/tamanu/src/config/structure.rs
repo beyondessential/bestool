@@ -24,6 +24,8 @@ pub fn database_url_override() -> Option<String> {
 pub struct TamanuConfig {
 	pub canonical_host_name: Option<Url>,
 	pub canonical_url: Option<Url>,
+	/// The local port the server listens on. Tamanu defaults it to 3000.
+	pub port: Option<u16>,
 	/// Current (multi-facility) form. Newer installs only.
 	pub server_facility_ids: Option<Vec<String>>,
 	/// Legacy single-facility form. Still in use on older facility installs.
@@ -48,6 +50,14 @@ impl TamanuConfig {
 		self.canonical_host_name
 			.as_ref()
 			.or(self.canonical_url.as_ref())
+	}
+
+	/// Tamanu's default listen port when the config doesn't set one.
+	pub const DEFAULT_PORT: u16 = 3000;
+
+	/// The local port the server listens on.
+	pub fn port(&self) -> u16 {
+		self.port.unwrap_or(Self::DEFAULT_PORT)
 	}
 
 	/// Identify the server as a facility from any one of three independent
@@ -164,6 +174,7 @@ impl TamanuConfig {
 		Self {
 			canonical_host_name: None,
 			canonical_url: None,
+			port: None,
 			server_facility_ids: None,
 			server_facility_id: None,
 			db,

@@ -1,7 +1,7 @@
 //! Doctor healthchecks. One module per check.
 //!
 //! Each module exposes a `pub async fn run` taking the context of the subject
-//! it reports for: [`MachineCx`], [`PgCx`], or [`TamanuCx`]. The [`all`]
+//! it reports for: [`MachineCx`], [`PgCx`], [`TamanuCx`], or [`HostedCx`]. The [`all`]
 //! registry below ties names to runners so the dispatcher can filter by
 //! `--check`.
 //!
@@ -23,7 +23,7 @@ use super::check::Check;
 use super::heal::{self, HealAction};
 use super::runtime::{HttpRuntime, ServiceRuntime};
 use super::store::CheckStore;
-use super::subject::{ApplicationKind, ApplicationRef, TamanuScope};
+use super::subject::{ApplicationKind, ApplicationRef, HostedScope, TamanuScope};
 
 pub mod util;
 
@@ -203,6 +203,23 @@ pub struct TamanuCx {
 	pub store: Arc<dyn CheckStore>,
 }
 
+/// What a check on an application served through the machine's front end is
+/// handed: the application, and the readings about the traffic and certificates
+/// it is served with.
+///
+/// Shared by every application with a hostname to certify, Tamanu or not, so
+/// it carries nothing a Tamanu has and mSupply lacks: no database, no
+/// configuration, no service runtime, no check state.
+///
+/// spec: SUBJ
+#[derive(Clone)]
+pub struct HostedCx {
+	pub app: ApplicationRef,
+	pub canopy: Option<Arc<CanopyClient>>,
+	pub sweep: Arc<crate::sweep_cache::SweepCache>,
+	pub traffic: Arc<dyn HttpRuntime>,
+}
+
 /// What a Postgres check is handed: the cluster it reports for, and how to
 /// reach it.
 ///
@@ -342,6 +359,16 @@ impl TamanuCx {
 	pub async fn db(&self) -> Option<PgConnection> {
 		take_connection(self.pool.as_ref()).await
 	}
+
+	/// The part of this context a hosted check reads, for this same deployment.
+	pub fn hosted(&self) -> HostedCx {
+		HostedCx {
+			app: self.app.clone(),
+			canopy: self.canopy.clone(),
+			sweep: self.sweep.clone(),
+			traffic: self.traffic.clone(),
+		}
+	}
 }
 
 impl PgCx {
@@ -456,13 +483,15 @@ pub struct Runner<Cx> {
 ///
 /// The scope narrows only where a subject has roles to narrow to: a Tamanu is a
 /// central or a facility, while a machine and a cluster each need no further
-/// saying. Every arm carries a heal because any of them may have one.
+/// saying. The hosted arm spans Tamanu and mSupply, whose checks read only what
+/// both have. Every arm carries a heal because any of them may have one.
 ///
 /// spec: SUBJ
 pub enum Run {
 	Machine(Runner<MachineCx>),
 	Postgres(Runner<PgCx>),
 	Tamanu(TamanuScope, Runner<TamanuCx>),
+	Hosted(HostedScope, Runner<HostedCx>),
 }
 
 /// One check's name + runner.
@@ -487,6 +516,7 @@ impl CheckEntry {
 			Run::Machine(_) => vec!["machine"],
 			Run::Postgres(_) => vec![ApplicationKind::Postgres.type_slug()],
 			Run::Tamanu(scope, _) => scope.possible_slugs(),
+			Run::Hosted(scope, _) => scope.possible_slugs(),
 		}
 	}
 }
@@ -537,6 +567,15 @@ macro_rules! entry {
 	};
 	(@run $run:path, tamanu_app $(, $opt:tt)*) => {
 		entry!(@tamanu $run, TamanuScope::Any $(, $opt)*)
+	};
+	(@run $run:path, hosted $(, $opt:tt)*) => {
+		Run::Hosted(
+			HostedScope::Any,
+			Runner {
+				run: |ctx| Box::pin($run(ctx)),
+				heal: entry!(@heal $($opt),*),
+			},
+		)
 	};
 	(@run $run:path, central $(, $opt:tt)*) => {
 		entry!(@tamanu $run, TamanuScope::Central $(, $opt)*)
@@ -608,13 +647,11 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("caddy_version", caddy_version::run, machine),
 		entry!("caddy_resolvers", caddy_resolvers::run, machine),
 		// The certificates, by contrast, are the application's: they are issued for
-		// the names it answers on.
-		entry!("caddy_certs", caddy_certs::run, tamanu_app),
+		// the names it answers on, whichever product serves them.
+		entry!("caddy_certs", caddy_certs::run, hosted),
 		// The collection behind a canopy-issued certificate is the application's
-		// too, and attributed more finely than `caddy_certs` manages: canopy
-		// names the application each certificate belongs to, where caddy's
-		// configuration says nothing about which application a site serves.
-		entry!("canopy_certificates", canopy_certificates::run, tamanu_app),
+		// too.
+		entry!("canopy_certificates", canopy_certificates::run, hosted),
 		// Grades the machine's Caddyfile version marker, so it reports for the
 		// machine — reading the deployment's version off the machine's context to
 		// tell whether the marker is stale. Windows-only, and self-skips when
@@ -962,7 +999,7 @@ mod tests {
 	use std::sync::Arc;
 
 	use super::{
-		CheckEntry, PgCx, Run, Runner, TamanuCx, all, fmt_db_error, query_error_check,
+		CheckEntry, HostedCx, PgCx, Run, Runner, TamanuCx, all, fmt_db_error, query_error_check,
 		test_support::central_ctx,
 	};
 	use crate::check::CheckStatus;
@@ -1057,6 +1094,15 @@ mod tests {
 			Run::Tamanu(_, runner) => runner,
 			Run::Postgres(_) => panic!("{} is a Postgres check", entry.name),
 			Run::Machine(_) => panic!("{} is a machine check", entry.name),
+			Run::Hosted(..) => panic!("{} is a hosted check", entry.name),
+		}
+	}
+
+	/// The hosted runner for `name`.
+	fn hosted_runner(entry: &CheckEntry) -> &Runner<HostedCx> {
+		match &entry.run {
+			Run::Hosted(_, runner) => runner,
+			_ => panic!("{} is not a hosted check", entry.name),
 		}
 	}
 
@@ -1066,6 +1112,7 @@ mod tests {
 			Run::Postgres(runner) => runner,
 			Run::Tamanu(..) => panic!("{} is a Tamanu check", entry.name),
 			Run::Machine(_) => panic!("{} is a machine check", entry.name),
+			Run::Hosted(..) => panic!("{} is a hosted check", entry.name),
 		}
 	}
 
@@ -1093,7 +1140,6 @@ mod tests {
 			"tamanu_http",
 			"tamanu_service",
 			"version_drift",
-			"caddy_certs",
 			"http_errors",
 		] {
 			let entry = entry_of(name);
@@ -1126,19 +1172,21 @@ mod tests {
 	/// spec: SUBJ
 	#[test]
 	fn checks_are_filed_under_the_subject_they_report_for() {
-		use crate::subject::TamanuScope;
+		use crate::subject::{HostedScope, TamanuScope};
 
 		#[derive(Debug, PartialEq, Eq)]
 		enum Arm {
 			Machine,
 			Postgres,
 			Tamanu(TamanuScope),
+			Hosted(HostedScope),
 		}
 
 		let arm_of = |name: &str| match entry_of(name).run {
 			Run::Machine(_) => Arm::Machine,
 			Run::Postgres(_) => Arm::Postgres,
 			Run::Tamanu(scope, _) => Arm::Tamanu(scope),
+			Run::Hosted(scope, _) => Arm::Hosted(scope),
 		};
 
 		// The machine's filesystems, its clock, and the front-end software
@@ -1160,11 +1208,20 @@ mod tests {
 			);
 		}
 		// The application's own data, traffic and certificates.
-		for name in ["migrations", "caddy_certs", "http_errors"] {
+		for name in ["migrations", "http_errors"] {
 			assert_eq!(
 				arm_of(name),
 				Arm::Tamanu(TamanuScope::Any),
 				"{name} reports for a Tamanu application"
+			);
+		}
+		// Certificates are issued for the names an application answers on, which
+		// mSupply has as much as Tamanu does.
+		for name in ["caddy_certs", "canopy_certificates"] {
+			assert_eq!(
+				arm_of(name),
+				Arm::Hosted(HostedScope::Any),
+				"{name} reports for any hosted application"
 			);
 		}
 		assert_eq!(arm_of("fhir_workers"), Arm::Tamanu(TamanuScope::Central));
@@ -1193,6 +1250,43 @@ mod tests {
 			..db_only_ctx()
 		};
 		assert_eq!(facility.server_kind(), ApiServerKind::Facility);
+	}
+
+	/// The two certificate checks are the only ones that reach mSupply, and they
+	/// are selectable on it and on both Tamanu roles but on no cluster.
+	///
+	/// spec: SUBJ
+	#[test]
+	fn only_the_certificate_checks_apply_to_msupply() {
+		let on_msupply: Vec<&str> = all()
+			.iter()
+			.filter(|entry| entry.possible_slugs().contains(&"msupply"))
+			.map(|entry| entry.name)
+			.collect();
+		assert_eq!(on_msupply, ["caddy_certs", "canopy_certificates"]);
+
+		for name in ["caddy_certs", "canopy_certificates"] {
+			let slugs = entry_of(name).possible_slugs();
+			assert_eq!(slugs, ["tamanu-central", "tamanu-facility", "msupply"]);
+		}
+	}
+
+	/// A hosted check runs against a context with no Tamanu behind it.
+	///
+	/// spec: SUBJ
+	#[tokio::test]
+	async fn hosted_checks_run_against_msupply() {
+		let cx = HostedCx {
+			app: crate::subject::ApplicationRef::msupply(),
+			canopy: None,
+			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
+			traffic: Arc::new(crate::runtime::fake::FakeTraffic::absent()),
+		};
+		for name in ["caddy_certs", "canopy_certificates"] {
+			let entry = entry_of(name);
+			let check = (hosted_runner(&entry).run)(cx.clone()).await;
+			assert_eq!(check.name, name);
+		}
 	}
 
 	/// A check is named within its subject, so the registry's names are unique

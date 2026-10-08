@@ -468,7 +468,7 @@ The TLS certificates canopy holds for this server.
 ###### **Subcommands:**
 
 * `list` — Report the certificates canopy holds and the chains this host serves
-* `request` — Ask canopy to certify a name, without waiting for it to be discovered
+* `request` — Ask canopy to certify a DNS name, without waiting for it to be discovered
 * `collect` — Run a collection now rather than waiting for the schedule
 
 ###### **Options:**
@@ -488,15 +488,21 @@ Report the certificates canopy holds and the chains this host serves
 
 ## `bestool canopy certs request`
 
-Ask canopy to certify a name, without waiting for it to be discovered.
+Ask canopy to certify a DNS name, without waiting for it to be discovered.
 
-The name still has to be one this server's entitlement covers; this is for pre-provisioning, not for reaching past the grant.
+The DNS name still has to be one the named application's entitlement covers; this is for pre-provisioning, not for reaching past the grant.
 
-**Usage:** `bestool canopy certs request <NAME>`
+**Usage:** `bestool canopy certs request --type <APPLICATION_TYPE> <NAME>`
 
 ###### **Arguments:**
 
-* `<NAME>` — The name to certify
+* `<NAME>` — The DNS name to certify
+
+###### **Options:**
+
+* `-t`, `--type <APPLICATION_TYPE>` — The type of the application the DNS name is for, such as `tamanu-facility` or `msupply`.
+
+   A DNS name requested ahead of its site cannot be attributed from Caddy's configuration, so the application is named here.
 
 
 
@@ -516,9 +522,9 @@ The DNS records canopy publishes for this server.
 
 ###### **Subcommands:**
 
-* `show` — Report the names canopy holds registrations for on this server
-* `register` — Publish the addresses a name resolves to
-* `withdraw` — Take a name's records down and free the name
+* `show` — Report the DNS names canopy holds registrations for on this server
+* `register` — Publish the addresses a DNS name resolves to
+* `withdraw` — Take a DNS name's records down and free the DNS name
 
 ###### **Options:**
 
@@ -529,7 +535,7 @@ The DNS records canopy publishes for this server.
 
 ## `bestool canopy dns show`
 
-Report the names canopy holds registrations for on this server
+Report the DNS names canopy holds registrations for on this server
 
 **Usage:** `bestool canopy dns show`
 
@@ -537,28 +543,32 @@ Report the names canopy holds registrations for on this server
 
 ## `bestool canopy dns register`
 
-Publish the addresses a name resolves to.
+Publish the addresses a DNS name resolves to.
 
-Replaces whatever was registered for the name before. The name must sit within a domain this server's group controls, and a name another server already holds is refused.
+Replaces whatever was registered for the DNS name before. The DNS name must sit within a domain the named application's group controls, and one another application already declares is refused.
 
-**Usage:** `bestool canopy dns register <NAME> <ADDRESSES>...`
+**Usage:** `bestool canopy dns register --type <APPLICATION_TYPE> <NAME> <ADDRESSES>...`
 
 ###### **Arguments:**
 
-* `<NAME>` — The name to publish records at
+* `<NAME>` — The DNS name to publish records at
 * `<ADDRESSES>` — Every external address this server is reachable at
+
+###### **Options:**
+
+* `-t`, `--type <APPLICATION_TYPE>` — The type of the application the DNS name is for, such as `tamanu-facility` or `msupply`
 
 
 
 ## `bestool canopy dns withdraw`
 
-Take a name's records down and free the name
+Take a DNS name's records down and free the DNS name
 
 **Usage:** `bestool canopy dns withdraw <NAME>`
 
 ###### **Arguments:**
 
-* `<NAME>` — The name to withdraw
+* `<NAME>` — The DNS name to withdraw
 
 
 

@@ -18,7 +18,7 @@
 //!
 //! spec: TLSD
 
-use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
 	body::Body,
@@ -26,6 +26,7 @@ use axum::{
 	http::{HeaderValue, StatusCode, header::CONTENT_TYPE},
 	response::{IntoResponse, Response},
 };
+use bestool_alertd::ownership::CaddySites;
 use miette::{IntoDiagnostic as _, Result, WrapErr as _};
 use serde::Deserialize;
 use serde_json::Value;
@@ -134,15 +135,14 @@ pub async fn handle_certificate(
 const CONFIG_URL: &str = "http://localhost:2019/config/";
 const CONFIG_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// The site addresses Caddy is configured to serve, read from its live admin
-/// configuration.
+/// Caddy's sites and certificate hooks, read from its live admin configuration.
 ///
-/// This is where the names to certify come from: the daemon orders for them
+/// This is where the DNS names to certify come from: the daemon orders for them
 /// ahead of any client arriving, because a certificate is obtained before it is
 /// needed rather than while a client waits.
 ///
-/// spec: TLS#which-names-are-certified
-pub async fn caddy_subjects() -> Result<BTreeSet<String>> {
+/// spec: TLS#which-dns-names-are-certified
+pub async fn caddy_sites() -> Result<CaddySites> {
 	let response = bestool_alertd::local_http::client()
 		.get(CONFIG_URL)
 		.timeout(CONFIG_TIMEOUT)
@@ -161,39 +161,7 @@ pub async fn caddy_subjects() -> Result<BTreeSet<String>> {
 		.await
 		.into_diagnostic()
 		.wrap_err("parsing caddy's configuration")?;
-	Ok(active_subjects(&config))
-}
-
-/// Every hostname Caddy considers active, gathered from its configuration: route
-/// `host` matchers (anywhere, including subroutes), plus TLS `automate` and
-/// automation-policy `subjects`.
-///
-/// The same reading `caddy_certs` takes, for the same reason: the live
-/// configuration is what says which names the host answers on.
-fn active_subjects(config: &Value) -> BTreeSet<String> {
-	fn walk(value: &Value, out: &mut BTreeSet<String>) {
-		match value {
-			Value::Object(map) => {
-				for (key, val) in map {
-					if matches!(key.as_str(), "host" | "automate" | "subjects")
-						&& let Some(arr) = val.as_array()
-					{
-						out.extend(
-							arr.iter()
-								.filter_map(|v| v.as_str())
-								.map(|s| s.trim_end_matches('.').to_ascii_lowercase()),
-						);
-					}
-					walk(val, out);
-				}
-			}
-			Value::Array(arr) => arr.iter().for_each(|v| walk(v, out)),
-			_ => {}
-		}
-	}
-	let mut out = BTreeSet::new();
-	walk(config, &mut out);
-	out
+	Ok(CaddySites::from_config(&config))
 }
 
 #[cfg(test)]
@@ -201,36 +169,32 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn the_names_to_certify_come_from_caddys_live_configuration() {
+	fn only_sites_that_name_the_daemons_endpoint_are_certified() {
 		let config = serde_json::json!({
 			"apps": {
 				"http": { "servers": { "srv0": { "routes": [
-					{ "match": [{ "host": ["a.example.com", "B.example.com."] }],
-					  "handle": [{ "handler": "subroute", "routes": [
-						{ "match": [{ "host": ["nested.example.com"] }] }
-					  ]}] }
+					{ "match": [{ "host": ["hooked.example.com", "B.example.com."] }] },
+					{ "match": [{ "host": ["plain.example.com"] }] }
 				]}}},
-				"tls": {
-					"certificates": { "automate": ["auto.example.com"] },
-					"automation": { "policies": [{ "subjects": ["policy.example.com"] }] }
-				}
+				"tls": { "automation": { "policies": [{
+					"subjects": ["hooked.example.com", "b.example.com"],
+					"get_certificate": [{ "via": "http", "url": "http://127.0.0.1:8271/certificate" }]
+				}]}}
 			}
 		});
-		let subjects = active_subjects(&config);
-		for host in [
-			"a.example.com",
-			"b.example.com",
-			"nested.example.com",
-			"auto.example.com",
-			"policy.example.com",
-		] {
-			assert!(subjects.contains(host), "missing {host}");
-		}
+		let sites = CaddySites::from_config(&config);
+		assert_eq!(sites.addresses().len(), 3);
+		let certified = sites.hooked_addresses();
+		assert!(certified.contains("hooked.example.com"));
+		assert!(certified.contains("b.example.com"));
+		assert!(!certified.contains("plain.example.com"));
 	}
 
 	#[test]
 	fn a_configuration_naming_no_site_names_nothing() {
-		assert!(active_subjects(&serde_json::json!({"apps": {}})).is_empty());
+		let sites = CaddySites::from_config(&serde_json::json!({"apps": {}}));
+		assert!(sites.addresses().is_empty());
+		assert!(sites.hooked_addresses().is_empty());
 	}
 
 	/// The endpoint over a real loopback connection, which is the only way to

@@ -26,7 +26,13 @@
 //! differently, and a host that has quietly fallen back to the front end's own
 //! issuance would otherwise present exactly as a healthy canopy-served one.
 //!
-//! Skips when the substrate cannot serve the reading (e.g. no front end here).
+//! Only certificates serving a DNS name that belongs to the application are
+//! graded, by the same ownership function the daemon requests chains with. A
+//! certificate serving several applications' DNS names is graded under each; one
+//! serving only unowned DNS names is graded under none.
+//!
+//! Skips when the substrate cannot serve the reading (e.g. no front end here),
+//! or when none of its certificates is for a DNS name of this application.
 //!
 //! The check keeps its name, which still says caddy: it is wire-visible and
 //! canopy keys its severity map on it, so renaming it is a change to make
@@ -37,9 +43,10 @@
 use jiff::Timestamp;
 use serde_json::{Value, json};
 
-use super::TamanuCx;
+use super::HostedCx;
 use crate::Stat;
 use crate::check::Check;
+use crate::ownership::Ownership;
 use crate::runtime::Certificate;
 
 const NAME: &str = "caddy_certs";
@@ -91,7 +98,7 @@ fn classify_expiry(remaining: i64, lifetime: i64) -> Expiry {
 	}
 }
 
-pub async fn run(ctx: TamanuCx) -> Check {
+pub async fn run(ctx: HostedCx) -> Check {
 	let certs = match ctx.traffic.certificates().await {
 		Ok(certs) => certs,
 		Err(unavailable) => {
@@ -107,10 +114,49 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		);
 	}
 
-	grade(&certs, Timestamp::now())
+	let Some(ownership) = ctx.sweep.ownership().await else {
+		return Check::skip(
+			NAME,
+			"certificates could not be attributed",
+			"caddy's configuration could not be read, so which application each DNS name belongs to is unknown",
+		);
+	};
+
+	let certs = belonging_to(&certs, &ownership, ctx.app.kind.type_slug());
+	if certs.is_empty() {
+		return Check::skip(
+			NAME,
+			"no certificates for this application",
+			"the configuration references no certificate the check can read for a DNS name belonging to its application",
+		);
+	}
+
+	grade(certs, Timestamp::now())
 }
 
-fn grade(certs: &[Certificate], now: Timestamp) -> Check {
+/// The certificates serving a DNS name that belongs to the application of type
+/// `type_slug`.
+///
+/// A certificate serving several applications' DNS names is kept for each of
+/// them, and one serving only unowned DNS names for none.
+///
+/// spec: CHK-CCT
+fn belonging_to<'a>(
+	certs: &'a [Certificate],
+	ownership: &Ownership,
+	type_slug: &str,
+) -> Vec<&'a Certificate> {
+	certs
+		.iter()
+		.filter(|cert| {
+			cert.names
+				.iter()
+				.any(|name| ownership.serves(name, type_slug))
+		})
+		.collect()
+}
+
+fn grade<'a>(certs: impl IntoIterator<Item = &'a Certificate>, now: Timestamp) -> Check {
 	let mut findings: Vec<(Sev, String)> = Vec::new();
 	let mut details: Vec<Value> = Vec::new();
 	let mut stats: Vec<Stat> = Vec::new();
@@ -204,8 +250,14 @@ fn grade(certs: &[Certificate], now: Timestamp) -> Check {
 
 #[cfg(test)]
 mod tests {
+	use bestool_canopy::names::Entitlement;
+
 	use super::*;
-	use crate::{check::CheckStatus, runtime::CertificateSource};
+	use crate::{
+		check::CheckStatus,
+		ownership::{CaddySites, HostApplication},
+		runtime::CertificateSource,
+	};
 
 	fn classify(remaining: i64, lifetime: i64) -> &'static str {
 		match classify_expiry(remaining, lifetime) {
@@ -376,5 +428,111 @@ mod tests {
 		let certs = [cert(&["example.com"], 3, 90)];
 		let check = grade(&certs, now());
 		assert!(matches!(check.status, CheckStatus::Fail(_)), "{check:?}");
+	}
+
+	fn host(type_slug: &str, service: &str) -> HostApplication {
+		HostApplication {
+			type_slug: type_slug.into(),
+			canonical_hosts: Default::default(),
+			service_names: [service.to_owned()].into(),
+			shared_names: Default::default(),
+			local_ports: Default::default(),
+		}
+	}
+
+	fn proxying(host: &str, dial: &str) -> serde_json::Value {
+		serde_json::json!({
+			"match": [{"host": [host]}],
+			"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": dial}]}],
+		})
+	}
+
+	/// A host fronting Tamanu and mSupply, with a site that proxies to neither
+	/// and a wildcard site proxying to mSupply.
+	fn ownership() -> Ownership {
+		let config = serde_json::json!({"apps": {"http": {"servers": {"s": {"routes": [
+			proxying("central.example.com", "api.central.tamanu.internal:80"),
+			proxying("supply.example.com", "api.msupply.internal:80"),
+			proxying("stray.example.com", "something.else.internal:80"),
+			proxying("*.wild.example.com", "api.msupply.internal:80"),
+		]}}}}});
+		Ownership::resolve(
+			&CaddySites::from_config(&config),
+			&[
+				host("tamanu-central", "api.central.tamanu.internal"),
+				host("msupply", "api.msupply.internal"),
+			],
+			&Entitlement::default(),
+		)
+	}
+
+	fn names_of<'a>(certs: &[&'a Certificate]) -> Vec<&'a str> {
+		certs
+			.iter()
+			.flat_map(|cert| cert.names.iter().map(String::as_str))
+			.collect()
+	}
+
+	/// A certificate for an mSupply DNS name is graded under mSupply and not
+	/// under Tamanu.
+	///
+	/// spec: CHK-CCT
+	#[test]
+	fn a_certificate_is_graded_under_the_application_owning_its_dns_name() {
+		let certs = vec![
+			cert(&["central.example.com"], 60, 90),
+			cert(&["supply.example.com"], 60, 90),
+		];
+
+		let tamanu = belonging_to(&certs, &ownership(), "tamanu-central");
+		assert_eq!(names_of(&tamanu), vec!["central.example.com"]);
+		let msupply = belonging_to(&certs, &ownership(), "msupply");
+		assert_eq!(names_of(&msupply), vec!["supply.example.com"]);
+	}
+
+	/// A certificate covering DNS names of both applications is graded under
+	/// each.
+	///
+	/// spec: CHK-CCT
+	#[test]
+	fn a_certificate_serving_several_applications_is_graded_under_each() {
+		let certs = vec![cert(&["central.example.com", "supply.example.com"], 60, 90)];
+		for slug in ["tamanu-central", "msupply"] {
+			assert_eq!(belonging_to(&certs, &ownership(), slug).len(), 1);
+		}
+	}
+
+	/// A certificate whose DNS names belong to no application is graded under
+	/// none, which leaves an application with nothing to grade and so skipping.
+	///
+	/// spec: CHK-CCT
+	#[test]
+	fn a_certificate_for_unowned_dns_names_is_graded_under_no_application() {
+		let certs = vec![
+			cert(&["stray.example.com"], 60, 90),
+			cert(&["unknown.example.org"], 60, 90),
+			cert(&[], 60, 90),
+		];
+		for slug in ["tamanu-central", "msupply"] {
+			assert!(belonging_to(&certs, &ownership(), slug).is_empty());
+		}
+	}
+
+	/// A wildcard certificate covers the owned DNS names within its one label,
+	/// and no others.
+	///
+	/// spec: CHK-CCT
+	#[test]
+	fn a_wildcard_certificate_belongs_to_the_owners_of_the_names_it_covers() {
+		let wild = vec![cert(&["*.example.com"], 60, 90)];
+		assert_eq!(belonging_to(&wild, &ownership(), "tamanu-central").len(), 1);
+		assert_eq!(belonging_to(&wild, &ownership(), "msupply").len(), 1);
+
+		let narrow = vec![cert(&["*.wild.example.com"], 60, 90)];
+		assert!(belonging_to(&narrow, &ownership(), "tamanu-central").is_empty());
+		assert_eq!(belonging_to(&narrow, &ownership(), "msupply").len(), 1);
+
+		let elsewhere = vec![cert(&["*.example.org"], 60, 90)];
+		assert!(belonging_to(&elsewhere, &ownership(), "msupply").is_empty());
 	}
 }

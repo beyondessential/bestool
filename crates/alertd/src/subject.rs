@@ -7,10 +7,10 @@ use bestool_tamanu::ApiServerKind;
 /// An application a sweep can report for.
 ///
 /// The wire type is an open set, so this enumerates only what bestool itself
-/// reports from a host: its Tamanu deployment, and the Postgres installation
-/// under it. A machine commonly has both, and they are reported separately —
-/// "Tamanu as seen through its database" and "the health of Postgres itself"
-/// are different questions about different things.
+/// reports from a host: its Tamanu deployment, the Postgres installation under
+/// it, and mSupply. A machine commonly has Tamanu and Postgres, and they are
+/// reported separately — "Tamanu as seen through its database" and "the health
+/// of Postgres itself" are different questions about different things.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ApplicationKind {
 	TamanuCentral,
@@ -22,12 +22,20 @@ pub enum ApplicationKind {
 	/// reachability are about the server itself, and hold whether one Tamanu
 	/// uses it, several do, or none does.
 	Postgres,
+	/// The mSupply installation on this machine, reported whether or not the
+	/// host has a Tamanu or a database.
+	Msupply,
 }
 
 impl ApplicationKind {
 	/// Every kind bestool can report, for lookups that go from a wire key back
 	/// to the kind that produced it.
-	pub const ALL: [Self; 3] = [Self::TamanuCentral, Self::TamanuFacility, Self::Postgres];
+	pub const ALL: [Self; 4] = [
+		Self::TamanuCentral,
+		Self::TamanuFacility,
+		Self::Postgres,
+		Self::Msupply,
+	];
 
 	/// The application type as canopy names it.
 	pub fn type_slug(self) -> &'static str {
@@ -35,6 +43,7 @@ impl ApplicationKind {
 			Self::TamanuCentral => "tamanu-central",
 			Self::TamanuFacility => "tamanu-facility",
 			Self::Postgres => "postgres",
+			Self::Msupply => crate::msupply::TYPE_SLUG,
 		}
 	}
 
@@ -65,6 +74,15 @@ impl ApplicationRef {
 	/// One per role, so the type is enough to tell them apart, and the `host-`
 	/// prefix keeps the key legible on the wire.
 	pub fn tamanu(kind: ApplicationKind) -> Self {
+		Self {
+			kind,
+			key: format!("host-{}", kind.type_slug()),
+		}
+	}
+
+	/// The mSupply installed on the machine, of which there is one.
+	pub fn msupply() -> Self {
+		let kind = ApplicationKind::Msupply;
 		Self {
 			kind,
 			key: format!("host-{}", kind.type_slug()),
@@ -215,6 +233,46 @@ impl TamanuScope {
 	}
 }
 
+/// Which applications a check served through the machine's front end reports
+/// for: every Tamanu deployment and mSupply.
+///
+/// Carried inside the registry's hosted arm for the same reason as
+/// [`TamanuScope`]. No Postgres: a cluster is not served through Caddy and has
+/// no DNS names of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostedScope {
+	/// Any Tamanu deployment, and mSupply.
+	Any,
+}
+
+impl HostedScope {
+	/// Whether a check of this scope reports for `app`.
+	pub fn admits(self, app: &ApplicationRef) -> bool {
+		match self {
+			Self::Any => app.kind.is_tamanu() || app.kind == ApplicationKind::Msupply,
+		}
+	}
+
+	/// Every application kind a check of this scope could report for.
+	pub fn possible_kinds(self) -> Vec<ApplicationKind> {
+		match self {
+			Self::Any => vec![
+				ApplicationKind::TamanuCentral,
+				ApplicationKind::TamanuFacility,
+				ApplicationKind::Msupply,
+			],
+		}
+	}
+
+	/// Every `subject:name` slug a check of this scope could be selected by.
+	pub fn possible_slugs(self) -> Vec<&'static str> {
+		self.possible_kinds()
+			.into_iter()
+			.map(ApplicationKind::type_slug)
+			.collect()
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -222,6 +280,7 @@ mod tests {
 	fn app_ref(kind: ApplicationKind) -> ApplicationRef {
 		match kind {
 			ApplicationKind::Postgres => ApplicationRef::local_postgres(5432),
+			ApplicationKind::Msupply => ApplicationRef::msupply(),
 			other => ApplicationRef::tamanu(other),
 		}
 	}
@@ -271,6 +330,48 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn a_hosted_scope_admits_tamanu_and_msupply_but_no_cluster() {
+		let scope = HostedScope::Any;
+		assert!(scope.admits(&app_ref(ApplicationKind::TamanuCentral)));
+		assert!(scope.admits(&app_ref(ApplicationKind::TamanuFacility)));
+		assert!(scope.admits(&app_ref(ApplicationKind::Msupply)));
+		assert!(!scope.admits(&app_ref(ApplicationKind::Postgres)));
+	}
+
+	#[test]
+	fn hosted_possible_kinds_agree_with_admits() {
+		let scope = HostedScope::Any;
+		let possible = scope.possible_kinds();
+		for kind in ApplicationKind::ALL {
+			assert_eq!(
+				possible.contains(&kind),
+				scope.admits(&app_ref(kind)),
+				"{scope:?} disagrees with itself about {kind:?}",
+			);
+		}
+	}
+
+	#[test]
+	fn no_tamanu_scope_admits_msupply() {
+		let msupply = app_ref(ApplicationKind::Msupply);
+		for scope in [
+			TamanuScope::Any,
+			TamanuScope::Central,
+			TamanuScope::Facility,
+		] {
+			assert!(!scope.admits(&msupply), "{scope:?} admitted mSupply");
+		}
+		assert!(!ApplicationKind::Msupply.is_tamanu());
+	}
+
+	#[test]
+	fn msupply_is_keyed_by_its_type() {
+		let msupply = ApplicationRef::msupply();
+		assert_eq!(msupply.key, "host-msupply");
+		assert_eq!(msupply.kind.type_slug(), "msupply");
 	}
 
 	#[test]

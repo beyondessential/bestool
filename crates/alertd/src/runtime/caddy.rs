@@ -158,8 +158,10 @@ impl HttpRuntime for CaddyRuntime {
 		})
 	}
 
-	async fn certificates(&self) -> Result<Vec<Certificate>, Unavailable> {
-		read_certificates(&self.sweep).await
+	async fn certificates(&self) -> Result<Arc<Vec<Certificate>>, Unavailable> {
+		self.sweep
+			.certificates(async { read_certificates(&self.sweep).await.map(Arc::new) })
+			.await
 	}
 }
 
@@ -603,7 +605,14 @@ pub(crate) async fn fetch_admin_config() -> Option<serde_json::Value> {
 
 /// Every hostname caddy considers active, gathered from the config: route
 /// `host` matchers (anywhere, including subroutes), plus TLS `automate` and
-/// automation-policy `subjects`. Lower-cased for case-insensitive matching.
+/// automation-policy `subjects`. Lower-cased and without a trailing dot, as
+/// [`CaddySites`](crate::ownership::CaddySites) reads them.
+///
+/// Wider than the sites `CaddySites` reads, deliberately: this decides which
+/// certificates in Caddy's store are in force, and a certificate Caddy keeps
+/// managed through `automate` or a policy's subjects is in force whether or not
+/// a route serves its name. Which application a certificate belongs to is still
+/// decided by the sites, so one held only that way is graded for none.
 pub(crate) fn active_subjects(config: &serde_json::Value) -> BTreeSet<String> {
 	fn walk(value: &serde_json::Value, out: &mut BTreeSet<String>) {
 		match value {
@@ -615,7 +624,7 @@ pub(crate) fn active_subjects(config: &serde_json::Value) -> BTreeSet<String> {
 						out.extend(
 							arr.iter()
 								.filter_map(|v| v.as_str())
-								.map(|s| s.to_ascii_lowercase()),
+								.map(|s| s.trim_end_matches('.').to_ascii_lowercase()),
 						);
 					}
 					walk(val, out);

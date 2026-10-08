@@ -145,6 +145,20 @@ pub struct PostgresInfo {
 	pub pg_version: Option<String>,
 }
 
+/// The mSupply installation's own facts.
+///
+/// Its type travels with the application report rather than here, and the
+/// product version is the only other thing it reports.
+///
+/// spec: SUBJ
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MsupplyInfo {
+	/// The installed product version, absent when the installation pins none.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub msupply_version: Option<String>,
+}
+
 /// Optional inputs sourced from the Tamanu DB / config that aren't trivially
 /// available at gather time. Doctor populates these from its own DB connection.
 #[derive(Debug, Clone, Default)]
