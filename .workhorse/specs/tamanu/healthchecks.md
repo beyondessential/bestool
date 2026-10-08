@@ -38,6 +38,44 @@ The same check run alone and run as part of a full sweep reports durations in th
 
 A check that errors so severely that it produces no result at all is reported as broken, for that check alone, and the rest of the sweep completes and reports normally.
 
+## Reporting to Canopy
+
+A check's outcome travels to Canopy as one entry in its subject's health list.
+Every entry carries the check's fields inside a `detail` object, and nothing beside the check's name and its result or instances.
+The check's summary and, for a non-passing check, its reason are two of those fields.
+
+## Instances
+
+A check whose condition holds several times over reports each occurrence as an instance, rather than as an array or keyed object inside its detail.
+Canopy grades, silences and presents an instance by itself, which a field inside the detail of a single result cannot be.
+A check with nothing to distinguish its occurrences reports a single result.
+
+An instanced check reports its instances in place of a result.
+Each instance has:
+
+- a key, chosen by the check, non-empty, unique within the check and the same for the same occurrence on every sweep.
+  A key names the occurrence itself, never a value it currently has, so that Canopy's silences on it keep meaning the same thing.
+- a result of passed, warning, failed or skipped.
+- an optional label naming the occurrence to an operator.
+- its own detail.
+
+The instances are the complete set.
+Instances that pass are reported as well as the degraded ones, and a check with no occurrences reports an empty set, which recovers everything Canopy held for it.
+
+What the instances share goes in the check's detail, and an instanced check has no fields beside its instances.
+An instanced check carries no summary or reason of its own on the wire, because Canopy writes the check's message from its graded instances.
+
+Broken belongs to the whole check.
+A check that cannot run, such as one whose query fails, reports broken with no instances, and Canopy keeps the instances it held without recovering any.
+A check that skips for want of a precondition, such as a database connection, reports skipped with no instances.
+No instance reports broken.
+A check that did run but could not read one occurrence reports that instance as a warning with the error in its detail, since one unreadable occurrence is not the whole check failing to run.
+
+An instanced check's own status, for the doctor's rendering, the heal trigger and the severity ceiling, is that of its most urgent instance that is not skipped, and skipped when every instance is.
+The check keeps a summary for local rendering, which is not sent.
+
+The numeric telemetry a check declares ([MET](metrics.md)) is independent of how it reports its outcome.
+
 ## Services on this machine
 
 A check that reaches a service on its own machine over HTTP, such as Tamanu's API or Caddy's admin interface, opens a new connection for every request.
