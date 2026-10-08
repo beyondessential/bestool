@@ -2,7 +2,7 @@
 id: NAM
 ---
 
-# DNS names a server may use
+# DNS names
 
 Canopy controls the domains a group holds, and grants a server the right to act on DNS names within them.
 A server asks Canopy what it may do rather than holding that answer locally, because a grant can be withdrawn at any time.

@@ -10,13 +10,13 @@ Canopy holds the account with the authority and proves control of the DNS name t
 The private key never leaves the machine: Canopy signs a certificate signing request and never sees the key behind it.
 
 The alertd daemon runs the collection on a schedule and serves the collected chain to Caddy; see [Serving certificates to Caddy](#serving-certificates-to-caddy).
-Which DNS names a server may certify follows from its entitlement, see [NAM](names.md).
+Which DNS names a server may certify follows from its entitlement, see [NAM](dns-names.md).
 Whether the collection is working, and what Caddy is serving, is graded by healthchecks; see [Healthchecks](#healthchecks).
 The server authenticates to Canopy with the device identity in its registration, see [CHK-REG](registration.md).
 
 ## Which DNS names are certified
 
-A DNS name is certified when it is a site address Caddy is configured to serve, on a site that names the daemon's certificate endpoint as a certificate source, and it belongs to an application on the host that could certify it: within that application's domains, with the TLS grant held and no pause in force ([NAM](names.md#which-application-a-dns-name-belongs-to)).
+A DNS name is certified when it is a site address Caddy is configured to serve, on a site that names the daemon's certificate endpoint as a certificate source, and it belongs to an application on the host that could certify it: within that application's domains, with the TLS grant held and no pause in force ([NAM](dns-names.md#which-application-a-dns-name-belongs-to)).
 All of these are read from Caddy's live admin configuration and Canopy's answer.
 Caddy's configuration says which DNS names the host answers on and which of those Caddy will ask the daemon for, and the entitlement says which of those Canopy will act on and for which application; a DNS name failing any of the tests is left to Caddy's own issuance.
 A site that does not name the daemon's endpoint is never served from Canopy ([Caddy configuration](#caddy-configuration)), so a pass orders nothing for it of its own accord, and on a host where no site names the endpoint a pass orders nothing at all.
@@ -51,7 +51,7 @@ Keys are ECDSA over the P-256 curve.
 
 A request carries the signing request as base64-encoded DER and names exactly one DNS name.
 Canopy refuses a request whose signing request carries any other name rather than trimming it.
-A request carries the type of the application the DNS name belongs to ([NAM](names.md#which-application-a-dns-name-belongs-to)), or for an explicit request, the type the command names.
+A request carries the type of the application the DNS name belongs to ([NAM](dns-names.md#which-application-a-dns-name-belongs-to)), or for an explicit request, the type the command names.
 
 Keys are held in a machine-bound encrypted store alongside the device identity, keyed by a passphrase derived from the host's machine id, so no private key is at rest in plaintext and the store cannot be read on a different machine.
 One store holds every DNS name's key.
@@ -100,7 +100,7 @@ A condemned key is never certified again, for any DNS name, so replacing it is t
 
 A DNS name Canopy refused, however it refused it, is asked about again on the steady schedule rather than sooner, since asking sooner earns the same answer, and a handshake asking for it does not bring a pass forward.
 
-A request Canopy refuses as undeclared is waiting on an operator to declare the DNS name in Canopy, and is not a fault on this host ([NAM](names.md#how-canopy-resolves-a-request)).
+A request Canopy refuses as undeclared is waiting on an operator to declare the DNS name in Canopy, and is not a fault on this host ([NAM](dns-names.md#how-canopy-resolves-a-request)).
 The daemon keeps asking about it on the steady schedule rather than sooner, and a handshake asking for it does not bring a pass forward.
 It keeps asking rather than going quiet, because Canopy shows an operator an undeclared request only while the machine keeps making it, and drops one the machine has not asked about for a day.
 The request that follows a declaration is accepted, and collection carries on from there as for any DNS name.
@@ -227,7 +227,7 @@ A caller that is not permitted is refused, and that refusal is a failure rather 
 Two of the doctor's healthchecks grade certificates: the collection check, `canopy_certificates`, and the Caddy check, `caddy_certs`.
 See [DOC](../tamanu/doctor.md) for the framework they run in and [CHK](../tamanu/healthchecks.md) for how their outcomes are reported.
 
-Both report for an application rather than for the machine, and run once for each Tamanu and each mSupply application on the host ([SUBJ](../tamanu/subjects.md)), grading the DNS names that belong to that application ([NAM](names.md#which-application-a-dns-name-belongs-to)).
+Both report for an application rather than for the machine, and run once for each Tamanu and each mSupply application on the host ([SUBJ](../tamanu/subjects.md)), grading the DNS names that belong to that application ([NAM](dns-names.md#which-application-a-dns-name-belongs-to)).
 A certificate belongs to the application it was issued for.
 A grant, a pause, and the domains a DNS name must sit under are each an application's own, and the group that answers for a failing or expiring certificate is the application's group: a machine may host two applications belonging to different groups, so a result filed against the machine would reach the wrong people for one of them.
 The software serving a certificate is the machine's, and its version, its resolvers and its configuration marker are graded separately against the machine.
@@ -241,11 +241,11 @@ The numeric telemetry they declare is described in [MET](../tamanu/metrics.md).
 
 The `canopy_certificates` check grades whether this server is holding the certificates it should be getting from Canopy.
 What it grades is the collection: that a DNS name the server ought to have a chain for has one, and that the chain is not running down.
-Obtaining and serving the chains themselves is described above, and the entitlement the check reads is described in [NAM](names.md).
+Obtaining and serving the chains themselves is described above, and the entitlement the check reads is described in [NAM](dns-names.md).
 
 #### Which DNS names the collection check grades
 
-The check grades the DNS names [certified](#which-dns-names-are-certified) that belong to *its own* application ([NAM](names.md#which-application-a-dns-name-belongs-to)).
+The check grades the DNS names [certified](#which-dns-names-are-certified) that belong to *its own* application ([NAM](dns-names.md#which-application-a-dns-name-belongs-to)).
 A site that does not name the daemon's endpoint can never be served from Canopy, so its DNS names are not graded, and a host where no site names the endpoint has nothing to grade.
 
 An application's entry is matched to the application the check is running for by the application type, which is what Canopy puts on the wire for a reporter to correlate against; on a machine hosting a single application Canopy gives that entry as the answer itself.
@@ -268,7 +268,7 @@ How near is too near is a fraction of that chain's own lifetime, since Canopy ch
 A renewal under way is not a failure: the chain in hand stays valid until the new one lands, so a DNS name holding a usable chain passes whatever Canopy is doing behind it.
 
 The check reports the reason Canopy gave for a DNS name whose order is failing, whether Canopy gave it on a certificate it holds or in refusing the daemon's last request, so an operator sees why issuance is stuck rather than only that nothing arrived.
-A request refused as a type mismatch is such a failure, and the reason names the types Canopy gave ([NAM](names.md#how-canopy-resolves-a-request)).
+A request refused as a type mismatch is such a failure, and the reason names the types Canopy gave ([NAM](dns-names.md#how-canopy-resolves-a-request)).
 
 A DNS name Canopy refused as undeclared or as denied is not graded, whether or not a chain is held for it.
 Canopy shows an operator an undeclared request itself, and a denial is an operator's decision against the DNS name, so neither is this host's to report.
