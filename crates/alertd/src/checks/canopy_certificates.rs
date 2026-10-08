@@ -29,13 +29,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bestool_canopy::names::{AppEntitlement, Refusal, RefusalKind};
 use jiff::Timestamp;
-use serde_json::{Value, json};
+use serde_json::json;
 use tracing::debug;
 
 use super::HostedCx;
 use crate::{
 	Stat,
-	check::Check,
+	check::{Check, CheckStatus, Instance},
 	ownership::{Ownership, host_covers},
 	sweep_cache::RefusalRecord,
 };
@@ -177,8 +177,7 @@ fn grade(
 	now: Timestamp,
 ) -> Check {
 	let mut graded: Vec<&String> = Vec::new();
-	let mut undeclared: Vec<Value> = Vec::new();
-	let mut denied: Vec<Value> = Vec::new();
+	let mut ungraded: Vec<Instance> = Vec::new();
 	let declared: Vec<String> = app
 		.registered_names
 		.iter()
@@ -187,11 +186,14 @@ fn grade(
 	for name in owned.iter().filter(|name| app.covers(name)) {
 		match record {
 			Ok(record) => match record.refusal(name) {
+				// Skipped rather than left out: canopy's refusal is the reason
+				// nothing is expected of the name, and it changes neither the
+				// outcome nor the summary.
 				Some(Refusal { kind, reason }) if *kind == RefusalKind::Undeclared => {
-					undeclared.push(json!({"name": name, "reason": reason}));
+					ungraded.push(Instance::skip(name, reason).with_detail("state", "undeclared"));
 				}
 				Some(Refusal { kind, reason }) if *kind == RefusalKind::Denied => {
-					denied.push(json!({"name": name, "reason": reason}));
+					ungraded.push(Instance::skip(name, reason).with_detail("state", "denied"));
 				}
 				_ => graded.push(name),
 			},
@@ -200,33 +202,32 @@ fn grade(
 		}
 	}
 
-	let annotate = |check: Check| {
-		let mut check = check;
-		if !undeclared.is_empty() {
-			check = check.with_detail("undeclared", Value::Array(undeclared.clone()));
-		}
-		if !denied.is_empty() {
-			check = check.with_detail("denied", Value::Array(denied.clone()));
-		}
-		if let Err(err) = record {
-			check = check.with_detail(
-				"refusals",
-				json!({"read": false, "error": err, "note": "only names this application declares were graded"}),
-			);
-		}
-		check
+	// What every instance shares: that the record of refusals could not be read.
+	let annotate = |check: Check| match record {
+		Err(err) => check.with_detail(
+			"refusals",
+			json!({"read": false, "error": err, "note": "only names this application declares were graded"}),
+		),
+		Ok(_) => check,
 	};
 
 	if graded.is_empty() {
-		return annotate(Check::skip(
-			NAME,
-			"no name to collect for",
-			"no DNS name this host serves sits within the domains this application's group controls and is one it is known to need a chain for",
-		));
+		const NOTHING_TO_GRADE: &str = "no DNS name this host serves sits within the domains this application's group controls and is one it is known to need a chain for";
+		// With names set aside by canopy's refusal there are instances to
+		// report, all skipped; with none the check itself did not apply.
+		if ungraded.is_empty() {
+			return annotate(Check::skip(
+				NAME,
+				"no name to collect for",
+				NOTHING_TO_GRADE,
+			));
+		}
+		let mut check = Check::instanced(NAME, "no name to collect for", ungraded);
+		check.status = CheckStatus::Skip(NOTHING_TO_GRADE.into());
+		return annotate(check);
 	}
 
-	let mut failures: Vec<String> = Vec::new();
-	let mut details: Vec<Value> = Vec::new();
+	let mut instances: Vec<Instance> = ungraded;
 	let mut stats: Vec<Stat> = Vec::new();
 
 	for name in &graded {
@@ -250,13 +251,14 @@ fn grade(
 			.join("; ");
 		let why = (!why.is_empty()).then_some(why);
 
+		let mut failure: Option<String> = None;
 		let remaining_days = match held {
 			None => {
-				let mut reason = format!("{name}: no chain collected");
+				let mut reason = "no chain collected".to_string();
 				if let Some(why) = &why {
 					reason.push_str(&format!(" ({why})"));
 				}
-				failures.push(reason);
+				failure = Some(reason);
 				None
 			}
 			Some((not_before, not_after)) => {
@@ -268,14 +270,14 @@ fn grade(
 				if (remaining as f64) < lifetime as f64 * RUNDOWN_FRACTION {
 					let days = remaining as f64 / 86400.0;
 					let mut reason =
-						format!("{name}: chain expires in {days:.1}d (collection has stopped)");
+						format!("chain expires in {days:.1}d (collection has stopped)");
 					if let Some(why) = &why {
 						reason.push_str(&format!(" ({why})"));
 					}
-					failures.push(reason);
+					failure = Some(reason);
 				} else if let Some(refusal) = refusal {
-					failures.push(format!(
-						"{name}: canopy refused the last request ({})",
+					failure = Some(format!(
+						"canopy refused the last request ({})",
 						refusal.reason
 					));
 				}
@@ -290,26 +292,33 @@ fn grade(
 					.help("Days until a collected chain expires"),
 			);
 		}
-		details.push(json!({
-			"name": name,
-			"collected": held.is_some(),
-			"daysRemaining": remaining_days.map(|d| (d * 10.0).round() / 10.0),
-			"canopyHolds": canopy_says.is_some(),
-			"lastError": why,
-		}));
+		let instance = match failure {
+			Some(reason) => Instance::fail(*name, reason),
+			None => Instance::pass(*name),
+		};
+		instances.push(
+			instance
+				.with_detail("collected", held.is_some())
+				.with_detail(
+					"daysRemaining",
+					remaining_days.map(|d| (d * 10.0).round() / 10.0),
+				)
+				.with_detail("canopyHolds", canopy_says.is_some())
+				.with_detail("lastError", why.clone()),
+		);
 		if why.is_some() {
 			debug!(name = %name, "canopy reports this name's order failing");
 		}
 	}
 
 	let n = graded.len();
-	let check = if failures.is_empty() {
-		Check::pass(NAME, format!("{n} name(s) collected"))
+	let failing = instances.iter().any(|instance| instance.status.is_fatal());
+	let summary = if failing {
+		format!("{n} name(s) checked")
 	} else {
-		Check::fail(NAME, format!("{n} name(s) checked"), failures.join("; "))
+		format!("{n} name(s) collected")
 	};
-	annotate(check)
-		.with_detail("names", Value::Array(details))
+	annotate(Check::instanced(NAME, summary, instances))
 		.with_stat(Stat::gauge("count", n as f64).help("Names graded for collection"))
 		.with_stats(stats)
 }
@@ -336,12 +345,10 @@ impl HeldReason for bestool_canopy::schema::HeldCertificate {
 #[cfg(test)]
 mod tests {
 	use bestool_canopy::{certificates as certs, names::Entitlement};
+	use serde_json::Value;
 
 	use super::*;
-	use crate::{
-		check::CheckStatus,
-		ownership::{CaddySites, HostApplication},
-	};
+	use crate::ownership::{CaddySites, HostApplication};
 
 	const D: i64 = 86400;
 
@@ -367,15 +374,28 @@ mod tests {
 		)]))
 	}
 
-	fn listed(check: &Check, key: &str) -> Vec<String> {
+	/// The names the check reported as `names` (the ones it graded) or as an
+	/// ungraded `state` such as `undeclared` or `denied`.
+	fn listed(check: &Check, which: &str) -> Vec<String> {
 		check
-			.details
-			.get(key)
-			.and_then(Value::as_array)
-			.into_iter()
+			.instances
+			.iter()
 			.flatten()
-			.map(|row| row["name"].as_str().unwrap().to_owned())
+			.filter(|instance| match which {
+				"names" => instance.detail.contains_key("collected"),
+				state => instance.detail.get("state").and_then(|s| s.as_str()) == Some(state),
+			})
+			.map(|instance| instance.key.clone())
 			.collect()
+	}
+
+	fn instance<'a>(check: &'a Check, key: &str) -> &'a Instance {
+		check
+			.instances
+			.iter()
+			.flatten()
+			.find(|instance| instance.key == key)
+			.unwrap_or_else(|| panic!("no instance keyed {key}"))
 	}
 
 	fn app(domains: &[&str], holds: &[&str]) -> AppEntitlement {
@@ -527,7 +547,7 @@ mod tests {
 			now(),
 		);
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
-		assert_eq!(check.details["names"].as_array().unwrap().len(), 1);
+		assert_eq!(listed(&check, "names"), vec!["app.example.com"]);
 	}
 
 	/// An operator seeing only that nothing arrived cannot tell why issuance is
@@ -711,9 +731,11 @@ mod tests {
 		assert!(matches!(with.status, CheckStatus::Pass), "{with:?}");
 		assert_eq!(with.summary, without.summary);
 		assert_eq!(listed(&with, "undeclared"), vec!["wait.example.com"]);
-		assert_eq!(
-			with.details["undeclared"][0]["reason"],
-			json!("needs declaring")
+		let waiting = instance(&with, "wait.example.com");
+		assert!(waiting.status.is_skip(), "{waiting:?}");
+		assert!(
+			matches!(&waiting.status, CheckStatus::Skip(r) if r == "needs declaring"),
+			"{waiting:?}"
 		);
 		assert_eq!(listed(&with, "names"), vec!["app.example.com"]);
 	}
@@ -776,6 +798,61 @@ mod tests {
 		}
 		assert_eq!(listed(&check, "undeclared"), vec!["wait.example.com"]);
 		assert_eq!(listed(&check, "names"), vec!["app.example.com"]);
+	}
+
+	/// Names set aside by canopy are reported as skipped instances, and when
+	/// nothing else is graded the check itself is skipped.
+	///
+	/// spec: TLS#how-the-collection-check-reports
+	#[test]
+	fn names_set_aside_by_canopy_are_skipped_instances_on_the_wire() {
+		let status = record(
+			"no.example.com",
+			RefusalKind::Denied,
+			"denied by an operator",
+		);
+		let check = super::grade(
+			&app(&["example.com"], &[]),
+			&subjects(&["no.example.com"]),
+			&BTreeMap::new(),
+			Ok(&status),
+			now(),
+		);
+		assert!(matches!(check.status, CheckStatus::Skip(_)), "{check:?}");
+
+		let wire = check.to_wire();
+		assert_eq!(wire["result"], serde_json::Value::Null);
+		assert_eq!(wire["instances"]["no.example.com"]["result"], "skipped");
+		assert_eq!(
+			wire["instances"]["no.example.com"]["detail"]["state"],
+			"denied"
+		);
+		assert_eq!(
+			wire["instances"]["no.example.com"]["detail"]["reason"],
+			"denied by an operator"
+		);
+		assert!(wire["detail"].get("denied").is_none());
+	}
+
+	/// A name that failed carries why, in its own detail rather than the
+	/// check's.
+	///
+	/// spec: TLS#how-the-collection-check-reports
+	#[test]
+	fn a_failing_name_carries_its_own_detail() {
+		let check = grade(
+			&app(&["example.com"], &[]),
+			&subjects(&["app.example.com", "ok.example.com"]),
+			&chains(&[("ok.example.com", chain(60, 90))]),
+			now(),
+		);
+		let failing = instance(&check, "app.example.com");
+		assert!(failing.status.is_fatal());
+		assert_eq!(failing.detail["collected"], json!(false));
+		assert_eq!(failing.detail["canopyHolds"], json!(false));
+		let passing = instance(&check, "ok.example.com");
+		assert!(matches!(passing.status, CheckStatus::Pass));
+		assert_eq!(passing.detail["collected"], json!(true));
 	}
 
 	/// With the refusal record unreadable a name that may be waiting on an

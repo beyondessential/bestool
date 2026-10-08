@@ -25,13 +25,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 use tokio_postgres::{Client as PgClient, error::SqlState};
 
 use super::util::humanise_age;
 use super::{TamanuCx, query_error_check};
 use crate::Stat;
-use crate::check::Check;
+use crate::check::{Check, Instance};
 
 const NAME: &str = "fhir_materialisation";
 
@@ -420,7 +420,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		)
 	});
 
-	let mut check = if let Some((grade, reason)) = breach {
+	let headline = if let Some((grade, reason)) = breach {
 		if grade == Grade::Fail {
 			Check::fail(NAME, summary, reason)
 		} else {
@@ -448,18 +448,14 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		Check::pass(NAME, summary)
 	};
 
-	let mut breakdown = Map::new();
+	// The wire form is the instances, and Canopy grades the check from them. The
+	// local status keeps the headline's own reason, which names the one resource
+	// that drove the grade.
+	let instances = instances(&measured, &disabled, &absent, &errored, &unmonitored);
+	let mut check = Check::instanced(NAME, headline.summary.clone(), instances);
+	check.status = headline.status;
+
 	for m in &measured {
-		breakdown.insert(
-			m.name.to_string(),
-			json!({
-				"gap": m.gap,
-				"lag_seconds": m.lag_secs,
-				"enablement": m.source.as_str(),
-				"pace": m.pace.profile().label,
-				"fails_after_seconds": m.pace.profile().fail_secs,
-			}),
-		);
 		check = check
 			.with_stat(
 				Stat::gauge("gap", m.gap as f64)
@@ -475,27 +471,96 @@ pub async fn run(ctx: TamanuCx) -> Check {
 			);
 	}
 
-	check = check
-		.with_detail("resources", Value::Object(breakdown))
-		.with_stat(
-			Stat::gauge("unmonitored", unmonitored.len() as f64)
-				.help("Materialised FHIR resources this check has no upstream relationship for"),
+	check.with_stat(
+		Stat::gauge("unmonitored", unmonitored.len() as f64)
+			.help("Materialised FHIR resources this check has no upstream relationship for"),
+	)
+}
+
+/// Key of the instance reporting materialised tables the check has no
+/// relationship for. Not a resource name, so it cannot be confused with one.
+const UNMONITORED_KEY: &str = "unmonitored";
+
+/// One instance per resource, keyed by its name.
+///
+/// A measured resource is graded by its own pace. A disabled resource and one
+/// whose upstream table is absent are skipped, since nothing is expected of
+/// them. One that could not be measured is a warning, never broken: one
+/// unreadable resource is not the whole check failing to run. The tables the
+/// check has no relationship for are one warning instance between them.
+///
+/// spec: CHK-FMA#reporting
+fn instances(
+	measured: &[Measured],
+	disabled: &BTreeMap<&str, &str>,
+	absent: &[&str],
+	errored: &BTreeMap<&str, String>,
+	unmonitored: &[String],
+) -> Vec<Instance> {
+	let mut instances = Vec::new();
+
+	for m in measured {
+		let profile = m.pace.profile();
+		let instance = match (m.grade(), m.crossed()) {
+			(Grade::Fail, Some(threshold)) => Instance::fail(m.name, unmaterialised_for(threshold)),
+			(Grade::Warn, Some(threshold)) => {
+				Instance::warning(m.name, unmaterialised_for(threshold))
+			}
+			_ => Instance::pass(m.name),
+		};
+		instances.push(
+			instance
+				.with_detail("gap", m.gap)
+				.with_detail("lag_seconds", m.lag_secs)
+				.with_detail("enablement", m.source.as_str())
+				.with_detail("pace", profile.label)
+				.with_detail("warns_after_seconds", profile.warn_secs)
+				.with_detail("fails_after_seconds", profile.fail_secs),
 		);
+	}
 
-	if !disabled.is_empty() {
-		check = check.with_detail("disabled", json!(disabled));
+	for (name, source) in disabled {
+		instances.push(
+			Instance::skip(*name, "materialisation is disabled")
+				.with_detail("state", "disabled")
+				.with_detail("enablement", *source),
+		);
 	}
-	if !absent.is_empty() {
-		check = check.with_detail("upstream_absent", json!(absent));
+
+	for name in absent {
+		instances.push(
+			Instance::skip(*name, "the upstream table does not exist on this version")
+				.with_detail("state", "upstream_absent"),
+		);
 	}
-	if !errored.is_empty() {
-		check = check.with_detail("errored", json!(errored));
+
+	for (name, error) in errored {
+		instances.push(
+			Instance::warning(*name, format!("could not measure: {error}"))
+				.with_detail("state", "errored")
+				.with_detail("error", error.as_str()),
+		);
 	}
+
 	if !unmonitored.is_empty() {
-		check = check.with_detail("unmonitored", json!(unmonitored));
+		instances.push(
+			Instance::warning(
+				UNMONITORED_KEY,
+				format!(
+					"materialised resource this check does not know about: {}",
+					unmonitored.join(", ")
+				),
+			)
+			.with_detail("state", "unmonitored")
+			.with_detail("tables", unmonitored.to_vec()),
+		);
 	}
 
-	check
+	instances
+}
+
+fn unmaterialised_for(threshold_secs: i64) -> String {
+	format!("unmaterialised for over {}", humanise_age(threshold_secs))
 }
 
 /// The measurement driving the check's grade, and the threshold it crossed.
@@ -716,6 +781,7 @@ mod tests {
 	use std::sync::Arc;
 
 	use bestool_tamanu::config::TamanuConfig;
+	use serde_json::{Map, json};
 
 	use super::*;
 	use crate::check::CheckStatus;
@@ -889,12 +955,16 @@ mod tests {
 			check.summary
 		);
 
-		let patient = check
-			.details
-			.get("resources")
-			.and_then(|r| r.get("Patient"))
-			.expect("the enabled resource should appear in the breakdown")
-			.clone();
+		let patient = Value::Object(
+			check
+				.instances
+				.iter()
+				.flatten()
+				.find(|i| i.key == "Patient")
+				.expect("the enabled resource should be an instance")
+				.detail
+				.clone(),
+		);
 		assert_eq!(
 			patient["enablement"], "setting",
 			"the stored setting should answer, not inference"
@@ -916,6 +986,126 @@ mod tests {
 		);
 
 		cleaned_up.expect("restoring the database should succeed");
+	}
+
+	fn find<'a>(instances: &'a [Instance], key: &str) -> &'a Instance {
+		instances
+			.iter()
+			.find(|i| i.key == key)
+			.unwrap_or_else(|| panic!("no instance keyed {key}"))
+	}
+
+	#[test]
+	fn each_measured_resource_is_graded_by_its_own_pace() {
+		let measured = [
+			measured("Patient", Pace::Prompt, 3, 5),
+			measured("Encounter", Pace::Prompt, 3, 20 * 60),
+			measured("Specimen", Pace::Prompt, 3, 2 * 60 * 60),
+			// Five days is the deferred resource's whole threshold, so a day
+			// passes where an hour would fail a prompt one.
+			measured("MediciReport", Pace::Deferred, 3, 24 * 60 * 60),
+		];
+		let out = instances(&measured, &BTreeMap::new(), &[], &BTreeMap::new(), &[]);
+
+		assert!(matches!(find(&out, "Patient").status, CheckStatus::Pass));
+		assert!(matches!(
+			find(&out, "Encounter").status,
+			CheckStatus::Warning(_)
+		));
+		assert!(matches!(
+			find(&out, "Specimen").status,
+			CheckStatus::Fail(_)
+		));
+		assert!(matches!(
+			find(&out, "MediciReport").status,
+			CheckStatus::Pass
+		));
+
+		let detail = &find(&out, "Encounter").detail;
+		assert_eq!(detail["gap"], 3);
+		assert_eq!(detail["lag_seconds"], 20 * 60);
+		assert_eq!(detail["enablement"], "setting");
+		assert_eq!(detail["pace"], "prompt");
+		assert_eq!(detail["warns_after_seconds"], 15 * 60);
+		assert_eq!(detail["fails_after_seconds"], 60 * 60);
+		assert_eq!(
+			find(&out, "MediciReport").detail["warns_after_seconds"],
+			Value::Null
+		);
+	}
+
+	#[test]
+	fn disabled_and_upstream_absent_resources_are_skipped_instances() {
+		let disabled = BTreeMap::from([("Specimen", "observed")]);
+		let out = instances(&[], &disabled, &["Immunization"], &BTreeMap::new(), &[]);
+
+		let specimen = find(&out, "Specimen");
+		assert!(specimen.status.is_skip());
+		assert_eq!(specimen.detail["state"], "disabled");
+		assert_eq!(specimen.detail["enablement"], "observed");
+
+		let immunization = find(&out, "Immunization");
+		assert!(immunization.status.is_skip());
+		assert_eq!(immunization.detail["state"], "upstream_absent");
+	}
+
+	#[test]
+	fn an_unreadable_resource_is_a_warning_instance_never_broken() {
+		let errored = BTreeMap::from([("Patient", "connection reset".to_string())]);
+		let out = instances(&[], &BTreeMap::new(), &[], &errored, &[]);
+
+		let patient = find(&out, "Patient");
+		assert!(matches!(patient.status, CheckStatus::Warning(_)));
+		assert_eq!(patient.detail["error"], "connection reset");
+	}
+
+	#[test]
+	fn unmonitored_tables_are_one_warning_instance_that_cannot_clash_with_a_resource() {
+		let tables = vec!["appointments".to_string(), "notes".to_string()];
+		let out = instances(&[], &BTreeMap::new(), &[], &BTreeMap::new(), &tables);
+
+		assert_eq!(out.len(), 1);
+		let instance = find(&out, "unmonitored");
+		assert!(matches!(instance.status, CheckStatus::Warning(_)));
+		assert_eq!(instance.detail["tables"], json!(["appointments", "notes"]));
+		assert!(RESOURCES.iter().all(|r| r.name != UNMONITORED_KEY));
+	}
+
+	#[test]
+	fn nothing_unmonitored_adds_no_instance() {
+		let out = instances(&[], &BTreeMap::new(), &[], &BTreeMap::new(), &[]);
+		assert!(out.is_empty());
+	}
+
+	#[test]
+	fn the_wire_form_replaces_the_old_arrays() {
+		let disabled = BTreeMap::from([("Specimen", "setting")]);
+		let wire = Check::instanced(
+			NAME,
+			"s",
+			instances(
+				&[measured("Patient", Pace::Prompt, 3, 5)],
+				&disabled,
+				&[],
+				&BTreeMap::new(),
+				&[],
+			),
+		)
+		.to_wire();
+		for old in [
+			"resources",
+			"disabled",
+			"upstream_absent",
+			"errored",
+			"unmonitored",
+		] {
+			assert!(
+				wire["detail"].get(old).is_none(),
+				"{old} is still in the detail"
+			);
+		}
+		assert_eq!(wire["instances"]["Patient"]["result"], "passed");
+		assert_eq!(wire["instances"]["Specimen"]["result"], "skipped");
 	}
 
 	#[test]

@@ -54,4 +54,4 @@ The check only applies to a central server.
 
 - It skips on a facility server.
 - It skips when the database cannot be reached, so that a database outage remains something the daemon can alert on rather than something that stops it.
-- It reports broken when its query fails.
+- It reports broken when its query is faulty, and failed when its query fails for any other reason, in either case with no instances.

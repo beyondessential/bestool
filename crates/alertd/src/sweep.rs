@@ -2258,9 +2258,10 @@ mod tests {
 		let payload = build_payload(&machine_info(), &central_and_postgres(), &results).unwrap();
 		let apps = payload.applications.as_ref().unwrap();
 		let entry = apps.get(POSTGRES_KEY).unwrap().health.as_ref().unwrap()[0].clone();
-		assert_eq!(entry.extra.get("latency_ms").unwrap(), 900);
-		assert_eq!(entry.extra.get("summary").unwrap(), "slow");
-		assert_eq!(entry.extra.get("reason").unwrap(), "latency high");
+		assert_eq!(entry.detail.get("latency_ms").unwrap(), 900);
+		assert_eq!(entry.detail.get("summary").unwrap(), "slow");
+		assert_eq!(entry.detail.get("reason").unwrap(), "latency high");
+		assert!(entry.extra.is_empty(), "no field rides beside the name");
 	}
 
 	#[test]

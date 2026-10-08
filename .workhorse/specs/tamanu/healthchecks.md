@@ -57,17 +57,18 @@ Each instance has:
   A key names the occurrence itself, never a value it currently has, so that Canopy's silences on it keep meaning the same thing.
 - a result of passed, warning, failed or skipped.
 - an optional label naming the occurrence to an operator.
-- its own detail.
+- its own detail, to which the reason a non-passing instance carries is added.
 
 The instances are the complete set.
 Instances that pass are reported as well as the degraded ones, and a check with no occurrences reports an empty set, which recovers everything Canopy held for it.
+A check that can only observe the occurrences that have something to report, such as errors inside a window, reports those, and an occurrence it stops reporting has recovered.
 
 What the instances share goes in the check's detail, and an instanced check has no fields beside its instances.
 An instanced check carries no summary or reason of its own on the wire, because Canopy writes the check's message from its graded instances.
 
 Broken belongs to the whole check.
-A check that cannot run, such as one whose query fails, reports broken with no instances, and Canopy keeps the instances it held without recovering any.
-A check that skips for want of a precondition, such as a database connection, reports skipped with no instances.
+A check that cannot run because its own query is faulty reports broken with no instances, and Canopy keeps the instances it held without recovering any.
+A check whose query fails for any other reason reports failed, and one that skips for want of a precondition, such as a database connection, reports skipped, each with no instances.
 No instance reports broken.
 A check that did run but could not read one occurrence reports that instance as a warning with the error in its detail, since one unreadable occurrence is not the whole check failing to run.
 
