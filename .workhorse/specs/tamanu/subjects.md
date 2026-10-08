@@ -61,7 +61,7 @@ Application checks are: everything that reads the application's own data, its HT
 The checks that grade the database server itself — whether it is reachable, what version it runs, how it is tuned, and whether its pages carry checksums — report for the Postgres application rather than for whatever uses it.
 A check reading an application's tables is about that application; a check grading the cluster is about the cluster.
 
-An mSupply application carries two checks: the Canopy certificate collection check ([CHK-CCO](../canopy/certificate-collection-check.md)) and the Caddy certificate check ([CHK-CCT](caddy-certs.md)), each grading the DNS names belonging to it ([NAM](../canopy/names.md#which-application-a-dns-name-belongs-to)).
+An mSupply application carries two checks: the Canopy certificate collection check ([TLS](../canopy/certificates.md#the-collection-check)) and the Caddy certificate check ([TLS](../canopy/certificates.md#the-caddy-certificate-check)), each grading the DNS names belonging to it ([NAM](../canopy/names.md#which-application-a-dns-name-belongs-to)).
 
 A concern that genuinely exists on both sides is two checks rather than one check with a conditional subject, so neither has a mode in which it reports the wrong subject's reading.
 

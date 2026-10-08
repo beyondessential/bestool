@@ -23,7 +23,7 @@
 //! so it is listed and left ungraded; the daemon's record of canopy's refusals
 //! says which are which.
 //!
-//! spec: CHK-CCO
+//! spec: TLS#the-collection-check
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -89,7 +89,7 @@ pub async fn run(ctx: HostedCx) -> Check {
 	// issue the check had already opened, which is what quietens this during an
 	// incident rather than adding to it.
 	//
-	// spec: CHK-CCO#when-it-skips
+	// spec: TLS#when-the-collection-check-skips
 	if !app.may_manage_tls {
 		return Check::skip(
 			NAME,
@@ -140,7 +140,7 @@ pub async fn run(ctx: HostedCx) -> Check {
 
 /// The certified DNS names that belong to the application of type `type_slug`.
 ///
-/// spec: CHK-CCO#which-dns-names-it-grades
+/// spec: TLS#which-dns-names-the-collection-check-grades
 fn owned_names(
 	certified: &BTreeSet<String>,
 	ownership: &Ownership,
@@ -168,7 +168,7 @@ fn declares(declared: &[String], name: &str) -> bool {
 /// application declares are graded, since any other may be waiting on an
 /// operator and nothing here can tell.
 ///
-/// spec: CHK-CCO#which-dns-names-it-grades
+/// spec: TLS#which-dns-names-the-collection-check-grades
 fn grade(
 	app: &AppEntitlement,
 	owned: &BTreeSet<String>,
@@ -586,7 +586,7 @@ mod tests {
 	/// On a host with Tamanu and mSupply, each application's run grades only the
 	/// DNS names belonging to it.
 	///
-	/// spec: CHK-CCO#which-dns-names-it-grades
+	/// spec: TLS#which-dns-names-the-collection-check-grades
 	#[test]
 	fn each_application_grades_only_the_dns_names_belonging_to_it() {
 		let ownership = two_applications();
@@ -609,7 +609,7 @@ mod tests {
 	/// A type mismatch on an mSupply DNS name fails the mSupply run and leaves
 	/// the Tamanu run as it was.
 	///
-	/// spec: CHK-CCO#outcomes
+	/// spec: TLS#collection-outcomes
 	#[test]
 	fn a_type_mismatch_fails_only_the_applications_run_owning_the_name() {
 		let ownership = two_applications();
@@ -683,7 +683,7 @@ mod tests {
 	/// An undeclared name with no chain is listed, and the outcome and summary
 	/// are what they were without it.
 	///
-	/// spec: CHK-CCO#outcomes
+	/// spec: TLS#collection-outcomes
 	#[test]
 	fn an_undeclared_name_is_listed_and_changes_neither_outcome_nor_summary() {
 		let validity = chains(&[("app.example.com", chain(60, 90))]);
@@ -721,7 +721,7 @@ mod tests {
 	/// A denial is an operator's decision against the name, whether or not a
 	/// chain is still held for it.
 	///
-	/// spec: CHK-CCO#outcomes
+	/// spec: TLS#collection-outcomes
 	#[test]
 	fn a_denied_name_is_listed_whether_or_not_a_chain_is_held() {
 		let status = record("no.example.com", RefusalKind::Denied, "denied");
@@ -749,7 +749,7 @@ mod tests {
 
 	/// An undeclared name does not shield a name beside it that has no chain.
 	///
-	/// spec: CHK-CCO#outcomes
+	/// spec: TLS#collection-outcomes
 	#[test]
 	fn an_undeclared_name_beside_a_name_with_no_chain_fails_on_the_other_only() {
 		let status = record(
@@ -781,7 +781,7 @@ mod tests {
 	/// With the refusal record unreadable a name that may be waiting on an
 	/// operator is not graded, and the detail says why.
 	///
-	/// spec: CHK-CCO#which-dns-names-it-grades
+	/// spec: TLS#which-dns-names-the-collection-check-grades
 	#[test]
 	fn with_the_refusal_record_unreadable_only_declared_names_are_graded() {
 		let mut entitlement = app(&["example.com"], &[]);

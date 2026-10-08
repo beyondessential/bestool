@@ -140,7 +140,7 @@ pub async fn run(ctx: HostedCx) -> Check {
 /// A certificate serving several applications' DNS names is kept for each of
 /// them, and one serving only unowned DNS names for none.
 ///
-/// spec: CHK-CCT
+/// spec: TLS#the-caddy-certificate-check
 fn belonging_to<'a>(
 	certs: &'a [Certificate],
 	ownership: &Ownership,
@@ -207,7 +207,7 @@ fn grade<'a>(certs: impl IntoIterator<Item = &'a Certificate>, now: Timestamp) -
 				// the front end's own issuance is visible here rather than
 				// looking the same as one canopy is serving.
 				//
-				// spec: CHK-CCT#certificates-from-canopy
+				// spec: TLS#certificates-from-canopy
 				.label("source", cert.source.as_str())
 				.help("Days until certificate expiry"),
 		);
@@ -351,7 +351,7 @@ mod tests {
 	/// presents as healthy while still depending on the DNS credential that
 	/// issuing through canopy exists to remove.
 	///
-	/// spec: CHK-CCT#certificates-from-canopy
+	/// spec: TLS#certificates-from-canopy
 	#[test]
 	fn a_certificate_says_which_side_obtained_it() {
 		let certs = [
@@ -476,7 +476,7 @@ mod tests {
 	/// A certificate for an mSupply DNS name is graded under mSupply and not
 	/// under Tamanu.
 	///
-	/// spec: CHK-CCT
+	/// spec: TLS#the-caddy-certificate-check
 	#[test]
 	fn a_certificate_is_graded_under_the_application_owning_its_dns_name() {
 		let certs = vec![
@@ -493,7 +493,7 @@ mod tests {
 	/// A certificate covering DNS names of both applications is graded under
 	/// each.
 	///
-	/// spec: CHK-CCT
+	/// spec: TLS#the-caddy-certificate-check
 	#[test]
 	fn a_certificate_serving_several_applications_is_graded_under_each() {
 		let certs = vec![cert(&["central.example.com", "supply.example.com"], 60, 90)];
@@ -505,7 +505,7 @@ mod tests {
 	/// A certificate whose DNS names belong to no application is graded under
 	/// none, which leaves an application with nothing to grade and so skipping.
 	///
-	/// spec: CHK-CCT
+	/// spec: TLS#the-caddy-certificate-check
 	#[test]
 	fn a_certificate_for_unowned_dns_names_is_graded_under_no_application() {
 		let certs = vec![
@@ -521,7 +521,7 @@ mod tests {
 	/// A wildcard certificate covers the owned DNS names within its one label,
 	/// and no others.
 	///
-	/// spec: CHK-CCT
+	/// spec: TLS#the-caddy-certificate-check
 	#[test]
 	fn a_wildcard_certificate_belongs_to_the_owners_of_the_names_it_covers() {
 		let wild = vec![cert(&["*.example.com"], 60, 90)];

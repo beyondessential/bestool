@@ -345,7 +345,7 @@ fn strings(value: &Value) -> Vec<String> {
 
 /// The port the per-site block names the daemon's certificate endpoint on.
 ///
-/// spec: TLSD#the-certificate-endpoint
+/// spec: TLS#the-certificate-endpoint
 const DAEMON_PORT: u16 = 8271;
 
 /// Whether a policy's `get_certificate` managers include one asking the
@@ -562,7 +562,7 @@ impl Ownership {
 	/// covers, so it belongs to each application owning one of them, as well as
 	/// to the owner of the wildcard itself.
 	///
-	/// spec: CHK-CCT
+	/// spec: TLS#the-caddy-certificate-check
 	pub fn serves(&self, cert_name: &str, type_slug: &str) -> bool {
 		let cert_name = normalise(cert_name);
 		if self.owner_of(&cert_name) == Some(type_slug) {

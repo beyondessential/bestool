@@ -1,6 +1,6 @@
 # Report instanced checks to Canopy
 
-Specs: CHK (Reporting to Canopy, Instances), CHK-SFS, CHK-FMA, CHK-CCT, CHK-CCO.
+Specs: CHK (Reporting to Canopy, Instances), CHK-SFS, CHK-FMA, and TLS (Healthchecks, covering the Caddy and collection checks).
 Depends on a `bes-canopy-api` release carrying `HealthCheck.detail`, `instances` and `HealthCheckInstance`; 1.1.0 already has them.
 
 ## Core

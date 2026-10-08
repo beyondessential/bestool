@@ -31,7 +31,7 @@ The server as a whole holds a grant when any of its applications does, and is pa
 A DNS name is actionable when the application it belongs to could act on it: the DNS name sits within that application's domains, and that application holds the needed grant and is not paused.
 A DNS name belonging to no application is not acted on, and no check grades it.
 
-Which application each DNS name belongs to is what the server's requests carry and what its healthchecks report against ([CHK-CCO](certificate-collection-check.md), [CHK-CCT](../tamanu/caddy-certs.md)), so asking as the machine and reporting per application sit together rather than in tension.
+Which application each DNS name belongs to is what the server's requests carry and what its healthchecks report against ([TLS](certificates.md#healthchecks)), so asking as the machine and reporting per application sit together rather than in tension.
 
 ### Which application a DNS name belongs to
 
