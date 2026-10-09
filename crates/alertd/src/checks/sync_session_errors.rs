@@ -14,8 +14,10 @@
 //! graded and silenced without quieting the rest. Mobile devices are many and
 //! come and go, so their errors are one instance between them, keyed `mobile`.
 //! A session naming no device is not an instance, though it still counts toward
-//! the published total. An instance warns on any error and fails at ten or more
-//! in the window.
+//! the published total. An instance warns on any error and fails at three or more
+//! in the window. The check as a whole also fails at ten or more errors in the
+//! window across every device, so many devices each erroring a little is not
+//! graded as less than their sum.
 //!
 //! The facility list is read as the `facilityIds` array rather than expanded into
 //! a row per facility: a set-returning function in the target list cross-joins,
@@ -28,11 +30,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::TamanuCx;
 use crate::Stat;
-use crate::check::{Check, Instance};
+use crate::check::{Check, CheckStatus, Instance};
 
 const NAME: &str = "sync_session_errors";
 
-const FAIL_ERRORS: i64 = 10;
+/// Errors in the window at which one instance fails.
+const FAIL_ERRORS: i64 = 3;
+
+/// Errors in the window, across every device, at which the check fails.
+const FAIL_TOTAL: i64 = 10;
 
 /// Key of the instance holding every mobile device's errors.
 const MOBILE_KEY: &str = "mobile";
@@ -99,16 +105,16 @@ struct Errored {
 }
 
 impl Errored {
-	fn from_row(row: &tokio_postgres::Row) -> Self {
-		Self {
-			key: row.try_get("device_id").ok().flatten(),
-			count: row.try_get("error_count").unwrap_or(0),
-			latest_session: row.try_get("latest_session").ok().flatten(),
-			latest_errors: row.try_get("latest_errors").ok().flatten(),
-			latest_at: row.try_get("latest_at").ok().flatten(),
-			facility_ids: row.try_get("facility_ids").unwrap_or_default(),
-			facility_names: row.try_get("facility_names").unwrap_or_default(),
-		}
+	fn from_row(row: &tokio_postgres::Row) -> Result<Self, tokio_postgres::Error> {
+		Ok(Self {
+			key: row.try_get("device_id")?,
+			count: row.try_get("error_count")?,
+			latest_session: row.try_get("latest_session")?,
+			latest_errors: row.try_get("latest_errors")?,
+			latest_at: row.try_get("latest_at")?,
+			facility_ids: row.try_get("facility_ids")?,
+			facility_names: row.try_get("facility_names")?,
+		})
 	}
 
 	/// The instance for this group, or `None` for sessions naming no device.
@@ -173,11 +179,25 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	};
 
 	let mobile = match client.query(&mobile_sql(), &[]).await {
-		Ok(rows) => rows.iter().map(Errored::from_row).collect::<Vec<_>>(),
+		Ok(rows) => match rows
+			.iter()
+			.map(Errored::from_row)
+			.collect::<Result<Vec<_>, _>>()
+		{
+			Ok(groups) => groups,
+			Err(err) => return super::row_error_check(NAME, &err),
+		},
 		Err(err) => return super::query_error_check(NAME, &err),
 	};
 	let server = match client.query(&server_sql(), &[]).await {
-		Ok(rows) => rows.iter().map(Errored::from_row).collect::<Vec<_>>(),
+		Ok(rows) => match rows
+			.iter()
+			.map(Errored::from_row)
+			.collect::<Result<Vec<_>, _>>()
+		{
+			Ok(groups) => groups,
+			Err(err) => return super::row_error_check(NAME, &err),
+		},
 		Err(err) => return super::query_error_check(NAME, &err),
 	};
 
@@ -221,7 +241,20 @@ fn grade(mobile: &[Errored], server: &[Errored]) -> Check {
 		count(mobile),
 		count(server)
 	);
-	Check::instanced(NAME, summary, instances)
+	let mut check = Check::instanced(NAME, summary, instances);
+	let errors = groups_total(mobile) + groups_total(server);
+	if errors >= FAIL_TOTAL && !check.status.is_fatal() {
+		// Canopy grades an instanced check from its instances alone, so this
+		// holds for the doctor, the heal trigger and the severity ceiling.
+		check.status = CheckStatus::Fail(format!(
+			"{errors} sync session errors in the last minute across every device"
+		));
+	}
+	check
+}
+
+fn groups_total(groups: &[Errored]) -> i64 {
+	groups.iter().map(|g| g.count).sum()
 }
 
 #[cfg(test)]
@@ -264,7 +297,7 @@ mod tests {
 			&[
 				errored(Some("dev-a"), 12),
 				errored(Some("dev-b"), 1),
-				errored(Some("dev-c"), 9),
+				errored(Some("dev-c"), 2),
 			],
 		);
 		let instances = check.instances.as_ref().expect("instanced");
@@ -272,11 +305,11 @@ mod tests {
 
 		assert!(matches!(status("dev-a"), CheckStatus::Fail(_)));
 		assert!(matches!(status("dev-b"), CheckStatus::Warning(_)));
-		// Nine on its own is under the failing line, however many its neighbours
+		// Two on its own is under the failing line, however many its neighbours
 		// add to the total.
 		assert!(matches!(status("dev-c"), CheckStatus::Warning(_)));
 		assert!(matches!(check.status, CheckStatus::Fail(_)));
-		assert_eq!(check.summary, "sync session errors: 0 mobile, 22 server");
+		assert_eq!(check.summary, "sync session errors: 0 mobile, 15 server");
 
 		let a = instances.iter().find(|i| i.key == "dev-a").unwrap();
 		assert_eq!(a.label.as_deref(), Some("Apia"));
@@ -285,8 +318,43 @@ mod tests {
 	}
 
 	#[test]
+	fn an_instance_fails_at_three_errors() {
+		let status = |count| {
+			grade(&[], &[errored(Some("dev-a"), count)])
+				.instances
+				.unwrap()[0]
+				.status
+				.clone()
+		};
+		assert!(matches!(status(2), CheckStatus::Warning(_)));
+		assert!(matches!(status(3), CheckStatus::Fail(_)));
+	}
+
+	#[test]
+	fn many_devices_each_erroring_a_little_fail_the_check_at_ten_in_all() {
+		let devices = |n: i64| -> Vec<Errored> {
+			(0..n)
+				.map(|i| errored(Some(&format!("dev-{i}")), 2))
+				.collect()
+		};
+		let check = grade(&[], &devices(4));
+		assert!(matches!(check.status, CheckStatus::Warning(_)));
+
+		let check = grade(&[], &devices(5));
+		assert!(matches!(&check.status, CheckStatus::Fail(r) if r.starts_with("10 sync session")));
+		// The instances themselves are still only warnings.
+		assert!(
+			check
+				.instances
+				.unwrap()
+				.iter()
+				.all(|i| matches!(i.status, CheckStatus::Warning(_)))
+		);
+	}
+
+	#[test]
 	fn mobile_errors_are_one_instance_between_every_mobile_device() {
-		let check = grade(&[errored(Some(MOBILE_KEY), 3)], &[]);
+		let check = grade(&[errored(Some(MOBILE_KEY), 2)], &[]);
 		let instances = check.instances.as_ref().unwrap();
 		assert_eq!(instances.len(), 1);
 		assert_eq!(instances[0].key, "mobile");

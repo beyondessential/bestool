@@ -12,7 +12,7 @@
 //!
 //! spec: CHK-SFS
 
-use super::{TamanuCx, query_error_check};
+use super::{TamanuCx, query_error_check, row_error_check};
 use crate::Stat;
 use crate::check::{Check, Instance};
 
@@ -84,6 +84,16 @@ struct Device {
 }
 
 impl Device {
+	fn from_row(row: &tokio_postgres::Row) -> Result<Self, tokio_postgres::Error> {
+		Ok(Self {
+			id: row.try_get("device_id")?,
+			facility_ids: row.try_get("facility_ids")?,
+			facility_names: row.try_get("facility_names")?,
+			last_successful_sync: row.try_get("last_successful_sync")?,
+			minutes_since_success: row.try_get("minutes_since_success")?,
+		})
+	}
+
 	fn instance(&self) -> (Staleness, Instance) {
 		let staleness = grade(self.minutes_since_success);
 		let reason = match self.minutes_since_success {
@@ -151,16 +161,14 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		Err(err) => return query_error_check(NAME, &err),
 	};
 
-	let devices: Vec<Device> = rows
+	let devices = match rows
 		.iter()
-		.map(|row| Device {
-			id: row.try_get("device_id").unwrap_or_default(),
-			facility_ids: row.try_get("facility_ids").unwrap_or_default(),
-			facility_names: row.try_get("facility_names").unwrap_or_default(),
-			last_successful_sync: row.try_get("last_successful_sync").ok().flatten(),
-			minutes_since_success: row.try_get("minutes_since_success").ok().flatten(),
-		})
-		.collect();
+		.map(Device::from_row)
+		.collect::<Result<Vec<_>, _>>()
+	{
+		Ok(devices) => devices,
+		Err(err) => return row_error_check(NAME, &err),
+	};
 
 	report(&devices)
 }
@@ -251,6 +259,17 @@ mod tests {
 	fn a_device_with_no_named_facility_is_labelled_by_its_key() {
 		let check = report(&[device("dev-a", &[], Some(1.0))]);
 		assert_eq!(check.instances.unwrap()[0].label, None);
+	}
+
+	// `runs_against_central` accepts a failed query as a result, so this is what
+	// says the SQL is valid against the schema.
+	#[tokio::test]
+	async fn the_query_prepares_against_the_schema() {
+		let Some(ctx) = central_ctx().await else {
+			return;
+		};
+		let client = ctx.db().await.expect("central connection");
+		client.prepare(super::SQL).await.expect("prepare");
 	}
 
 	#[tokio::test]

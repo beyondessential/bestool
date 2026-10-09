@@ -9,7 +9,7 @@
 //! not measured. Only devices with a restart in the hour are reported: the rest
 //! have nothing to grade.
 
-use super::{TamanuCx, query_error_check};
+use super::{TamanuCx, query_error_check, row_error_check};
 use crate::Stat;
 use crate::check::{Check, Instance};
 
@@ -44,6 +44,17 @@ struct Device {
 	restarts: i64,
 	facility_ids: Vec<String>,
 	facility_names: Vec<String>,
+}
+
+impl Device {
+	fn from_row(row: &tokio_postgres::Row) -> Result<Self, tokio_postgres::Error> {
+		Ok(Self {
+			id: row.try_get("device_id")?,
+			restarts: row.try_get("error_count")?,
+			facility_ids: row.try_get("facility_ids")?,
+			facility_names: row.try_get("facility_names")?,
+		})
+	}
 }
 
 fn instance(device: &Device) -> Instance {
@@ -104,15 +115,14 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		Err(err) => return query_error_check(NAME, &err),
 	};
 
-	let devices: Vec<Device> = rows
+	let devices = match rows
 		.iter()
-		.map(|row| Device {
-			id: row.try_get("device_id").unwrap_or_default(),
-			restarts: row.try_get("error_count").unwrap_or(0),
-			facility_ids: row.try_get("facility_ids").unwrap_or_default(),
-			facility_names: row.try_get("facility_names").unwrap_or_default(),
-		})
-		.collect();
+		.map(Device::from_row)
+		.collect::<Result<Vec<_>, _>>()
+	{
+		Ok(devices) => devices,
+		Err(err) => return row_error_check(NAME, &err),
+	};
 
 	report(&devices)
 }
@@ -171,6 +181,17 @@ mod tests {
 		assert!(wire["detail"].get("fail").is_none());
 		assert!(wire["detail"].get("warn").is_none());
 		assert_eq!(wire["instances"]["dev-a"]["result"], "failed");
+	}
+
+	// `runs_against_central` accepts a failed query as a result, so this is what
+	// says the SQL is valid against the schema.
+	#[tokio::test]
+	async fn the_query_prepares_against_the_schema() {
+		let Some(ctx) = central_ctx().await else {
+			return;
+		};
+		let client = ctx.db().await.expect("central connection");
+		client.prepare(super::SQL).await.expect("prepare");
 	}
 
 	#[tokio::test]

@@ -398,6 +398,15 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	let unmonitored = unmonitored(&discovered);
 
 	if measured.is_empty() && errored.is_empty() && unmonitored.is_empty() {
+		// Resources set aside are still reported, so one that has just been
+		// disabled stops being graded by Canopy rather than being left as it was.
+		if !disabled.is_empty() || !absent.is_empty() {
+			return Check::instanced(
+				NAME,
+				"no resource has materialisation enabled",
+				instances(&measured, &disabled, &absent, &errored, &unmonitored),
+			);
+		}
 		return Check::skip(
 			NAME,
 			"no resource has materialisation enabled",
@@ -1069,6 +1078,20 @@ mod tests {
 		assert!(matches!(instance.status, CheckStatus::Warning(_)));
 		assert_eq!(instance.detail["tables"], json!(["appointments", "notes"]));
 		assert!(RESOURCES.iter().all(|r| r.name != UNMONITORED_KEY));
+	}
+
+	#[test]
+	fn a_check_with_every_resource_set_aside_is_skipped_but_still_reports_them() {
+		let disabled = BTreeMap::from([("Specimen", "observed")]);
+		let check = Check::instanced(
+			NAME,
+			"s",
+			instances(&[], &disabled, &["Immunization"], &BTreeMap::new(), &[]),
+		);
+		assert!(matches!(check.status, CheckStatus::Skip(_)));
+		let wire = check.to_wire();
+		assert_eq!(wire["instances"]["Specimen"]["result"], "skipped");
+		assert_eq!(wire["instances"]["Immunization"]["result"], "skipped");
 	}
 
 	#[test]

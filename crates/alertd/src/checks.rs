@@ -442,6 +442,17 @@ pub fn query_error_check(name: &'static str, err: &tokio_postgres::Error) -> Che
 	}
 }
 
+/// A row the check's query returned that it could not read: a column missing or
+/// of another type, so the query and the check disagree. A fault in the
+/// healthcheck, reported as BROKEN rather than read as an empty value.
+pub fn row_error_check(name: &'static str, err: &tokio_postgres::Error) -> Check {
+	Check::broken(
+		name,
+		"healthcheck query broken",
+		format!("unreadable result: {err}"),
+	)
+}
+
 /// Walk a `std::error::Error`'s source chain and join all the messages.
 ///
 /// `reqwest::Error`'s Display is just "error sending request for url (...)";

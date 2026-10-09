@@ -40,12 +40,13 @@
 //!
 //! spec: SUB#http-traffic-and-certificates
 
+use jiff::Timestamp;
+
 use super::HostedCx;
 use crate::Stat;
 use crate::check::{Check, CheckStatus, Instance};
 use crate::ownership::Ownership;
 use crate::runtime::Certificate;
-use jiff::Timestamp;
 
 const NAME: &str = "caddy_certs";
 

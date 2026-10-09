@@ -43,6 +43,17 @@ impl CheckStatus {
 		}
 	}
 
+	/// How urgent this status is, for choosing between two that cannot both be
+	/// kept: failed over warning over passed over skipped.
+	fn urgency(&self) -> u8 {
+		match self {
+			CheckStatus::Skip(_) => 0,
+			CheckStatus::Pass => 1,
+			CheckStatus::Warning(_) | CheckStatus::Broken(_) => 2,
+			CheckStatus::Fail(_) => 3,
+		}
+	}
+
 	/// Whether this status is fatal (the system under test is unhealthy).
 	pub fn is_fatal(&self) -> bool {
 		matches!(self, CheckStatus::Fail(_))
@@ -479,21 +490,32 @@ impl Check {
 
 		match &self.instances {
 			Some(instances) if !matches!(self.status, CheckStatus::Broken(_)) => {
-				let wire = instances
-					.iter()
+				let mut wire: HashMap<String, (u8, HealthCheckInstance)> = HashMap::new();
+				for instance in instances {
 					// Canopy refuses an empty key, and with it the whole push, so
 					// a check that produced one is kept visible under a stand-in
 					// rather than taking every other check down with it.
-					.map(|i| {
-						let key = if i.key.is_empty() {
-							"(unnamed)"
-						} else {
-							&i.key
-						};
-						(key.to_string(), i.to_wire())
-					})
-					.collect::<HashMap<_, _>>();
-				health.instances = Some(wire);
+					let key = if instance.key.is_empty() {
+						"(unnamed)"
+					} else {
+						&instance.key
+					};
+					// Two occurrences can share a key, such as certificates for
+					// the same names. Canopy takes one, so the worse is the one
+					// kept rather than whichever came last.
+					let rank = instance.status.urgency();
+					match wire.get(key) {
+						Some((kept, _)) if *kept >= rank => {}
+						_ => {
+							wire.insert(key.to_string(), (rank, instance.to_wire()));
+						}
+					}
+				}
+				health.instances = Some(
+					wire.into_iter()
+						.map(|(key, (_, instance))| (key, instance))
+						.collect(),
+				);
 			}
 			_ => {
 				// After the details, so the reserved keys always win.
@@ -515,7 +537,9 @@ impl Check {
 		health
 	}
 
-	/// Build the per-check entry for the canopy `health[]` array, as JSON.
+	/// The per-check entry for the canopy `health[]` array, as JSON, so tests
+	/// can read the wire form by key.
+	#[cfg(test)]
 	pub fn to_wire(&self) -> Value {
 		serde_json::to_value(self.to_health_check())
 			.expect("a health check is plain strings, maps and enums, which always serialise")
@@ -987,6 +1011,18 @@ mod tests {
 		let wire = Check::instanced("x", "s", vec![Instance::pass("")]).to_wire();
 		assert!(wire["instances"].get("").is_none());
 		assert_eq!(wire["instances"]["(unnamed)"]["result"], "passed");
+	}
+
+	#[test]
+	fn instances_sharing_a_key_keep_the_worst_whatever_the_order() {
+		for instances in [
+			vec![Instance::fail("a", "bad"), Instance::pass("a")],
+			vec![Instance::pass("a"), Instance::fail("a", "bad")],
+		] {
+			let wire = Check::instanced("x", "s", instances).to_wire();
+			assert_eq!(wire["instances"].as_object().unwrap().len(), 1);
+			assert_eq!(wire["instances"]["a"]["result"], "failed");
+		}
 	}
 
 	#[test]

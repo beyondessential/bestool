@@ -67,6 +67,7 @@ The check only applies to a central server whose FHIR materialisation worker is 
 - It skips when the FHIR worker is not enabled for the deployment, because then no upstream record is expected to be materialised and every resource would report a total gap.
 - It skips when the deployment has no materialised resources at all, as on a version predating the `fhir` schema.
 - It skips when no resource has materialisation enabled, because then nothing is expected to materialise and there is no gap to measure.
+  The resources that are disabled, or whose upstream table does not exist, are still reported as skipped instances.
 - It skips when the database cannot be reached, so that a database outage remains something the daemon can alert on rather than something that stops it.
 
 A skip carries a reason naming which precondition was not met.
