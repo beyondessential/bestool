@@ -140,6 +140,13 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 			)
 		})?;
 
+	if args.as_copy && matches!(def.method, Method::TamanuSecretKey(_)) {
+		bail!(
+			"'{}' is the source server's secret key, which a copy must not take",
+			args.backup_type
+		);
+	}
+
 	// A restore from a hold reads only local data: no registration, no
 	// credentials, no repository, and nothing to report to Canopy, which has no
 	// part in a hold's lifecycle.
@@ -210,12 +217,6 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		"restoring snapshot",
 	);
 	let as_copy = restoring_as_copy(&args, &snapshot.source.host, &server_id)?;
-	if as_copy && matches!(def.method, Method::TamanuSecretKey(_)) {
-		bail!(
-			"'{}' is the source server's secret key, which a copy must not take",
-			args.backup_type
-		);
-	}
 
 	// Plan the whole cycle before touching any data: every follower def must
 	// have a pairable snapshot, or the restore refuses here.
