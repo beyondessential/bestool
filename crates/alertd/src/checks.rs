@@ -28,6 +28,9 @@ use super::subject::{ApplicationKind, ApplicationRef, HostedScope, TamanuScope};
 pub mod util;
 
 pub mod billing_tags;
+pub mod blob_antivirus;
+pub mod blob_correction_rate;
+pub mod blob_integrity;
 pub mod btrfs;
 pub mod caddy_certs;
 pub mod caddy_resolvers;
@@ -734,6 +737,16 @@ pub fn all() -> Vec<CheckEntry> {
 		// records that never became FHIR resources, which every other fhir_* check
 		// reads as green.
 		entry!("fhir_materialisation", fhir_materialisation::run, central),
+		// All three run on facility as well as central: every server that stores
+		// blobs scrubs its own and reads its own media, and the quarantine record
+		// propagates to all of them.
+		entry!("blob_integrity", blob_integrity::run, tamanu_app),
+		entry!(
+			"blob_correction_rate",
+			blob_correction_rate::run,
+			tamanu_app
+		),
+		entry!("blob_antivirus", blob_antivirus::run, tamanu_app),
 	]
 }
 
@@ -747,6 +760,8 @@ pub mod test_support {
 	//! the DB is unavailable so the suite degrades gracefully off-CI.
 
 	use std::sync::Arc;
+	use std::sync::atomic::{AtomicU32, Ordering};
+	use std::time::{SystemTime, UNIX_EPOCH};
 
 	use bestool_postgres::pool::PgPool;
 	use node_semver::Version;
@@ -850,6 +865,130 @@ pub mod test_support {
 			runtime: Arc::new(FakeRuntime::empty()),
 			store: Arc::new(MemoryStore::new()),
 		}
+	}
+
+	/// The blob store tables and the settings and facts the blob checks read,
+	/// as Tamanu's migrations create them.
+	pub const BLOB_STORE: &str = include_str!("checks/blob_store.sql");
+
+	/// A database made for one test, dropped when this is.
+	pub struct ScratchDb {
+		pub central: TamanuCx,
+		pub facility: TamanuCx,
+		_dropper: DropDb,
+	}
+
+	struct DropDb {
+		admin_url: String,
+		name: String,
+	}
+
+	impl Drop for DropDb {
+		fn drop(&mut self) {
+			let admin_url = std::mem::take(&mut self.admin_url);
+			let sql = format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.name);
+			// Drop runs inside the test's runtime, which can't be blocked on.
+			let _ = std::thread::spawn(move || {
+				let rt = tokio::runtime::Builder::new_current_thread()
+					.enable_all()
+					.build()
+					.ok()?;
+				rt.block_on(async {
+					let admin = connect_url(&admin_url).await.ok()?;
+					admin.get().await.ok()?.batch_execute(&sql).await.ok()
+				})
+			})
+			.join();
+		}
+	}
+
+	async fn connect_url(url: &str) -> miette::Result<PgPool> {
+		bestool_postgres::pool::create_pool_sized(
+			url,
+			"bestool-alertd-test",
+			super::POOL_SIZE,
+			bestool_postgres::pool::Prompt::Never,
+		)
+		.await
+	}
+
+	/// A fresh database on the `DATABASE_URL` server carrying `fixture`, or
+	/// `None` when that server can't be reached. Under `CI` an unreachable
+	/// server panics, so these tests never skip there.
+	pub async fn scratch_db(fixture: &str) -> Option<ScratchDb> {
+		static NEXT: AtomicU32 = AtomicU32::new(0);
+
+		let admin_url = std::env::var("DATABASE_URL")
+			.ok()
+			.filter(|url| !url.is_empty())
+			.unwrap_or_else(|| "postgresql://localhost/postgres".into());
+		let admin = match connect_url(&admin_url).await {
+			Ok(pool) => pool,
+			Err(err) if std::env::var_os("CI").is_some() => {
+				panic!("CI must reach postgres at DATABASE_URL: {err:?}")
+			}
+			Err(_) => return None,
+		};
+
+		let nanos = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.unwrap_or_default()
+			.as_nanos();
+		let name = format!(
+			"bestool_alertd_test_{}_{nanos}_{}",
+			std::process::id(),
+			NEXT.fetch_add(1, Ordering::Relaxed)
+		);
+		admin
+			.get()
+			.await
+			.expect("the admin pool just connected")
+			.batch_execute(&format!("CREATE DATABASE \"{name}\""))
+			.await
+			.expect("creating a scratch database should succeed");
+		let dropper = DropDb {
+			admin_url: admin_url.clone(),
+			name: name.clone(),
+		};
+
+		let mut url = url::Url::parse(&admin_url).expect("DATABASE_URL should be a URL");
+		url.set_path(&format!("/{name}"));
+		let url = url.to_string();
+		let pool = connect_url(&url)
+			.await
+			.expect("the scratch database should accept connections");
+		pool.get()
+			.await
+			.expect("the scratch pool just connected")
+			.batch_execute(fixture)
+			.await
+			.expect("the fixture should apply");
+
+		let cx = |app: ApplicationKind, config: serde_json::Value| TamanuCx {
+			app: ApplicationRef::tamanu(app),
+			version: Version::parse("0.0.0").unwrap(),
+			config: Arc::new(serde_json::from_value(config).expect("test config should parse")),
+			install_root: Some(std::path::PathBuf::from("/nonexistent")),
+			database_url: url.clone(),
+			pool: Some(pool.clone()),
+			canopy: None,
+			sweep: Arc::new(crate::sweep_cache::SweepCache::new()),
+			runtime: Arc::new(FakeRuntime::empty()),
+			traffic: Arc::new(FakeTraffic::absent()),
+			store: Arc::new(MemoryStore::new()),
+		};
+		let db = serde_json::json!({ "name": name, "username": "u", "password": "p" });
+		Some(ScratchDb {
+			central: cx(
+				ApplicationKind::TamanuCentral,
+				serde_json::json!({ "db": db }),
+			),
+			facility: cx(
+				ApplicationKind::TamanuFacility,
+				serde_json::json!({ "db": db, "serverFacilityIds": ["facility-1"] }),
+			),
+			_dropper: dropper,
+		})
 	}
 }
 
