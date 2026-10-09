@@ -219,23 +219,11 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 
 	// Plan the whole cycle before touching any data: every follower def must
 	// have a pairable snapshot, or the restore refuses here.
-	let mut followed = if args.no_followers {
+	let followed = if args.no_followers {
 		Vec::new()
 	} else {
-		plan_followers(&dir, &args.backup_type, snapshot, &snapshots).await?
+		plan_followers(&dir, &args.backup_type, snapshot, &snapshots, as_copy).await?
 	};
-	if as_copy {
-		followed.retain(|(follower_def, _)| {
-			let is_key = matches!(follower_def.method, Method::TamanuSecretKey(_));
-			if is_key {
-				info!(
-					backup_type = %follower_def.r#type,
-					"not restoring the source server's secret key into a copy",
-				);
-			}
-			!is_key
-		});
-	}
 	let follower_types: Vec<&str> = followed
 		.iter()
 		.map(|(follower_def, _)| follower_def.r#type.as_str())
@@ -315,7 +303,16 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 ///
 /// spec: BAK#restore-as-a-copy
 fn restoring_as_copy(args: &RestoreArgs, snapshot_host: &str, server_id: &str) -> Result<bool> {
-	if snapshot_host == server_id || args.as_copy || args.replacing_source {
+	if snapshot_host == server_id {
+		if args.as_copy {
+			bail!(
+				"snapshot was taken by this server, so it restores as itself; --as-copy would leave \
+				 it without its own secret key"
+			);
+		}
+		return Ok(false);
+	}
+	if args.as_copy || args.replacing_source {
 		return Ok(args.as_copy);
 	}
 	bail!(
@@ -601,14 +598,17 @@ async fn copy_capture(source: &std::path::Path, staging: &std::path::Path) -> Re
 }
 
 /// Plan the follower restores: for each def that (transitively) follows the
-/// restored type, the snapshot paired with its leader's.
+/// restored type, the snapshot paired with its leader's. A copy leaves out the
+/// source's secret key before pairing, so a key that cannot be paired does not
+/// refuse a restore that would never use it.
 ///
-/// spec: BAK#restore
+/// spec: BAK#restore, BAK#restore-as-a-copy
 async fn plan_followers(
 	dir: &Path,
 	backup_type: &str,
 	primary: &Snapshot,
 	snapshots: &[Snapshot],
+	as_copy: bool,
 ) -> Result<Vec<(config::BackupDef, Snapshot)>> {
 	let mut plan = Vec::new();
 	let mut visited = std::collections::BTreeSet::from([backup_type.to_owned()]);
@@ -617,6 +617,13 @@ async fn plan_followers(
 	while let Some((leader_type, leader_snapshot)) = leaders.pop_front() {
 		for follower_def in config::followers_of(dir, &leader_type).await? {
 			if !visited.insert(follower_def.r#type.clone()) {
+				continue;
+			}
+			if as_copy && matches!(follower_def.method, Method::TamanuSecretKey(_)) {
+				info!(
+					backup_type = %follower_def.r#type,
+					"not restoring the source server's secret key into a copy",
+				);
 				continue;
 			}
 			let follower_snapshot =
@@ -916,6 +923,48 @@ mod tests {
 	#[test]
 	fn own_snapshot_needs_no_answer() {
 		assert!(!restoring_as_copy(&restore_args(&[]), "srv", "srv").unwrap());
+		assert!(!restoring_as_copy(&restore_args(&["--replacing-source"]), "srv", "srv").unwrap());
+	}
+
+	#[test]
+	fn own_snapshot_is_never_a_copy() {
+		let err = restoring_as_copy(&restore_args(&["--as-copy"]), "srv", "srv")
+			.unwrap_err()
+			.to_string();
+		assert!(err.contains("restores as itself"), "got: {err}");
+	}
+
+	#[tokio::test]
+	async fn a_copy_plans_no_secret_key_even_when_none_pairs() {
+		let dir = std::env::temp_dir().join(format!("bestool-copy-plan-{}", std::process::id()));
+		tokio::fs::create_dir_all(&dir).await.unwrap();
+		tokio::fs::write(
+			dir.join("pg.toml"),
+			"type = \"tamanu-postgres\"\n[postgresql]\ncluster = \"main\"\n",
+		)
+		.await
+		.unwrap();
+		tokio::fs::write(
+			dir.join("key.toml"),
+			"type = \"tamanu-secret-key\"\nafter = \"tamanu-postgres\"\n[tamanu_secret_key]\n",
+		)
+		.await
+		.unwrap();
+		let leader = typed_snap("db1", "src", "tamanu-postgres", Some("2026-08-01T03:00:00Z"));
+		let snaps = vec![leader.clone()];
+
+		assert!(
+			plan_followers(&dir, "tamanu-postgres", &leader, &snaps, false)
+				.await
+				.is_err(),
+			"a replacement still needs the key paired"
+		);
+		let plan = plan_followers(&dir, "tamanu-postgres", &leader, &snaps, true)
+			.await
+			.unwrap();
+		assert!(plan.is_empty());
+
+		tokio::fs::remove_dir_all(&dir).await.ok();
 	}
 
 	#[test]

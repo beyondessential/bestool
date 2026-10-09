@@ -333,9 +333,9 @@ Off-host restore verification is Canopy's concern, not this command's; this comm
 
 A snapshot taken by another server is restored either as that server's replacement or as a copy of it, and the operator says which: `--replacing-source` or `--as-copy`.
 With neither, a repository restore of another server's snapshot refuses before anything is downloaded.
-A snapshot this server took needs neither.
+A snapshot this server took needs neither, and restores as this server: `--as-copy` on one is refused.
 A replacement restores as described above, followers included, so the source's secret key comes back with its database.
-A copy never restores a `tamanu_secret_key` definition: such a follower is left out of the plan, and naming one as the type to restore is refused.
+A copy never restores a `tamanu_secret_key` definition: such a follower is left out of the plan before pairing, so a key with no pairable snapshot does not refuse the copy, and naming one as the type to restore is refused.
 Restoring from a hold is always this server's own data, so neither flag applies to it.
 
 > [!NOTE]
