@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 
 use super::MachineCx;
 use crate::Stat;
-use crate::check::Check;
+use crate::check::{Check, CheckStatus, Instance};
 
 const NAME: &str = "btrfs";
 
@@ -68,16 +68,16 @@ pub async fn run(_ctx: MachineCx) -> Check {
 		);
 	}
 
-	let mut findings: Vec<(Sev, String)> = Vec::new();
-	let mut details: Vec<Value> = Vec::new();
+	let mut instances: Vec<Instance> = Vec::new();
 	let mut stats: Vec<Stat> = Vec::new();
 
+	// One instance per filesystem, keyed by its mount point, so one filling up
+	// is graded and silenced without quieting the others.
 	for mount in &mounts {
 		let label = mount.display().to_string();
 		match inspect(mount).await {
 			Ok(report) => {
-				findings.extend(report.findings);
-				details.push(report.detail);
+				instances.push(report.instance);
 				stats.extend(report.stats);
 			}
 			Err(CmdErr::NotInstalled) => {
@@ -87,37 +87,28 @@ pub async fn run(_ctx: MachineCx) -> Check {
 					"`btrfs` not found on PATH",
 				);
 			}
+			// One filesystem that could not be read is not the whole check
+			// failing to run.
 			Err(CmdErr::Failed(msg)) => {
-				findings.push((Sev::Warn, format!("{label}: {msg}")));
-				details.push(json!({ "mountpoint": label, "error": msg }));
+				instances.push(
+					Instance::warning(&label, &msg)
+						.with_detail("mountpoint", label.as_str())
+						.with_detail("error", msg),
+				);
 			}
 		}
 	}
 
-	let worst = findings.iter().map(|(s, _)| *s).max();
-	let reasons = findings
-		.iter()
-		.map(|(_, m)| m.as_str())
-		.collect::<Vec<_>>()
-		.join("; ");
-
 	let count = mounts.len();
-	let check = match worst {
-		Some(Sev::Fail) => Check::fail(
-			NAME,
-			format!("{count} btrfs filesystem(s) checked"),
-			reasons,
-		),
-		Some(Sev::Warn) => Check::warning(
-			NAME,
-			format!("{count} btrfs filesystem(s) checked"),
-			reasons,
-		),
-		None => Check::pass(NAME, format!("{count} btrfs filesystem(s) healthy")),
+	let degraded = instances
+		.iter()
+		.any(|i| !matches!(i.status, CheckStatus::Pass));
+	let summary = if degraded {
+		format!("{count} btrfs filesystem(s) checked")
+	} else {
+		format!("{count} btrfs filesystem(s) healthy")
 	};
-	check
-		.with_detail("filesystems", Value::Array(details))
-		.with_stats(stats)
+	Check::instanced(NAME, summary, instances).with_stats(stats)
 }
 
 /// Distinct btrfs filesystems, one mountpoint each (deduplicated by source
@@ -168,8 +159,7 @@ async fn btrfs_cmd(args: &[&str]) -> Result<String, CmdErr> {
 }
 
 struct FsReport {
-	findings: Vec<(Sev, String)>,
-	detail: Value,
+	instance: Instance,
 	stats: Vec<Stat>,
 }
 
@@ -187,14 +177,14 @@ async fn inspect(mount: &std::path::Path) -> Result<FsReport, CmdErr> {
 		findings.push((
 			Sev::Fail,
 			format!(
-				"{label}: only {} unallocated (btrfs can't allocate new chunks)",
+				"only {} unallocated (btrfs can't allocate new chunks)",
 				gib(usage.device_unallocated)
 			),
 		));
 	} else if usage.device_unallocated < UNALLOC_WARN {
 		findings.push((
 			Sev::Warn,
-			format!("{label}: {} unallocated", gib(usage.device_unallocated)),
+			format!("{} unallocated", gib(usage.device_unallocated)),
 		));
 	}
 
@@ -202,25 +192,19 @@ async fn inspect(mount: &std::path::Path) -> Result<FsReport, CmdErr> {
 	if meta_pct >= METADATA_FAIL_PCT {
 		findings.push((
 			Sev::Fail,
-			format!("{label}: metadata {meta_pct:.0}% of allocated chunks used"),
+			format!("metadata {meta_pct:.0}% of allocated chunks used"),
 		));
 	} else if meta_pct >= METADATA_WARN_PCT {
 		findings.push((
 			Sev::Warn,
-			format!("{label}: metadata {meta_pct:.0}% of allocated chunks used"),
+			format!("metadata {meta_pct:.0}% of allocated chunks used"),
 		));
 	}
 
 	if subvols > SUBVOL_FAIL {
-		findings.push((
-			Sev::Fail,
-			format!("{label}: {subvols} subvolumes/snapshots"),
-		));
+		findings.push((Sev::Fail, format!("{subvols} subvolumes/snapshots")));
 	} else if subvols > SUBVOL_WARN {
-		findings.push((
-			Sev::Warn,
-			format!("{label}: {subvols} subvolumes/snapshots"),
-		));
+		findings.push((Sev::Warn, format!("{subvols} subvolumes/snapshots")));
 	}
 
 	if !errors.is_empty() {
@@ -229,7 +213,7 @@ async fn inspect(mount: &std::path::Path) -> Result<FsReport, CmdErr> {
 			.map(|(k, v)| format!("{k}={v}"))
 			.collect::<Vec<_>>()
 			.join(", ");
-		findings.push((Sev::Warn, format!("{label}: device errors ({listed})")));
+		findings.push((Sev::Warn, format!("device errors ({listed})")));
 	}
 
 	let device_errors_total: u64 = errors.iter().map(|(_, v)| *v).sum();
@@ -263,10 +247,25 @@ async fn inspect(mount: &std::path::Path) -> Result<FsReport, CmdErr> {
 	});
 
 	Ok(FsReport {
-		findings,
-		detail,
+		instance: instance_of(&label, &findings, detail),
 		stats,
 	})
+}
+
+/// A filesystem's instance: the worst of its findings, all of them as the
+/// reason.
+fn instance_of(mount: &str, findings: &[(Sev, String)], detail: Value) -> Instance {
+	let reasons = findings
+		.iter()
+		.map(|(_, m)| m.as_str())
+		.collect::<Vec<_>>()
+		.join("; ");
+	match findings.iter().map(|(s, _)| *s).max() {
+		Some(Sev::Fail) => Instance::fail(mount, reasons),
+		Some(Sev::Warn) => Instance::warning(mount, reasons),
+		None => Instance::pass(mount),
+	}
+	.with_details(detail)
 }
 
 fn pct(used: u64, size: u64) -> f64 {
@@ -356,6 +355,27 @@ fn count_subvolumes(out: &str) -> usize {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn a_filesystem_is_an_instance_keyed_by_its_mount_point() {
+		let detail = json!({"mountpoint": "/data", "subvolumes": 7});
+
+		let clean = instance_of("/data", &[], detail.clone());
+		assert_eq!(clean.key, "/data");
+		assert!(matches!(clean.status, CheckStatus::Pass));
+		assert_eq!(clean.detail["subvolumes"], 7);
+
+		let worst = instance_of(
+			"/data",
+			&[
+				(Sev::Warn, "device errors (x=1)".into()),
+				(Sev::Fail, "metadata 99% of allocated chunks used".into()),
+			],
+			detail,
+		);
+		assert!(matches!(&worst.status, CheckStatus::Fail(r)
+			if r == "device errors (x=1); metadata 99% of allocated chunks used"));
+	}
 
 	const USAGE: &str = "Overall:\n    Device size:\t\t\t  500107862016\n    Device allocated:\t\t\t  53687091200\n    Device unallocated:\t\t\t  446420770816\n    Device missing:\t\t\t             0\n    Used:\t\t\t\t  50000000000\n    Free (estimated):\t\t\t  448000000000\n\nData,single: Size:50000000000, Used:49000000000\nMetadata,single: Size:3221225472, Used:2000000000\nSystem,single: Size:33554432, Used:16384\n";
 

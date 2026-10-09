@@ -41,11 +41,10 @@
 //! spec: SUB#http-traffic-and-certificates
 
 use jiff::Timestamp;
-use serde_json::{Value, json};
 
 use super::HostedCx;
 use crate::Stat;
-use crate::check::Check;
+use crate::check::{Check, CheckStatus, Instance};
 use crate::ownership::Ownership;
 use crate::runtime::Certificate;
 
@@ -140,7 +139,7 @@ pub async fn run(ctx: HostedCx) -> Check {
 /// A certificate serving several applications' DNS names is kept for each of
 /// them, and one serving only unowned DNS names for none.
 ///
-/// spec: CHK-CCT
+/// spec: TLS#the-caddy-certificate-check
 fn belonging_to<'a>(
 	certs: &'a [Certificate],
 	ownership: &Ownership,
@@ -156,17 +155,26 @@ fn belonging_to<'a>(
 		.collect()
 }
 
+/// What identifies a certificate from one sweep to the next: its DNS names,
+/// sorted, so a renewal that reorders them does not become a new instance, or
+/// where it was loaded from when it names none.
+///
+/// spec: TLS#how-the-caddy-check-reports
+fn instance_key(cert: &Certificate) -> String {
+	if cert.names.is_empty() {
+		return cert.origin.clone();
+	}
+	let mut names = cert.names.clone();
+	names.sort();
+	names.join(",")
+}
+
 fn grade<'a>(certs: impl IntoIterator<Item = &'a Certificate>, now: Timestamp) -> Check {
-	let mut findings: Vec<(Sev, String)> = Vec::new();
-	let mut details: Vec<Value> = Vec::new();
+	let mut instances: Vec<Instance> = Vec::new();
 	let mut stats: Vec<Stat> = Vec::new();
 
 	for cert in certs {
-		let label = if cert.names.is_empty() {
-			cert.origin.clone()
-		} else {
-			cert.names.join(", ")
-		};
+		let mut findings: Vec<(Sev, String)> = Vec::new();
 
 		// Expiry, scaled to the cert's own lifetime and gated on the issuer's
 		// renewal window (see `classify_expiry`).
@@ -176,9 +184,9 @@ fn grade<'a>(certs: impl IntoIterator<Item = &'a Certificate>, now: Timestamp) -
 		match classify_expiry(remaining, lifetime) {
 			Expiry::Fail => findings.push((
 				Sev::Fail,
-				format!("{label}: expires in {days:.1}d (renewal is failing)"),
+				format!("expires in {days:.1}d (renewal is failing)"),
 			)),
-			Expiry::Warn => findings.push((Sev::Warn, format!("{label}: expires in {days:.1}d"))),
+			Expiry::Warn => findings.push((Sev::Warn, format!("expires in {days:.1}d"))),
 			Expiry::Ok => {}
 		}
 
@@ -189,9 +197,7 @@ fn grade<'a>(certs: impl IntoIterator<Item = &'a Certificate>, now: Timestamp) -
 		if served_matches == Some(false) {
 			findings.push((
 				Sev::Warn,
-				format!(
-					"{label}: served cert differs from configured cert (the front end needs a reload?)"
-				),
+				"served cert differs from configured cert (the front end needs a reload?)".into(),
 			));
 		}
 
@@ -207,7 +213,7 @@ fn grade<'a>(certs: impl IntoIterator<Item = &'a Certificate>, now: Timestamp) -
 				// the front end's own issuance is visible here rather than
 				// looking the same as one canopy is serving.
 				//
-				// spec: CHK-CCT#certificates-from-canopy
+				// spec: TLS#certificates-from-canopy
 				.label("source", cert.source.as_str())
 				.help("Days until certificate expiry"),
 		);
@@ -219,31 +225,42 @@ fn grade<'a>(certs: impl IntoIterator<Item = &'a Certificate>, now: Timestamp) -
 			);
 		}
 
-		details.push(json!({
-			"names": cert.names,
-			"source": cert.source.as_str(),
-			"origin": cert.origin,
-			"not_after": cert.not_after.as_second(),
-			"days_remaining": (days * 10.0).round() / 10.0,
-			"lifetime_days": lifetime / 86400,
-			"served_matches": served_matches,
-		}));
+		let worst = findings.iter().map(|(s, _)| *s).max();
+		let reasons = findings
+			.iter()
+			.map(|(_, m)| m.as_str())
+			.collect::<Vec<_>>()
+			.join("; ");
+		let instance = match worst {
+			Some(Sev::Fail) => Instance::fail(instance_key(cert), reasons),
+			Some(Sev::Warn) => Instance::warning(instance_key(cert), reasons),
+			None => Instance::pass(instance_key(cert)),
+		}
+		.with_detail("names", cert.names.clone())
+		.with_detail("source", cert.source.as_str())
+		.with_detail("origin", cert.origin.clone())
+		.with_detail("not_after", cert.not_after.as_second())
+		.with_detail("days_remaining", (days * 10.0).round() / 10.0)
+		.with_detail("lifetime_days", lifetime / 86400)
+		.with_detail("served_matches", served_matches);
+		instances.push(if cert.names.is_empty() {
+			instance
+		} else {
+			instance.with_label(cert.names.join(", "))
+		});
 	}
 
-	let worst = findings.iter().map(|(s, _)| *s).max();
-	let reasons = findings
+	let n = instances.len();
+	let degraded = instances
 		.iter()
-		.map(|(_, m)| m.as_str())
-		.collect::<Vec<_>>()
-		.join("; ");
-	let n = details.len();
-	let check = match worst {
-		Some(Sev::Fail) => Check::fail(NAME, format!("{n} cert(s) checked"), reasons),
-		Some(Sev::Warn) => Check::warning(NAME, format!("{n} cert(s) checked"), reasons),
-		None => Check::pass(NAME, format!("{n} cert(s) valid")),
+		.filter(|i| !matches!(i.status, CheckStatus::Pass))
+		.count();
+	let summary = if degraded == 0 {
+		format!("{n} cert(s) valid")
+	} else {
+		format!("{n} cert(s) checked")
 	};
-	check
-		.with_detail("certificates", Value::Array(details))
+	Check::instanced(NAME, summary, instances)
 		.with_stat(Stat::gauge("count", n as f64).help("Certificates checked"))
 		.with_stats(stats)
 }
@@ -351,7 +368,7 @@ mod tests {
 	/// presents as healthy while still depending on the DNS credential that
 	/// issuing through canopy exists to remove.
 	///
-	/// spec: CHK-CCT#certificates-from-canopy
+	/// spec: TLS#certificates-from-canopy
 	#[test]
 	fn a_certificate_says_which_side_obtained_it() {
 		let certs = [
@@ -365,12 +382,69 @@ mod tests {
 		let check = grade(&certs, now());
 		assert!(matches!(check.status, CheckStatus::Pass), "{check:?}");
 
-		let reported = check.details["certificates"].as_array().unwrap();
+		let reported = check.instances.as_ref().unwrap();
 		let sources: Vec<&str> = reported
 			.iter()
-			.map(|row| row["source"].as_str().unwrap())
+			.map(|instance| instance.detail["source"].as_str().unwrap())
 			.collect();
 		assert_eq!(sources, vec!["canopy", "front-end"]);
+	}
+
+	/// One certificate running out is graded and silenced without quieting the
+	/// others, and what names it survives a renewal that reorders its names.
+	///
+	/// spec: TLS#how-the-caddy-check-reports
+	#[test]
+	fn each_certificate_is_an_instance_keyed_by_its_sorted_names() {
+		let certs = [
+			cert(&["b.example.com", "a.example.com"], 60, 90),
+			cert(&["c.example.com"], 3, 90),
+		];
+		let check = grade(&certs, now());
+
+		let instances = check.instances.as_ref().expect("instanced");
+		assert_eq!(instances.len(), 2);
+		assert_eq!(instances[0].key, "a.example.com,b.example.com");
+		assert_eq!(
+			instances[0].label.as_deref(),
+			Some("b.example.com, a.example.com")
+		);
+		assert!(matches!(instances[0].status, CheckStatus::Pass));
+		assert_eq!(instances[1].key, "c.example.com");
+		assert!(matches!(instances[1].status, CheckStatus::Fail(_)));
+		assert!(matches!(check.status, CheckStatus::Fail(_)));
+
+		let reordered = grade(&[cert(&["a.example.com", "b.example.com"], 60, 90)], now());
+		assert_eq!(
+			reordered.instances.unwrap()[0].key,
+			"a.example.com,b.example.com"
+		);
+	}
+
+	#[test]
+	fn a_certificate_naming_nothing_is_keyed_by_where_it_came_from() {
+		let mut unnamed = cert(&[], 60, 90);
+		unnamed.origin = "/etc/ssl/site.pem".into();
+		let check = grade(&[unnamed], now());
+		let instance = &check.instances.as_ref().unwrap()[0];
+		assert_eq!(instance.key, "/etc/ssl/site.pem");
+		assert_eq!(instance.label, None);
+	}
+
+	#[test]
+	fn an_instances_result_is_the_worse_of_its_expiry_and_served_grades() {
+		let certs = [Certificate {
+			served_leaf: Some(b"something else".to_vec()),
+			..cert(&["example.com"], 3, 90)
+		}];
+		let check = grade(&certs, now());
+		let instance = &check.instances.as_ref().unwrap()[0];
+		assert!(matches!(&instance.status, CheckStatus::Fail(r)
+			if r.contains("renewal is failing") && r.contains("served cert differs")));
+		assert_eq!(
+			check.to_wire()["instances"]["example.com"]["result"],
+			"failed"
+		);
 	}
 
 	/// A front end serving something other than what is configured has not
@@ -476,7 +550,7 @@ mod tests {
 	/// A certificate for an mSupply DNS name is graded under mSupply and not
 	/// under Tamanu.
 	///
-	/// spec: CHK-CCT
+	/// spec: TLS#the-caddy-certificate-check
 	#[test]
 	fn a_certificate_is_graded_under_the_application_owning_its_dns_name() {
 		let certs = vec![
@@ -493,7 +567,7 @@ mod tests {
 	/// A certificate covering DNS names of both applications is graded under
 	/// each.
 	///
-	/// spec: CHK-CCT
+	/// spec: TLS#the-caddy-certificate-check
 	#[test]
 	fn a_certificate_serving_several_applications_is_graded_under_each() {
 		let certs = vec![cert(&["central.example.com", "supply.example.com"], 60, 90)];
@@ -505,7 +579,7 @@ mod tests {
 	/// A certificate whose DNS names belong to no application is graded under
 	/// none, which leaves an application with nothing to grade and so skipping.
 	///
-	/// spec: CHK-CCT
+	/// spec: TLS#the-caddy-certificate-check
 	#[test]
 	fn a_certificate_for_unowned_dns_names_is_graded_under_no_application() {
 		let certs = vec![
@@ -521,7 +595,7 @@ mod tests {
 	/// A wildcard certificate covers the owned DNS names within its one label,
 	/// and no others.
 	///
-	/// spec: CHK-CCT
+	/// spec: TLS#the-caddy-certificate-check
 	#[test]
 	fn a_wildcard_certificate_belongs_to_the_owners_of_the_names_it_covers() {
 		let wild = vec![cert(&["*.example.com"], 60, 90)];

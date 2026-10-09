@@ -236,7 +236,7 @@ impl Entitlement {
 	/// application, and that entry is the answer whatever the reporter calls it
 	/// — so it matches any type asked for.
 	///
-	/// spec: CHK-CCO#which-dns-names-it-grades
+	/// spec: TLS#which-dns-names-the-collection-check-grades
 	pub fn for_type(&self, type_slug: &str) -> Option<&AppEntitlement> {
 		self.applications
 			.iter()

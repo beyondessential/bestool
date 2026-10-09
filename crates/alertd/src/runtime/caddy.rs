@@ -201,7 +201,7 @@ async fn read_certificates(sweep: &SweepCache) -> Result<Vec<Certificate>, Unava
 	// it. Without them a canopy-served host would grade as having no certificate
 	// at all for the names it actually answers on.
 	//
-	// spec: CHK-CCT#certificates-from-canopy
+	// spec: TLS#certificates-from-canopy
 	let collected = canopy_chains(sweep, &active).await;
 
 	let mut out: Vec<Certificate> = Vec::new();
@@ -403,7 +403,7 @@ fn gather_certs(active: &BTreeSet<String>, config: &Value) -> Vec<(String, DiskC
 /// a one-shot `bestool tamanu doctor` grades them too — and so a daemon that has
 /// stopped collecting does not also stop them being graded.
 ///
-/// spec: CHK-CCT#certificates-from-canopy
+/// spec: TLS#certificates-from-canopy
 async fn canopy_chains(
 	sweep: &SweepCache,
 	active: &BTreeSet<String>,

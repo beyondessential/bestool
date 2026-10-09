@@ -1,4 +1,6 @@
-use bestool_canopy::schema::{CheckResult, CheckSeverity, HealthCheck};
+use std::collections::HashMap;
+
+use bestool_canopy::schema::{CheckResult, CheckSeverity, HealthCheck, HealthCheckInstance};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -38,6 +40,17 @@ impl CheckStatus {
 			CheckStatus::Warning(_) => "warning",
 			CheckStatus::Fail(_) => "failed",
 			CheckStatus::Broken(_) => "broken",
+		}
+	}
+
+	/// How urgent this status is, for choosing between two that cannot both be
+	/// kept: failed over warning over passed over skipped.
+	fn urgency(&self) -> u8 {
+		match self {
+			CheckStatus::Skip(_) => 0,
+			CheckStatus::Pass => 1,
+			CheckStatus::Warning(_) | CheckStatus::Broken(_) => 2,
+			CheckStatus::Fail(_) => 3,
 		}
 	}
 
@@ -92,6 +105,247 @@ impl CheckStatus {
 	}
 }
 
+/// The most instances Canopy takes from one check; a push with more is refused
+/// whole.
+const MAX_INSTANCES: usize = 1000;
+
+/// The longest an instance's key or label may be, in characters; a push with a
+/// longer one is refused whole.
+const MAX_INSTANCE_NAMING_CHARS: usize = 256;
+
+fn clamp_naming(text: &str) -> String {
+	text.chars().take(MAX_INSTANCE_NAMING_CHARS).collect()
+}
+
+/// One occurrence of the condition an instanced check grades: a device, a
+/// resource, a mount.
+///
+/// Canopy grades, silences and presents an instance by itself, which a field
+/// inside a single result's detail cannot be. Brokenness is the whole check's,
+/// so an instance is passed, warning, failed or skipped and never broken: there
+/// is no constructor for it.
+///
+/// spec: CHK#instances
+#[derive(Debug, Clone)]
+pub struct Instance {
+	/// Names the occurrence itself, never a value it currently has: unique
+	/// within the check and the same on every sweep, since Canopy's silences
+	/// are kept against it.
+	pub key: String,
+	pub status: CheckStatus,
+	/// How the occurrence is named to an operator; the key when absent.
+	pub label: Option<String>,
+	pub detail: Map<String, Value>,
+}
+
+impl Instance {
+	fn new(key: impl Into<String>, status: CheckStatus) -> Self {
+		Self {
+			key: key.into(),
+			status,
+			label: None,
+			detail: Map::new(),
+		}
+	}
+
+	pub fn pass(key: impl Into<String>) -> Self {
+		Self::new(key, CheckStatus::Pass)
+	}
+
+	pub fn skip(key: impl Into<String>, reason: impl Into<String>) -> Self {
+		Self::new(key, CheckStatus::Skip(reason.into()))
+	}
+
+	pub fn warning(key: impl Into<String>, reason: impl Into<String>) -> Self {
+		Self::new(key, CheckStatus::Warning(reason.into()))
+	}
+
+	pub fn fail(key: impl Into<String>, reason: impl Into<String>) -> Self {
+		Self::new(key, CheckStatus::Fail(reason.into()))
+	}
+
+	pub fn with_label(mut self, label: impl Into<String>) -> Self {
+		self.label = Some(label.into());
+		self
+	}
+
+	pub fn with_detail(mut self, key: &str, value: impl Into<Value>) -> Self {
+		self.detail.insert(key.to_string(), value.into());
+		self
+	}
+
+	/// Attach every field of `detail` (a JSON object; anything else attaches
+	/// nothing).
+	pub fn with_details(mut self, detail: Value) -> Self {
+		if let Value::Object(fields) = detail {
+			self.detail.extend(fields);
+		}
+		self
+	}
+
+	/// What this instance is called in local output.
+	pub fn name(&self) -> &str {
+		self.label.as_deref().unwrap_or(&self.key)
+	}
+
+	/// The instance's fields on the wire: its own detail, plus the reason a
+	/// non-passing one carries. Inserted after the detail so the reserved key
+	/// always wins.
+	fn wire_detail(&self) -> Map<String, Value> {
+		let mut detail = self.detail.clone();
+		if let Some(reason) = self.status.reason() {
+			detail.insert("reason".into(), reason.into());
+		}
+		detail
+	}
+
+	fn to_wire(&self) -> HealthCheckInstance {
+		let mut instance = HealthCheckInstance::builder()
+			.result(match self.status {
+				CheckStatus::Pass => CheckResult::Passed,
+				CheckStatus::Skip(_) => CheckResult::Skipped,
+				CheckStatus::Fail(_) => CheckResult::Failed,
+				// Unreachable through the constructors; an instance cannot be
+				// broken, and a warning is what brokenness counts as.
+				CheckStatus::Warning(_) | CheckStatus::Broken(_) => CheckResult::Warning,
+			})
+			.build();
+		instance.detail = self.wire_detail();
+		instance.label = self.label.as_deref().map(clamp_naming);
+		instance
+	}
+
+	fn from_wire(key: &str, wire: &HealthCheckInstance) -> Self {
+		let reason = wire
+			.detail
+			.get("reason")
+			.and_then(Value::as_str)
+			.unwrap_or_default()
+			.to_string();
+		let status = match wire.result {
+			CheckResult::Passed => CheckStatus::Pass,
+			CheckResult::Skipped => CheckStatus::Skip(reason),
+			CheckResult::Failed => CheckStatus::Fail(reason),
+			CheckResult::Warning | CheckResult::Broken => CheckStatus::Warning(reason),
+		};
+		let mut detail = wire.detail.clone();
+		detail.remove("reason");
+		Self {
+			key: key.to_string(),
+			status,
+			label: wire.label.clone(),
+			detail,
+		}
+	}
+
+	fn to_streaming_json(&self) -> Value {
+		let (status, reason) = status_parts(&self.status);
+		let mut obj = json!({
+			"key": self.key,
+			"status": status,
+			"detail": Value::Object(self.detail.clone()),
+		});
+		if let Some(label) = &self.label {
+			obj["label"] = label.clone().into();
+		}
+		if let Some(reason) = reason {
+			obj["reason"] = reason.into();
+		}
+		obj
+	}
+
+	fn from_streaming_json(value: &Value) -> Option<Self> {
+		let reason = value
+			.get("reason")
+			.and_then(Value::as_str)
+			.map(str::to_string);
+		let status = match status_from_parts(value.get("status")?.as_str()?, reason)? {
+			// An instance is never broken, whatever a stream claims.
+			CheckStatus::Broken(reason) => CheckStatus::Warning(reason),
+			status => status,
+		};
+		Some(Self {
+			key: value.get("key")?.as_str()?.to_string(),
+			status,
+			label: value
+				.get("label")
+				.and_then(Value::as_str)
+				.map(str::to_string),
+			detail: value
+				.get("detail")
+				.and_then(Value::as_object)
+				.cloned()
+				.unwrap_or_default(),
+		})
+	}
+}
+
+/// The status an instanced check takes from its instances: the most urgent of
+/// those not skipped, skipped when every one is, passed when there are none.
+///
+/// This is the rule Canopy grades the check by, so the two agree. The reason
+/// names the degraded instances, for local output; it is not sent.
+fn derive_status(instances: &[Instance]) -> CheckStatus {
+	let degraded = |wanted: fn(&CheckStatus) -> bool| {
+		instances
+			.iter()
+			.filter(|instance| wanted(&instance.status))
+			.map(|instance| match instance.status.reason() {
+				Some(reason) if !reason.is_empty() => format!("{}: {reason}", instance.name()),
+				_ => instance.name().to_string(),
+			})
+			.collect::<Vec<_>>()
+			.join("; ")
+	};
+
+	if instances.iter().any(|i| i.status.is_fatal()) {
+		CheckStatus::Fail(degraded(CheckStatus::is_fatal))
+	} else if instances
+		.iter()
+		.any(|i| matches!(i.status, CheckStatus::Warning(_)))
+	{
+		CheckStatus::Warning(degraded(|s| matches!(s, CheckStatus::Warning(_))))
+	} else if !instances.is_empty() && instances.iter().all(|i| i.status.is_skip()) {
+		CheckStatus::Skip("every instance is skipped".into())
+	} else {
+		CheckStatus::Pass
+	}
+}
+
+/// A headline for an instanced check that has none of its own to give.
+fn instances_summary(instances: &[Instance]) -> String {
+	let count =
+		|wanted: fn(&CheckStatus) -> bool| instances.iter().filter(|i| wanted(&i.status)).count();
+	format!(
+		"{} instance(s): {} failed, {} warning",
+		instances.len(),
+		count(CheckStatus::is_fatal),
+		count(|s| matches!(s, CheckStatus::Warning(_))),
+	)
+}
+
+/// The tag and reason a status travels under in the daemon's task stream.
+fn status_parts(status: &CheckStatus) -> (&'static str, Option<&str>) {
+	match status {
+		CheckStatus::Pass => ("pass", None),
+		CheckStatus::Skip(r) => ("skip", Some(r.as_str())),
+		CheckStatus::Warning(r) => ("warning", Some(r.as_str())),
+		CheckStatus::Fail(r) => ("fail", Some(r.as_str())),
+		CheckStatus::Broken(r) => ("broken", Some(r.as_str())),
+	}
+}
+
+fn status_from_parts(tag: &str, reason: Option<String>) -> Option<CheckStatus> {
+	Some(match (tag, reason) {
+		("pass", _) => CheckStatus::Pass,
+		("skip", Some(r)) => CheckStatus::Skip(r),
+		("warning", Some(r)) => CheckStatus::Warning(r),
+		("fail", Some(r)) => CheckStatus::Fail(r),
+		("broken", Some(r)) => CheckStatus::Broken(r),
+		_ => return None,
+	})
+}
+
 /// Result of one healthcheck.
 #[derive(Debug, Clone)]
 pub struct Check {
@@ -100,8 +354,13 @@ pub struct Check {
 	pub status: CheckStatus,
 	/// Short human-readable description for the CLI output.
 	pub summary: String,
-	/// Extra JSON fields merged into the per-check wire payload.
+	/// The check's fields, sent as its `detail`. For an instanced check, what
+	/// its instances share.
 	pub details: Map<String, Value>,
+	/// The occurrences this check grades, in place of a result of its own, or
+	/// `None` for a check with a single result. `Some` of nothing is a check
+	/// with no occurrences, which recovers everything Canopy held for it.
+	pub instances: Option<Vec<Instance>>,
 	/// Fields a check wants to attach to the *top-level* status payload
 	/// (alongside `osTimezone` etc.), rather than to its own `health[]`
 	/// entry. Lifted by `build_payload` and never serialised into
@@ -116,29 +375,28 @@ pub struct Check {
 }
 
 impl Check {
-	pub fn pass(name: &'static str, summary: impl Into<String>) -> Self {
+	/// A check with a single result and nothing attached to it yet.
+	pub fn new(name: &'static str, status: CheckStatus, summary: impl Into<String>) -> Self {
 		Self {
 			name,
-			status: CheckStatus::Pass,
+			status,
 			summary: summary.into(),
 			details: Map::new(),
+			instances: None,
 			payload_extras: Map::new(),
 			stats: Vec::new(),
 		}
+	}
+
+	pub fn pass(name: &'static str, summary: impl Into<String>) -> Self {
+		Self::new(name, CheckStatus::Pass, summary)
 	}
 
 	/// Build a Skip result. The `reason` is kept on the status so the operator
 	/// sees *why* the check couldn't be run; the summary is the short headline
 	/// shown alongside `SKIP`.
 	pub fn skip(name: &'static str, summary: impl Into<String>, reason: impl Into<String>) -> Self {
-		Self {
-			name,
-			status: CheckStatus::Skip(reason.into()),
-			summary: summary.into(),
-			details: Map::new(),
-			payload_extras: Map::new(),
-			stats: Vec::new(),
-		}
+		Self::new(name, CheckStatus::Skip(reason.into()), summary)
 	}
 
 	pub fn warning(
@@ -146,42 +404,49 @@ impl Check {
 		summary: impl Into<String>,
 		reason: impl Into<String>,
 	) -> Self {
-		Self {
-			name,
-			status: CheckStatus::Warning(reason.into()),
-			summary: summary.into(),
-			details: Map::new(),
-			payload_extras: Map::new(),
-			stats: Vec::new(),
-		}
+		Self::new(name, CheckStatus::Warning(reason.into()), summary)
 	}
 
 	pub fn fail(name: &'static str, summary: impl Into<String>, reason: impl Into<String>) -> Self {
-		Self {
-			name,
-			status: CheckStatus::Fail(reason.into()),
-			summary: summary.into(),
-			details: Map::new(),
-			payload_extras: Map::new(),
-			stats: Vec::new(),
-		}
+		Self::new(name, CheckStatus::Fail(reason.into()), summary)
 	}
 
 	/// Build a Broken result: the check itself errored or is misconfigured,
 	/// which says nothing about the system under test.
+	///
+	/// Brokenness is the whole check's, so this carries no instances and
+	/// Canopy keeps the ones it held.
 	pub fn broken(
 		name: &'static str,
 		summary: impl Into<String>,
 		reason: impl Into<String>,
 	) -> Self {
-		Self {
-			name,
-			status: CheckStatus::Broken(reason.into()),
-			summary: summary.into(),
-			details: Map::new(),
-			payload_extras: Map::new(),
-			stats: Vec::new(),
-		}
+		Self::new(name, CheckStatus::Broken(reason.into()), summary)
+	}
+
+	/// Build a check reporting its occurrences as instances, in place of a
+	/// result. Its status is that of its most urgent instance that is not
+	/// skipped, the rule Canopy grades it by.
+	///
+	/// The summary is the local headline. It is not sent: Canopy writes the
+	/// check's message from the graded instances.
+	///
+	/// spec: CHK#instances
+	pub fn instanced(
+		name: &'static str,
+		summary: impl Into<String>,
+		instances: Vec<Instance>,
+	) -> Self {
+		let status = derive_status(&instances);
+		let mut check = Self::new(name, status, summary);
+		check.instances = Some(instances);
+		check
+	}
+
+	/// [`Self::instanced`] with a headline counting the instances.
+	pub fn instanced_summarised(name: &'static str, instances: Vec<Instance>) -> Self {
+		let summary = instances_summary(&instances);
+		Self::instanced(name, summary, instances)
 	}
 
 	pub fn with_detail(mut self, key: &str, value: impl Into<Value>) -> Self {
@@ -220,44 +485,122 @@ impl Check {
 	/// Constructed field by field rather than round-tripped through a `Value`:
 	/// a check whose details failed to deserialise would otherwise vanish from
 	/// the push with no error, silently ceasing to be monitored.
+	///
+	/// Every field rides in the nested `detail`, never beside the check's name:
+	/// canopy refuses a check carrying fields both ways, and one with
+	/// instances carries its fields in `detail` only.
+	///
+	/// A check with a single result carries its summary and, when it is not a
+	/// pass, its reason, so an operator can see *why* it warned or failed from
+	/// canopy without shelling into the box. An instanced check carries neither:
+	/// canopy writes its message from the graded instances.
+	///
+	/// spec: CHK#reporting-to-canopy
 	pub fn to_health_check(&self) -> HealthCheck {
-		let mut extra = self.details.clone();
-		// After the details, so the reserved keys always win.
-		extra.insert("summary".into(), self.summary.clone().into());
-		if let Some(reason) = self.status.reason() {
-			extra.insert("reason".into(), reason.into());
-		}
+		let mut health = HealthCheck::builder().check(self.name.to_owned()).build();
+		health.detail = self.details.clone();
 
-		let mut health = HealthCheck::builder()
-			.check(self.name.to_owned())
-			.result(match self.status {
-				CheckStatus::Pass => CheckResult::Passed,
-				CheckStatus::Warning(_) => CheckResult::Warning,
-				CheckStatus::Fail(_) => CheckResult::Failed,
-				CheckStatus::Broken(_) => CheckResult::Broken,
-				CheckStatus::Skip(_) => CheckResult::Skipped,
-			})
-			.build();
-		health.extra = extra;
+		match &self.instances {
+			Some(instances) if !matches!(self.status, CheckStatus::Broken(_)) => {
+				let mut wire: HashMap<String, (u8, HealthCheckInstance)> = HashMap::new();
+				for instance in instances {
+					// Canopy refuses an empty or overlong key, and with it the whole
+					// push, so a check that produced one is kept visible under a
+					// stand-in rather than taking every other check down with it.
+					let key = if instance.key.is_empty() {
+						"(unnamed)".to_string()
+					} else {
+						clamp_naming(&instance.key)
+					};
+					// Two occurrences can share a key, such as certificates for
+					// the same names. Canopy takes one, so the worse is the one
+					// kept rather than whichever came last.
+					let rank = instance.status.urgency();
+					match wire.get(&key) {
+						Some((kept, _)) if *kept >= rank => {}
+						_ => {
+							wire.insert(key, (rank, instance.to_wire()));
+						}
+					}
+				}
+				// Past the most Canopy takes, the most urgent are the ones kept.
+				let mut kept: Vec<_> = wire.into_iter().collect();
+				if kept.len() > MAX_INSTANCES {
+					kept.sort_by(|(a_key, (a, _)), (b_key, (b, _))| {
+						b.cmp(a).then_with(|| a_key.cmp(b_key))
+					});
+					kept.truncate(MAX_INSTANCES);
+				}
+				health.instances = Some(
+					kept.into_iter()
+						.map(|(key, (_, instance))| (key, instance))
+						.collect(),
+				);
+			}
+			_ => {
+				// After the details, so the reserved keys always win.
+				health
+					.detail
+					.insert("summary".into(), self.summary.clone().into());
+				if let Some(reason) = self.status.reason() {
+					health.detail.insert("reason".into(), reason.into());
+				}
+				health.result = Some(match self.status {
+					CheckStatus::Pass => CheckResult::Passed,
+					CheckStatus::Warning(_) => CheckResult::Warning,
+					CheckStatus::Fail(_) => CheckResult::Failed,
+					CheckStatus::Broken(_) => CheckResult::Broken,
+					CheckStatus::Skip(_) => CheckResult::Skipped,
+				});
+			}
+		}
 		health
 	}
 
-	/// Build the per-check entry for the canopy `health[]` array.
+	/// The per-check entry for the canopy `health[]` array, as JSON, so tests
+	/// can read the wire form by key.
+	#[cfg(test)]
 	pub fn to_wire(&self) -> Value {
-		let mut obj = Map::new();
-		obj.insert("check".into(), self.name.into());
-		obj.insert("result".into(), self.status.wire_result().into());
-		for (k, v) in &self.details {
-			obj.insert(k.clone(), v.clone());
+		serde_json::to_value(self.to_health_check())
+			.expect("a health check is plain strings, maps and enums, which always serialise")
+	}
+
+	/// Read a check back from the wire entry a daemon pushed, so a payload held
+	/// by one process can be rendered by another.
+	///
+	/// `name` is the registry's slot for the entry's name. The summary and
+	/// reason are read from `detail`, falling back to the flat fields an older
+	/// daemon sent beside the name. The check's own details are not
+	/// reconstructed; an instance's are. `None` for an entry with neither a
+	/// result nor instances.
+	pub fn from_wire(name: &'static str, entry: &HealthCheck) -> Option<Self> {
+		let text = |key: &str| {
+			entry
+				.detail
+				.get(key)
+				.or_else(|| entry.extra.get(key))
+				.and_then(Value::as_str)
+				.unwrap_or_default()
+				.to_string()
+		};
+
+		if let Some(instances) = &entry.instances {
+			let mut instances: Vec<Instance> = instances
+				.iter()
+				.map(|(key, instance)| Instance::from_wire(key, instance))
+				.collect();
+			instances.sort_by(|a, b| a.key.cmp(&b.key));
+			return Some(Self::instanced_summarised(name, instances));
 		}
-		// Carry the human summary and (for non-pass) the reason so an operator can
-		// see *why* a check warned/failed from canopy, without shelling into the
-		// box. Inserted after the details so the reserved keys always win.
-		obj.insert("summary".into(), self.summary.clone().into());
-		if let Some(reason) = self.status.reason() {
-			obj.insert("reason".into(), reason.into());
-		}
-		Value::Object(obj)
+
+		let status = match entry.result.as_ref()? {
+			CheckResult::Passed => CheckStatus::Pass,
+			CheckResult::Skipped => CheckStatus::Skip(text("reason")),
+			CheckResult::Warning => CheckStatus::Warning(text("reason")),
+			CheckResult::Failed => CheckStatus::Fail(text("reason")),
+			CheckResult::Broken => CheckStatus::Broken(text("reason")),
+		};
+		Some(Self::new(name, status, text("summary")))
 	}
 
 	/// Encode this Check for streaming over the daemon's task endpoint.
@@ -267,13 +610,7 @@ impl Check {
 	/// full `CheckStatus` enum so consumers can render the same colours and
 	/// reason lines as a local sweep.
 	pub fn to_streaming_json(&self) -> Value {
-		let (status, reason) = match &self.status {
-			CheckStatus::Pass => ("pass", None),
-			CheckStatus::Skip(r) => ("skip", Some(r.as_str())),
-			CheckStatus::Warning(r) => ("warning", Some(r.as_str())),
-			CheckStatus::Fail(r) => ("fail", Some(r.as_str())),
-			CheckStatus::Broken(r) => ("broken", Some(r.as_str())),
-		};
+		let (status, reason) = status_parts(&self.status);
 		let mut obj = json!({
 			"name": self.name,
 			"status": status,
@@ -282,6 +619,9 @@ impl Check {
 		});
 		if let Some(r) = reason {
 			obj["reason"] = Value::String(r.to_string());
+		}
+		if let Some(instances) = &self.instances {
+			obj["instances"] = instances.iter().map(Instance::to_streaming_json).collect();
 		}
 		obj
 	}
@@ -303,27 +643,26 @@ impl Check {
 			.get("reason")
 			.and_then(Value::as_str)
 			.map(str::to_string);
-		let status = match (status_str, reason) {
-			("pass", _) => CheckStatus::Pass,
-			("skip", Some(r)) => CheckStatus::Skip(r),
-			("warning", Some(r)) => CheckStatus::Warning(r),
-			("fail", Some(r)) => CheckStatus::Fail(r),
-			("broken", Some(r)) => CheckStatus::Broken(r),
-			_ => return None,
-		};
+		let status = status_from_parts(status_str, reason)?;
 		let summary = value.get("summary")?.as_str()?.to_string();
 		let details = value
 			.get("details")
 			.and_then(Value::as_object)
 			.cloned()
 			.unwrap_or_default();
+		let instances = match value.get("instances") {
+			Some(Value::Array(items)) => Some(
+				items
+					.iter()
+					.map(Instance::from_streaming_json)
+					.collect::<Option<Vec<_>>>()?,
+			),
+			_ => None,
+		};
 		Some(Self {
-			name,
-			status,
-			summary,
 			details,
-			payload_extras: Map::new(),
-			stats: Vec::new(),
+			instances,
+			..Self::new(name, status, summary)
 		})
 	}
 }
@@ -521,10 +860,10 @@ mod tests {
 		let v = c.to_wire();
 		assert_eq!(v["check"], "db_connect");
 		assert_eq!(v["result"], "passed");
-		assert_eq!(v["latency_ms"], 3);
-		assert_eq!(v["summary"], "ok");
+		assert_eq!(v["detail"]["latency_ms"], 3);
+		assert_eq!(v["detail"]["summary"], "ok");
 		// A pass carries no reason.
-		assert!(v.get("reason").is_none());
+		assert!(v["detail"].get("reason").is_none());
 	}
 
 	#[test]
@@ -533,16 +872,16 @@ mod tests {
 		let v = warn.to_wire();
 		assert_eq!(v["result"], "warning");
 		// The reason and summary travel to canopy so the *why* is visible off-box.
-		assert_eq!(v["summary"], "20% used");
-		assert_eq!(v["reason"], "below threshold");
+		assert_eq!(v["detail"]["summary"], "20% used");
+		assert_eq!(v["detail"]["reason"], "below threshold");
 		let fail = Check::fail("disk_free", "1% free", "out of space");
 		assert_eq!(fail.to_wire()["result"], "failed");
-		assert_eq!(fail.to_wire()["reason"], "out of space");
+		assert_eq!(fail.to_wire()["detail"]["reason"], "out of space");
 		let broken = Check::broken("x", "query broken", "no such column");
 		assert_eq!(broken.to_wire()["result"], "broken");
 		let skip = Check::skip("x", "n/a", "central-only");
 		assert_eq!(skip.to_wire()["result"], "skipped");
-		assert_eq!(skip.to_wire()["reason"], "central-only");
+		assert_eq!(skip.to_wire()["detail"]["reason"], "central-only");
 	}
 
 	#[test]
@@ -603,5 +942,242 @@ mod tests {
 		assert_eq!(v["reason"], "no such column");
 		let back = Check::from_streaming_json(&v, |_| Some("x")).unwrap();
 		assert!(matches!(back.status, CheckStatus::Broken(r) if r == "no such column"));
+	}
+
+	#[test]
+	fn a_plain_check_carries_its_fields_in_detail() {
+		let wire = Check::fail("x", "2 stale", "stale")
+			.with_detail("threshold", 30)
+			.to_wire();
+		assert_eq!(wire["check"], "x");
+		assert_eq!(wire["result"], "failed");
+		assert_eq!(wire["detail"]["threshold"], 30);
+		assert_eq!(wire["detail"]["summary"], "2 stale");
+		assert_eq!(wire["detail"]["reason"], "stale");
+		// Nothing beside the name and result: canopy refuses a check carrying
+		// fields both ways.
+		let keys: Vec<_> = wire.as_object().unwrap().keys().cloned().collect();
+		assert!(
+			keys.iter()
+				.all(|k| ["check", "result", "detail"].contains(&k.as_str())),
+			"unexpected flat fields: {keys:?}"
+		);
+	}
+
+	#[test]
+	fn an_instanced_check_sends_instances_and_no_result_summary_or_reason() {
+		let wire = Check::instanced(
+			"x",
+			"local headline",
+			vec![
+				Instance::pass("a").with_label("Alpha"),
+				Instance::fail("b", "too old").with_detail("minutes", 41),
+				Instance::skip("c", "disabled"),
+			],
+		)
+		.with_detail("warn_minutes", 10)
+		.to_wire();
+
+		assert!(wire.get("result").is_none());
+		assert_eq!(wire["detail"]["warn_minutes"], 10);
+		assert!(wire["detail"].get("summary").is_none());
+		assert!(wire["detail"].get("reason").is_none());
+		let keys: Vec<_> = wire.as_object().unwrap().keys().cloned().collect();
+		assert!(
+			keys.iter()
+				.all(|k| ["check", "detail", "instances"].contains(&k.as_str())),
+			"unexpected flat fields: {keys:?}"
+		);
+
+		let instances = &wire["instances"];
+		assert_eq!(instances["a"]["result"], "passed");
+		assert_eq!(instances["a"]["label"], "Alpha");
+		assert_eq!(instances["b"]["result"], "failed");
+		assert_eq!(instances["b"]["detail"]["minutes"], 41);
+		assert_eq!(instances["b"]["detail"]["reason"], "too old");
+		assert_eq!(instances["c"]["result"], "skipped");
+	}
+
+	#[test]
+	fn an_empty_instance_set_is_sent_as_an_empty_object() {
+		let wire = Check::instanced("x", "nothing to grade", Vec::new()).to_wire();
+		assert_eq!(wire["instances"], json!({}));
+		assert!(wire.get("result").is_none());
+	}
+
+	#[test]
+	fn a_broken_check_sends_no_instances() {
+		let mut check = Check::instanced("x", "s", vec![Instance::pass("a")]);
+		check.status = CheckStatus::Broken("query failed".into());
+		let wire = check.to_wire();
+		assert_eq!(wire["result"], "broken");
+		assert!(wire.get("instances").is_none());
+
+		let wire = Check::broken("x", "s", "r").to_wire();
+		assert_eq!(wire["result"], "broken");
+		assert!(wire.get("instances").is_none());
+	}
+
+	#[test]
+	fn no_instance_is_ever_sent_as_broken() {
+		let mut instance = Instance::pass("a");
+		instance.status = CheckStatus::Broken("oops".into());
+		let wire = Check::instanced("x", "s", vec![instance]).to_wire();
+		assert_eq!(wire["instances"]["a"]["result"], "warning");
+	}
+
+	#[test]
+	fn an_empty_instance_key_does_not_reach_the_wire_empty() {
+		let wire = Check::instanced("x", "s", vec![Instance::pass("")]).to_wire();
+		assert!(wire["instances"].get("").is_none());
+		assert_eq!(wire["instances"]["(unnamed)"]["result"], "passed");
+	}
+
+	#[test]
+	fn instances_sharing_a_key_keep_the_worst_whatever_the_order() {
+		for instances in [
+			vec![Instance::fail("a", "bad"), Instance::pass("a")],
+			vec![Instance::pass("a"), Instance::fail("a", "bad")],
+		] {
+			let wire = Check::instanced("x", "s", instances).to_wire();
+			assert_eq!(wire["instances"].as_object().unwrap().len(), 1);
+			assert_eq!(wire["instances"]["a"]["result"], "failed");
+		}
+	}
+
+	#[test]
+	fn keys_and_labels_are_kept_within_what_canopy_takes() {
+		let long = "x".repeat(MAX_INSTANCE_NAMING_CHARS + 50);
+		let wire = Check::instanced(
+			"x",
+			"s",
+			vec![Instance::fail(long.as_str(), "bad").with_label(long.as_str())],
+		)
+		.to_wire();
+		let (key, instance) = wire["instances"]
+			.as_object()
+			.unwrap()
+			.iter()
+			.next()
+			.unwrap();
+		assert_eq!(key.chars().count(), MAX_INSTANCE_NAMING_CHARS);
+		assert_eq!(
+			instance["label"].as_str().unwrap().chars().count(),
+			MAX_INSTANCE_NAMING_CHARS
+		);
+	}
+
+	#[test]
+	fn past_the_instance_limit_the_most_urgent_are_kept() {
+		let mut instances: Vec<Instance> = (0..MAX_INSTANCES + 5)
+			.map(|i| Instance::pass(format!("ok-{i}")))
+			.collect();
+		instances.push(Instance::fail("bad", "late"));
+		let wire = Check::instanced("x", "s", instances).to_wire();
+		let kept = wire["instances"].as_object().unwrap();
+		assert_eq!(kept.len(), MAX_INSTANCES);
+		assert_eq!(kept["bad"]["result"], "failed");
+	}
+
+	#[test]
+	fn an_instanced_check_takes_the_status_of_its_most_urgent_instance() {
+		let status = |instances| Check::instanced("x", "s", instances).status;
+
+		assert!(matches!(status(Vec::new()), CheckStatus::Pass));
+		assert!(matches!(
+			status(vec![Instance::pass("a")]),
+			CheckStatus::Pass
+		));
+		assert!(matches!(
+			status(vec![Instance::pass("a"), Instance::warning("b", "w")]),
+			CheckStatus::Warning(_)
+		));
+		assert!(matches!(
+			status(vec![Instance::warning("a", "w"), Instance::fail("b", "f")]),
+			CheckStatus::Fail(_)
+		));
+	}
+
+	#[test]
+	fn skipped_instances_do_not_count_and_all_skipped_is_skipped() {
+		let status = |instances| Check::instanced("x", "s", instances).status;
+
+		assert!(matches!(
+			status(vec![Instance::skip("a", "off"), Instance::pass("b")]),
+			CheckStatus::Pass
+		));
+		assert!(matches!(
+			status(vec![Instance::skip("a", "off"), Instance::skip("b", "off")]),
+			CheckStatus::Skip(_)
+		));
+	}
+
+	#[test]
+	fn the_derived_reason_names_the_degraded_instances() {
+		let check = Check::instanced(
+			"x",
+			"s",
+			vec![
+				Instance::fail("dev-1", "41m").with_label("Apia"),
+				Instance::fail("dev-2", "35m"),
+				Instance::warning("dev-3", "12m"),
+				Instance::pass("dev-4"),
+			],
+		);
+		let CheckStatus::Fail(reason) = check.status else {
+			panic!("expected a failure");
+		};
+		assert_eq!(reason, "Apia: 41m; dev-2: 35m");
+	}
+
+	#[test]
+	fn instances_round_trip_through_streaming_json() {
+		let check = Check::instanced(
+			"x",
+			"s",
+			vec![
+				Instance::fail("a", "late")
+					.with_label("A")
+					.with_detail("n", 1),
+				Instance::pass("b"),
+			],
+		);
+		let back = Check::from_streaming_json(&check.to_streaming_json(), |_| Some("x")).unwrap();
+		let instances = back.instances.expect("instances survive the stream");
+		assert_eq!(instances.len(), 2);
+		assert_eq!(instances[0].key, "a");
+		assert_eq!(instances[0].label.as_deref(), Some("A"));
+		assert_eq!(instances[0].detail["n"], 1);
+		assert!(matches!(&instances[0].status, CheckStatus::Fail(r) if r == "late"));
+		assert!(matches!(back.status, CheckStatus::Fail(_)));
+	}
+
+	#[test]
+	fn a_wire_entry_reads_back_to_a_check() {
+		let plain = Check::warning("x", "headline", "why").to_health_check();
+		let back = Check::from_wire("x", &plain).unwrap();
+		assert_eq!(back.summary, "headline");
+		assert!(matches!(back.status, CheckStatus::Warning(r) if r == "why"));
+
+		let instanced = Check::instanced(
+			"x",
+			"s",
+			vec![Instance::fail("a", "late"), Instance::pass("b")],
+		)
+		.to_health_check();
+		let back = Check::from_wire("x", &instanced).unwrap();
+		assert!(matches!(back.status, CheckStatus::Fail(_)));
+		assert_eq!(back.instances.unwrap().len(), 2);
+	}
+
+	#[test]
+	fn a_flat_entry_from_an_older_daemon_still_reads() {
+		let mut flat = HealthCheck::builder().check("x".into()).build();
+		flat.result = Some(CheckResult::Failed);
+		flat.extra.insert("summary".into(), "old".into());
+		flat.extra.insert("reason".into(), "flat".into());
+		let back = Check::from_wire("x", &flat).unwrap();
+		assert_eq!(back.summary, "old");
+		assert!(matches!(back.status, CheckStatus::Fail(r) if r == "flat"));
 	}
 }

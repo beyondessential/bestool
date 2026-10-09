@@ -70,7 +70,7 @@ pub struct DaemonConfig {
 	/// the canopy names task is registered. Feeds the certificate endpoint Caddy
 	/// asks during a handshake.
 	///
-	/// spec: TLSD
+	/// spec: TLS#serving-certificates-to-caddy
 	pub certificates: Option<Arc<certificates::CertificateState>>,
 }
 

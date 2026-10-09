@@ -18,7 +18,7 @@
 //! credential is withdrawn.
 //!
 //! spec: TLS
-//! spec: TLSD
+//! spec: TLS#serving-certificates-to-caddy
 
 use std::{
 	collections::{BTreeMap, BTreeSet},
@@ -393,7 +393,7 @@ impl CertificateState {
 	/// has been revoked or has expired. Every one of those hands the handshake
 	/// back to Caddy, which issues for the name itself.
 	///
-	/// spec: TLSD#declining-and-failing
+	/// spec: TLS#declining-and-failing
 	pub async fn serve(&self, name: &str) -> Option<(String, String)> {
 		let name = name.trim_end_matches('.').to_ascii_lowercase();
 
@@ -1766,7 +1766,7 @@ mod tests {
 	/// name back to Caddy's own issuance — rather than an expired certificate
 	/// served forever because collection stopped.
 	///
-	/// spec: TLSD#declining-and-failing
+	/// spec: TLS#declining-and-failing
 	#[tokio::test]
 	async fn a_chain_that_has_expired_since_it_was_collected_is_declined() {
 		let (_dir, state) = state();

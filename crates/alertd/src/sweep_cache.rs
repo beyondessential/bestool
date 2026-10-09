@@ -38,7 +38,7 @@ use crate::{
 
 /// What Canopy last refused each DNS name for, as the daemon recorded it.
 ///
-/// spec: CHK-CCO#which-dns-names-it-grades
+/// spec: TLS#which-dns-names-the-collection-check-grades
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RefusalRecord {
 	/// Keyed by DNS name, lower-cased.
@@ -211,7 +211,7 @@ impl SweepCache {
 	/// daemon: the record decides which DNS names go ungraded, and anything
 	/// holding the daemon's port could answer for it.
 	///
-	/// spec: CHK-CCO#which-dns-names-it-grades
+	/// spec: TLS#which-dns-names-the-collection-check-grades
 	pub async fn refusals(&self) -> Result<Arc<RefusalRecord>, String> {
 		self.refusals
 			.get_or_init(|| async {

@@ -20,7 +20,7 @@
 //! platform, which is the safe direction: a refusal is a misconfiguration to
 //! correct, not a silent grant.
 //!
-//! spec: TLSD#who-may-fetch-a-certificate
+//! spec: TLS#who-may-fetch-a-certificate
 
 use std::net::SocketAddr;
 

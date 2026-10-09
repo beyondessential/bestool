@@ -67,6 +67,7 @@ The check only applies to a central server whose FHIR materialisation worker is 
 - It skips when the FHIR worker is not enabled for the deployment, because then no upstream record is expected to be materialised and every resource would report a total gap.
 - It skips when the deployment has no materialised resources at all, as on a version predating the `fhir` schema.
 - It skips when no resource has materialisation enabled, because then nothing is expected to materialise and there is no gap to measure.
+  The resources that are disabled, or whose upstream table does not exist, are still reported as skipped instances.
 - It skips when the database cannot be reached, so that a database outage remains something the daemon can alert on rather than something that stops it.
 
 A skip carries a reason naming which precondition was not met.
@@ -120,6 +121,23 @@ For a central server with the FHIR worker enabled and at least one resource enab
 - [ ] The check passes when no enabled resource has crossed a threshold of its own pace.
 - [ ] A non-passing grade names the resource that drove it and the threshold that resource crossed.
   Where more than one resource has crossed a threshold, the most severe grade is named, and between equal grades the resource furthest past its own threshold in proportion to it.
+
+## Reporting
+
+The check reports one instance per resource, keyed by the resource name, as described in [CHK](healthchecks.md).
+A resource is graded and silenced by itself, so a resource known to be behind does not hide the others.
+
+- A measured resource is passed, warning or failed by the thresholds of its own pace.
+  Its detail carries its gap, the age of its oldest gap in seconds, which enablement source answered, its pace, and the ages at which it warns and fails.
+- A resource whose materialisation is disabled, and one whose upstream table does not exist on the deployment's version, are skipped instances.
+  The detail says which, and for a disabled resource which enablement source answered.
+- A resource that could not be measured is a warning instance, with the error in its detail.
+  It is never broken, since one unreadable resource is not the whole check failing to run.
+- Materialised resources the check has no relationship for are reported together as one warning instance keyed `unmonitored`, whose detail lists their table names.
+  It reports only while there are any.
+
+The check's own status is that of its most urgent instance that is not skipped.
+The check's headline and reason stay local, and are not sent to Canopy, which writes its own message from the instances.
 
 ## Retirement
 

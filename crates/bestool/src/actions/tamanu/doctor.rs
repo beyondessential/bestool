@@ -5,7 +5,7 @@ use std::{
 	time::Duration,
 };
 
-use bestool_canopy::schema::{CheckResult, CheckSeverity, HealthCheck, StatusPayload};
+use bestool_canopy::schema::{CheckSeverity, HealthCheck, StatusPayload};
 use clap::Parser;
 use futures::FutureExt as _;
 use miette::{IntoDiagnostic, Result, WrapErr, miette};
@@ -15,7 +15,7 @@ use tracing::{debug, warn};
 
 use bestool_alertd::{
 	SweepResult, SweepTargets,
-	check::{Check, CheckOutcome, CheckStatus, OverallResult},
+	check::{Check, CheckOutcome, OverallResult},
 	checks, overall_from_payload, perform_sweep,
 	progress::ProgressSender,
 	resolve_sweep_targets,
@@ -564,34 +564,12 @@ fn results_from_wire(payload: &StatusPayload) -> Vec<CheckOutcome> {
 			let Some(name) = names.get(entry.check.as_str()).copied() else {
 				continue;
 			};
-			let Some(result) = entry.result.as_ref() else {
+			let Some(check) = Check::from_wire(name, entry) else {
 				continue;
-			};
-			let text = |key: &str| {
-				entry
-					.extra
-					.get(key)
-					.and_then(Value::as_str)
-					.unwrap_or_default()
-					.to_string()
-			};
-			let status = match result {
-				CheckResult::Passed => CheckStatus::Pass,
-				CheckResult::Skipped => CheckStatus::Skip(text("reason")),
-				CheckResult::Warning => CheckStatus::Warning(text("reason")),
-				CheckResult::Failed => CheckStatus::Fail(text("reason")),
-				CheckResult::Broken => CheckStatus::Broken(text("reason")),
 			};
 			results.push(CheckOutcome {
 				subject: subject.clone(),
-				check: Check {
-					name,
-					status,
-					summary: text("summary"),
-					details: serde_json::Map::new(),
-					payload_extras: serde_json::Map::new(),
-					stats: Vec::new(),
-				},
+				check,
 				on_wire: true,
 			});
 		}
@@ -708,6 +686,8 @@ fn emit_output(
 
 #[cfg(test)]
 mod tests {
+	use bestool_alertd::check::CheckStatus;
+
 	use super::*;
 
 	#[test]

@@ -16,7 +16,7 @@
 //! request, so the handler reaches no network, opens no key store and reads no
 //! file.
 //!
-//! spec: TLSD
+//! spec: TLS#serving-certificates-to-caddy
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 

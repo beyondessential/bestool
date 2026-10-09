@@ -10,12 +10,11 @@
 //!
 //! Linux-only: reads `df -P -i -T`. Skips elsewhere or when `df` is unavailable.
 
-use serde_json::{Value, json};
 use tokio::process::Command;
 
 use super::MachineCx;
 use crate::Stat;
-use crate::check::Check;
+use crate::check::{Check, Instance};
 
 const NAME: &str = "inodes";
 
@@ -62,22 +61,27 @@ pub async fn run(_ctx: MachineCx) -> Check {
 		);
 	}
 
+	grade(&filesystems)
+}
+
+/// One instance per filesystem, keyed by its mount point, each graded on its own
+/// inode use. The headline names the fullest.
+fn grade(filesystems: &[FsInodes]) -> Check {
 	let mut worst_pct = 0.0_f64;
 	let mut worst: Option<String> = None;
-	let mut details = Vec::new();
+	let mut instances = Vec::new();
 	let mut stats = Vec::new();
-	for fs in &filesystems {
+	for fs in filesystems {
 		let pct = fs.pct_used();
+		let described = format!(
+			"{pct:.0}% inodes used ({} of {} free) on {}",
+			fs.total - fs.used,
+			fs.total,
+			fs.fstype,
+		);
 		if pct > worst_pct {
 			worst_pct = pct;
-			worst = Some(format!(
-				"{} {:.0}% inodes used ({} of {} free) on {}",
-				fs.mount,
-				pct,
-				fs.total - fs.used,
-				fs.total,
-				fs.fstype,
-			));
+			worst = Some(format!("{} {described}", fs.mount));
 		}
 		stats.push(
 			Stat::gauge("percent_used", pct.round())
@@ -89,26 +93,25 @@ pub async fn run(_ctx: MachineCx) -> Check {
 				.label("mount", fs.mount.clone())
 				.help("Inodes in use"),
 		);
-		details.push(json!({
-			"mountpoint": fs.mount,
-			"fstype": fs.fstype,
-			"inodes_total": fs.total,
-			"inodes_used": fs.used,
-			"percent_used": pct.round(),
-		}));
+		let instance = if pct >= FAIL_PCT {
+			Instance::fail(&fs.mount, described)
+		} else if pct >= WARN_PCT {
+			Instance::warning(&fs.mount, described)
+		} else {
+			Instance::pass(&fs.mount)
+		};
+		instances.push(
+			instance
+				.with_detail("mountpoint", fs.mount.as_str())
+				.with_detail("fstype", fs.fstype.as_str())
+				.with_detail("inodes_total", fs.total)
+				.with_detail("inodes_used", fs.used)
+				.with_detail("percent_used", pct.round()),
+		);
 	}
 
 	let summary = worst.unwrap_or_else(|| format!("{} filesystem(s) OK", filesystems.len()));
-	let check = if worst_pct >= FAIL_PCT {
-		Check::fail(NAME, summary.clone(), summary)
-	} else if worst_pct >= WARN_PCT {
-		Check::warning(NAME, summary.clone(), summary)
-	} else {
-		Check::pass(NAME, summary)
-	};
-	check
-		.with_detail("filesystems", Value::Array(details))
-		.with_stats(stats)
+	Check::instanced(NAME, summary, instances).with_stats(stats)
 }
 
 struct FsInodes {
@@ -159,6 +162,7 @@ fn parse_df(output: &str) -> Vec<FsInodes> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::check::CheckStatus;
 
 	const DF: &str = "Filesystem     Type     Inodes   IUsed     IFree IUse% Mounted on\n/dev/sda1      ext4    6553600  250000   6303600    4% /\ntmpfs          tmpfs   2048000     120   2047880    1% /run\n/dev/sdb1      btrfs         0       0         0     - /data\n/dev/sdc1      ext4    1310720 1245000     65720   95% /var\nstore          xfs     5000000 4600000    400000   92% /srv/with space\n";
 
@@ -183,6 +187,41 @@ mod tests {
 		let fs = parse_df(DF);
 		let var = fs.iter().find(|f| f.mount == "/var").unwrap();
 		assert!((var.pct_used() - 95.0).abs() < 0.5);
+	}
+
+	#[test]
+	fn each_filesystem_is_graded_as_its_own_instance() {
+		let check = grade(&parse_df(DF));
+		let instances = check.instances.as_ref().expect("instanced");
+		assert_eq!(instances.len(), 4);
+
+		let status = |key: &str| &instances.iter().find(|i| i.key == key).unwrap().status;
+		assert!(matches!(status("/"), CheckStatus::Pass));
+		assert!(matches!(status("/run"), CheckStatus::Pass));
+		// 94.99% and 92% are past the warning line and short of the failing one.
+		assert!(matches!(status("/var"), CheckStatus::Warning(_)));
+		assert!(matches!(status("/srv/with space"), CheckStatus::Warning(_)));
+
+		assert!(matches!(check.status, CheckStatus::Warning(_)));
+		assert!(check.summary.starts_with("/var "), "{}", check.summary);
+		let var = instances.iter().find(|i| i.key == "/var").unwrap();
+		assert_eq!(var.detail["fstype"], "ext4");
+		assert_eq!(var.detail["inodes_used"], 1245000);
+	}
+
+	#[test]
+	fn one_filesystem_past_the_failing_line_fails_the_check() {
+		let mut fs = parse_df(DF);
+		fs[0].used = fs[0].total * 97 / 100;
+		let check = grade(&fs);
+		assert!(matches!(check.status, CheckStatus::Fail(_)));
+		let root = check
+			.instances
+			.unwrap()
+			.into_iter()
+			.find(|i| i.key == "/")
+			.unwrap();
+		assert!(root.status.is_fatal());
 	}
 
 	#[test]

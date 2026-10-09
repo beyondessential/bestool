@@ -372,7 +372,7 @@ pub trait ServiceRuntime: Send + Sync {
 /// canopy-served host while still depending on the DNS credential that issuing
 /// through canopy exists to remove.
 ///
-/// spec: CHK-CCT#certificates-from-canopy
+/// spec: TLS#certificates-from-canopy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CertificateSource {
 	/// Obtained by the front end itself.
