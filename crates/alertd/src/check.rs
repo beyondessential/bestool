@@ -105,6 +105,18 @@ impl CheckStatus {
 	}
 }
 
+/// The most instances Canopy takes from one check; a push with more is refused
+/// whole.
+const MAX_INSTANCES: usize = 1000;
+
+/// The longest an instance's key or label may be, in characters; a push with a
+/// longer one is refused whole.
+const MAX_INSTANCE_NAMING_CHARS: usize = 256;
+
+fn clamp_naming(text: &str) -> String {
+	text.chars().take(MAX_INSTANCE_NAMING_CHARS).collect()
+}
+
 /// One occurrence of the condition an instanced check grades: a device, a
 /// resource, a mount.
 ///
@@ -199,7 +211,7 @@ impl Instance {
 			})
 			.build();
 		instance.detail = self.wire_detail();
-		instance.label = self.label.clone();
+		instance.label = self.label.as_deref().map(clamp_naming);
 		instance
 	}
 
@@ -492,27 +504,35 @@ impl Check {
 			Some(instances) if !matches!(self.status, CheckStatus::Broken(_)) => {
 				let mut wire: HashMap<String, (u8, HealthCheckInstance)> = HashMap::new();
 				for instance in instances {
-					// Canopy refuses an empty key, and with it the whole push, so
-					// a check that produced one is kept visible under a stand-in
-					// rather than taking every other check down with it.
+					// Canopy refuses an empty or overlong key, and with it the whole
+					// push, so a check that produced one is kept visible under a
+					// stand-in rather than taking every other check down with it.
 					let key = if instance.key.is_empty() {
-						"(unnamed)"
+						"(unnamed)".to_string()
 					} else {
-						&instance.key
+						clamp_naming(&instance.key)
 					};
 					// Two occurrences can share a key, such as certificates for
 					// the same names. Canopy takes one, so the worse is the one
 					// kept rather than whichever came last.
 					let rank = instance.status.urgency();
-					match wire.get(key) {
+					match wire.get(&key) {
 						Some((kept, _)) if *kept >= rank => {}
 						_ => {
-							wire.insert(key.to_string(), (rank, instance.to_wire()));
+							wire.insert(key, (rank, instance.to_wire()));
 						}
 					}
 				}
+				// Past the most Canopy takes, the most urgent are the ones kept.
+				let mut kept: Vec<_> = wire.into_iter().collect();
+				if kept.len() > MAX_INSTANCES {
+					kept.sort_by(|(a_key, (a, _)), (b_key, (b, _))| {
+						b.cmp(a).then_with(|| a_key.cmp(b_key))
+					});
+					kept.truncate(MAX_INSTANCES);
+				}
 				health.instances = Some(
-					wire.into_iter()
+					kept.into_iter()
 						.map(|(key, (_, instance))| (key, instance))
 						.collect(),
 				);
@@ -1023,6 +1043,40 @@ mod tests {
 			assert_eq!(wire["instances"].as_object().unwrap().len(), 1);
 			assert_eq!(wire["instances"]["a"]["result"], "failed");
 		}
+	}
+
+	#[test]
+	fn keys_and_labels_are_kept_within_what_canopy_takes() {
+		let long = "x".repeat(MAX_INSTANCE_NAMING_CHARS + 50);
+		let wire = Check::instanced(
+			"x",
+			"s",
+			vec![Instance::fail(long.as_str(), "bad").with_label(long.as_str())],
+		)
+		.to_wire();
+		let (key, instance) = wire["instances"]
+			.as_object()
+			.unwrap()
+			.iter()
+			.next()
+			.unwrap();
+		assert_eq!(key.chars().count(), MAX_INSTANCE_NAMING_CHARS);
+		assert_eq!(
+			instance["label"].as_str().unwrap().chars().count(),
+			MAX_INSTANCE_NAMING_CHARS
+		);
+	}
+
+	#[test]
+	fn past_the_instance_limit_the_most_urgent_are_kept() {
+		let mut instances: Vec<Instance> = (0..MAX_INSTANCES + 5)
+			.map(|i| Instance::pass(format!("ok-{i}")))
+			.collect();
+		instances.push(Instance::fail("bad", "late"));
+		let wire = Check::instanced("x", "s", instances).to_wire();
+		let kept = wire["instances"].as_object().unwrap();
+		assert_eq!(kept.len(), MAX_INSTANCES);
+		assert_eq!(kept["bad"]["result"], "failed");
 	}
 
 	#[test]
