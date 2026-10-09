@@ -15,9 +15,7 @@
 //! come and go, so their errors are one instance between them, keyed `mobile`.
 //! A session naming no device is not an instance, though it still counts toward
 //! the published total. An instance warns on any error and fails at three or more
-//! in the window. The check as a whole also fails at ten or more errors in the
-//! window across every device, so many devices each erroring a little is not
-//! graded as less than their sum.
+//! in the window.
 //!
 //! The facility list is read as the `facilityIds` array rather than expanded into
 //! a row per facility: a set-returning function in the target list cross-joins,
@@ -30,15 +28,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::TamanuCx;
 use crate::Stat;
-use crate::check::{Check, CheckStatus, Instance};
+use crate::check::{Check, Instance};
 
 const NAME: &str = "sync_session_errors";
 
 /// Errors in the window at which one instance fails.
 const FAIL_ERRORS: i64 = 3;
-
-/// Errors in the window, across every device, at which the check fails.
-const FAIL_TOTAL: i64 = 10;
 
 /// Key of the instance holding every mobile device's errors.
 const MOBILE_KEY: &str = "mobile";
@@ -241,21 +236,7 @@ fn grade(mobile: &[Errored], server: &[Errored]) -> Check {
 		count(mobile),
 		count(server)
 	);
-	let mut check = Check::instanced(NAME, summary, instances);
-	let errors = groups_total(mobile) + groups_total(server);
-	if errors >= FAIL_TOTAL && !check.status.is_fatal() {
-		// Local only: Canopy refuses a result beside instances and grades the
-		// check from its instances, and a payload read back is graded the same
-		// way. A live sweep, the heal trigger and the severity ceiling see it.
-		check.status = CheckStatus::Fail(format!(
-			"{errors} sync session errors in the last minute across every device"
-		));
-	}
-	check
-}
-
-fn groups_total(groups: &[Errored]) -> i64 {
-	groups.iter().map(|g| g.count).sum()
+	Check::instanced(NAME, summary, instances)
 }
 
 #[cfg(test)]
@@ -329,28 +310,6 @@ mod tests {
 		};
 		assert!(matches!(status(2), CheckStatus::Warning(_)));
 		assert!(matches!(status(3), CheckStatus::Fail(_)));
-	}
-
-	#[test]
-	fn many_devices_each_erroring_a_little_fail_the_check_at_ten_in_all() {
-		let devices = |n: i64| -> Vec<Errored> {
-			(0..n)
-				.map(|i| errored(Some(&format!("dev-{i}")), 2))
-				.collect()
-		};
-		let check = grade(&[], &devices(4));
-		assert!(matches!(check.status, CheckStatus::Warning(_)));
-
-		let check = grade(&[], &devices(5));
-		assert!(matches!(&check.status, CheckStatus::Fail(r) if r.starts_with("10 sync session")));
-		// The instances themselves are still only warnings.
-		assert!(
-			check
-				.instances
-				.unwrap()
-				.iter()
-				.all(|i| matches!(i.status, CheckStatus::Warning(_)))
-		);
 	}
 
 	#[test]
