@@ -4,7 +4,7 @@ description: "Workshop this idea with me"
 label: "Workshop this"
 category: spec
 surface: both
-workhorse-version: 0.4.0
+workhorse-version: 0.5.0
 ---
 
 ## Your task: Workshop ideas

@@ -3,7 +3,7 @@ name: mock-this-up
 description: "Produce an HTML mockup for the UI being discussed"
 label: "Mock this up"
 category: design
-workhorse-version: 0.4.0
+workhorse-version: 0.5.0
 ---
 
 ## Your task: Mock this up
