@@ -427,6 +427,8 @@ async fn restore(backup_type: &str, backups_dir: &Path, hold_id: &str) -> Result
 			target: None,
 			clobber: true,
 			no_followers: true,
+			as_copy: false,
+			replacing_source: false,
 			config: None,
 			backups_dir: Some(backups_dir.to_path_buf()),
 		},

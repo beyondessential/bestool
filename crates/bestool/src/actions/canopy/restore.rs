@@ -36,10 +36,10 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::backup::{
-	base_url_of, build_client, config, connect_repo, hold, load_registration, method::RestoreOpts,
-	progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy,
-	transient_config_dir,
-	trim_error,
+	base_url_of, build_client, config, connect_repo, hold, load_registration,
+	method::{Method, RestoreOpts},
+	progress::ProgressReporter,
+	run_kopia, run_kopia_visible, spawn_proxy, transient_config_dir, trim_error,
 };
 use crate::actions::Context;
 
@@ -98,6 +98,23 @@ pub struct RestoreArgs {
 	/// content the restored data references.
 	#[arg(long)]
 	pub no_followers: bool,
+
+	/// Restore another server's backup as a copy of it, not a replacement.
+	///
+	/// The source's secret key is not restored. Without it the copy cannot read
+	/// the source's credentials or device key, so it cannot sync or report as the
+	/// server it came from; Tamanu refuses to start on it until its
+	/// `forget_server_identity()` has been run.
+	#[arg(long, conflicts_with_all = ["replacing_source", "from_hold"])]
+	pub as_copy: bool,
+
+	/// Restore another server's backup to take over from it, identity included.
+	///
+	/// One of this or `--as-copy` is required when the snapshot was taken by a
+	/// different server: this host either replaces the source or must not pass
+	/// itself off as it.
+	#[arg(long, conflicts_with = "from_hold")]
+	pub replacing_source: bool,
 
 	/// Override the registration directory.
 	#[arg(long, value_name = "DIR")]
@@ -192,14 +209,33 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		taken = ?snapshot.end_time.or(snapshot.start_time),
 		"restoring snapshot",
 	);
+	let as_copy = restoring_as_copy(&args, &snapshot.source.host, &server_id)?;
+	if as_copy && matches!(def.method, Method::TamanuSecretKey(_)) {
+		bail!(
+			"'{}' is the source server's secret key, which a copy must not take",
+			args.backup_type
+		);
+	}
 
 	// Plan the whole cycle before touching any data: every follower def must
 	// have a pairable snapshot, or the restore refuses here.
-	let followed = if args.no_followers {
+	let mut followed = if args.no_followers {
 		Vec::new()
 	} else {
 		plan_followers(&dir, &args.backup_type, snapshot, &snapshots).await?
 	};
+	if as_copy {
+		followed.retain(|(follower_def, _)| {
+			let is_key = matches!(follower_def.method, Method::TamanuSecretKey(_));
+			if is_key {
+				info!(
+					backup_type = %follower_def.r#type,
+					"not restoring the source server's secret key into a copy",
+				);
+			}
+			!is_key
+		});
+	}
 	let follower_types: Vec<&str> = followed
 		.iter()
 		.map(|(follower_def, _)| follower_def.r#type.as_str())
@@ -271,6 +307,22 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 		})?;
 	}
 	Ok(())
+}
+
+/// Whether this restore is a copy of another server rather than this server's
+/// own data or its replacement. A snapshot this server took needs no answer; one
+/// from another server does, because only the operator knows which it is.
+///
+/// spec: BAK#restore-as-a-copy
+fn restoring_as_copy(args: &RestoreArgs, snapshot_host: &str, server_id: &str) -> Result<bool> {
+	if snapshot_host == server_id || args.as_copy || args.replacing_source {
+		return Ok(args.as_copy);
+	}
+	bail!(
+		"snapshot was taken by server {snapshot_host}, not this one; pass --replacing-source if \
+		 this host takes over from it (its identity and secret key come with the data), or \
+		 --as-copy to restore the data without them so this host cannot sync or report as it"
+	)
 }
 
 /// Restore one follower snapshot: its own credentials, run id, and report,
@@ -855,6 +907,46 @@ mod tests {
 		let snaps: Vec<Snapshot> = vec![];
 		let err = select_snapshot(&snaps, "abc").unwrap_err().to_string();
 		assert!(err.contains("no snapshots"));
+	}
+
+	fn restore_args(flags: &[&str]) -> RestoreArgs {
+		RestoreArgs::parse_from(["restore", "tamanu-postgres", "abc"].iter().chain(flags))
+	}
+
+	#[test]
+	fn own_snapshot_needs_no_answer() {
+		assert!(!restoring_as_copy(&restore_args(&[]), "srv", "srv").unwrap());
+	}
+
+	#[test]
+	fn another_servers_snapshot_needs_an_answer() {
+		let err = restoring_as_copy(&restore_args(&[]), "other", "srv")
+			.unwrap_err()
+			.to_string();
+		assert!(err.contains("--replacing-source"), "got: {err}");
+		assert!(err.contains("--as-copy"), "got: {err}");
+	}
+
+	#[test]
+	fn another_servers_snapshot_restores_as_answered() {
+		assert!(restoring_as_copy(&restore_args(&["--as-copy"]), "other", "srv").unwrap());
+		assert!(
+			!restoring_as_copy(&restore_args(&["--replacing-source"]), "other", "srv").unwrap()
+		);
+	}
+
+	#[test]
+	fn copy_and_replacement_are_exclusive() {
+		assert!(
+			RestoreArgs::try_parse_from([
+				"restore",
+				"tamanu-postgres",
+				"abc",
+				"--as-copy",
+				"--replacing-source"
+			])
+			.is_err()
+		);
 	}
 
 

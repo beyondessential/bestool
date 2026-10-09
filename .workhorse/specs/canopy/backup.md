@@ -329,6 +329,19 @@ Migrations, configuration sync, and version upgrades are left to the operator.
 
 Off-host restore verification is Canopy's concern, not this command's; this command's job is to produce clean backups and to restore them on demand.
 
+### Restore as a copy
+
+A snapshot taken by another server is restored either as that server's replacement or as a copy of it, and the operator says which: `--replacing-source` or `--as-copy`.
+With neither, a repository restore of another server's snapshot refuses before anything is downloaded.
+A snapshot this server took needs neither.
+A replacement restores as described above, followers included, so the source's secret key comes back with its database.
+A copy never restores a `tamanu_secret_key` definition: such a follower is left out of the plan, and naming one as the type to restore is refused.
+Restoring from a hold is always this server's own data, so neither flag applies to it.
+
+> [!NOTE]
+> The secret key is what lets a Tamanu database act as the server it came from: without it, the copy cannot read the sync credentials or device key it holds.
+> A copy restored onto a different host with the key would sync and report as the source.
+
 ## Ad-hoc repository access
 
 `bestool canopy kopia --type <type> [--purpose backup|restore] -- <args>` runs an arbitrary kopia command against the repository, for inspection and maintenance without hand-wiring credentials.
