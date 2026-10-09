@@ -1252,14 +1252,19 @@ pub fn overall_from_payload(payload: &StatusPayload) -> OverallResult {
 	// One walk, matching the typed result rather than formatting it: the payload
 	// was previously traversed twice and a string allocated per check just to
 	// compare against a literal.
+	//
+	// An instanced check carries no result of its own, so its instances' are
+	// read in its place.
 	let mut failing = false;
 	let mut degraded = false;
-	for result in payload
-		.health
-		.iter()
-		.chain(per_target)
-		.filter_map(|c| c.result.as_ref())
-	{
+	for result in payload.health.iter().chain(per_target).flat_map(|c| {
+		c.result.iter().chain(
+			c.instances
+				.iter()
+				.flat_map(|instances| instances.values())
+				.map(|instance| &instance.result),
+		)
+	}) {
 		match result {
 			CheckResult::Failed => failing = true,
 			CheckResult::Warning | CheckResult::Broken => degraded = true,
@@ -2096,6 +2101,29 @@ mod tests {
 		];
 		let payload = build_payload(&machine_info(), &central_and_postgres(), &results).unwrap();
 		assert_eq!(overall_from_payload(&payload), OverallResult::Failing);
+	}
+
+	#[test]
+	fn overall_reads_the_instances_of_an_instanced_check() {
+		use crate::check::Instance;
+
+		let instanced = |instances| {
+			let results = vec![machine(Check::instanced("disk_free", "s", instances))];
+			let payload = build_payload(&machine_info(), &[], &results).unwrap();
+			overall_from_payload(&payload)
+		};
+		assert_eq!(
+			instanced(vec![Instance::pass("/"), Instance::fail("/srv", "full")]),
+			OverallResult::Failing
+		);
+		assert_eq!(
+			instanced(vec![
+				Instance::pass("/"),
+				Instance::warning("/srv", "filling")
+			]),
+			OverallResult::Degraded
+		);
+		assert_eq!(instanced(vec![Instance::pass("/")]), OverallResult::Healthy);
 	}
 
 	#[test]

@@ -244,8 +244,9 @@ fn grade(mobile: &[Errored], server: &[Errored]) -> Check {
 	let mut check = Check::instanced(NAME, summary, instances);
 	let errors = groups_total(mobile) + groups_total(server);
 	if errors >= FAIL_TOTAL && !check.status.is_fatal() {
-		// Canopy grades an instanced check from its instances alone, so this
-		// holds for the doctor, the heal trigger and the severity ceiling.
+		// Local only: Canopy refuses a result beside instances and grades the
+		// check from its instances, and a payload read back is graded the same
+		// way. A live sweep, the heal trigger and the severity ceiling see it.
 		check.status = CheckStatus::Fail(format!(
 			"{errors} sync session errors in the last minute across every device"
 		));
