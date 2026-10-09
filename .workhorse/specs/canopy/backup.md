@@ -11,7 +11,7 @@ Canopy owns scheduling, retention, maintenance, inspection, and alerting; the de
 ## Backup definitions
 
 A backup is configured by a TOML definition file in the backups directory — `/etc/bestool/backups/*.toml` on Unix, a per-platform data directory on Windows — one definition per file (so configuration management can drop in a single file per backup).
-A definition carries a `type` (the Canopy-facing label), an optional `after` (the type it follows, see "Follower backups"), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]`, `[[post]]`, `[[pre_restore]]` and `[[post_restore]]` command hooks, and exactly one method table — `[simple]`, `[postgresql]` or `[tamanu_secret_key]` — selecting a built-in method.
+A definition carries a `type` (the Canopy-facing label), an optional `after` (the type it follows, see "Follower backups"), an optional `identity` (see "Restore as a copy"), optional `[tags]` (extra kopia tags), optional ordered `[[pre]]`, `[[post]]`, `[[pre_restore]]` and `[[post_restore]]` command hooks, and exactly one method table — `[simple]`, `[postgresql]` or `[tamanu_secret_key]` — selecting a built-in method.
 A definition with no method table, or with more than one, is a load error, as is a definition naming itself in `after`.
 The `type` is the only identity that matters to Canopy; the filename is informational.
 
@@ -23,6 +23,7 @@ A `tamanu-postgres` backup is a definition that selects the `postgresql` method;
 ```toml
 type = "tamanu-postgres"          # required — the Canopy backup-type label
 after = "other-type"              # optional — run after that type's backups, restore with it
+identity = true                   # optional — the data identifies its host; a copy restore leaves it out
 
 [tags]                            # optional — extra kopia tags (string to string)
 component = "database"
@@ -334,13 +335,14 @@ Off-host restore verification is Canopy's concern, not this command's; this comm
 A snapshot taken by another server is restored either as that server's replacement or as a copy of it, and the operator says which: `--replacing-source` or `--as-copy`.
 With neither, a repository restore of another server's snapshot refuses before anything is downloaded.
 A snapshot this server took needs neither, and restores as this server: `--as-copy` on one is refused.
-A replacement restores as described above, followers included, so the source's secret key comes back with its database.
-A copy never restores a `tamanu_secret_key` definition: such a follower is left out of the plan before pairing, so a key with no pairable snapshot does not refuse the copy, and naming one as the type to restore is refused.
+A replacement restores as described above, followers included, so whatever identifies the source comes back with its data.
+A copy never restores a definition marked `identity`: such a follower is left out of the plan before pairing, so one with no pairable snapshot does not refuse the copy, and naming one as the type to restore is refused.
+`identity` defaults to on for the `tamanu_secret_key` method and off for every other method; a definition can set it either way.
 Restoring from a hold is always this server's own data, so neither flag applies to it.
 
 > [!NOTE]
-> The secret key is what lets a Tamanu database act as the server it came from: without it, the copy cannot read the sync credentials or device key it holds.
-> A copy restored onto a different host with the key would sync and report as the source.
+> Data such as a key or a certificate is what lets a restored host act as the server it came from.
+> A Tamanu database without its secret key cannot read the sync credentials or device key it holds, so a copy restored onto a different host without it cannot sync or report as the source.
 
 ## Ad-hoc repository access
 

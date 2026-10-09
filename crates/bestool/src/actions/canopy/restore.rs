@@ -36,10 +36,10 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::backup::{
-	base_url_of, build_client, config, connect_repo, hold, load_registration,
-	method::{Method, RestoreOpts},
-	progress::ProgressReporter,
-	run_kopia, run_kopia_visible, spawn_proxy, transient_config_dir, trim_error,
+	base_url_of, build_client, config, connect_repo, hold, load_registration, method::RestoreOpts,
+	progress::ProgressReporter, run_kopia, run_kopia_visible, spawn_proxy,
+	transient_config_dir,
+	trim_error,
 };
 use crate::actions::Context;
 
@@ -101,10 +101,9 @@ pub struct RestoreArgs {
 
 	/// Restore another server's backup as a copy of it, not a replacement.
 	///
-	/// The source's secret key is not restored. Without it the copy cannot read
-	/// the source's credentials or device key, so it cannot sync or report as the
-	/// server it came from; Tamanu refuses to start on it until its
-	/// `forget_server_identity()` has been run.
+	/// Defs that identify the source server (`identity`, on by default for a
+	/// secret key) are not restored, so the copy cannot act as the server it came
+	/// from.
 	#[arg(long, conflicts_with_all = ["replacing_source", "from_hold"])]
 	pub as_copy: bool,
 
@@ -140,9 +139,9 @@ pub async fn run(args: RestoreArgs, _ctx: Context) -> Result<()> {
 			)
 		})?;
 
-	if args.as_copy && matches!(def.method, Method::TamanuSecretKey(_)) {
+	if args.as_copy && def.identity {
 		bail!(
-			"'{}' is the source server's secret key, which a copy must not take",
+			"'{}' identifies the server it was taken from, which a copy must not take",
 			args.backup_type
 		);
 	}
@@ -308,7 +307,7 @@ fn restoring_as_copy(args: &RestoreArgs, snapshot_host: &str, server_id: &str) -
 		if args.as_copy {
 			bail!(
 				"snapshot was taken by this server, so it restores as itself; --as-copy would leave \
-				 it without its own secret key"
+				 it without its own identity"
 			);
 		}
 		return Ok(false);
@@ -318,8 +317,8 @@ fn restoring_as_copy(args: &RestoreArgs, snapshot_host: &str, server_id: &str) -
 	}
 	bail!(
 		"snapshot was taken by server {snapshot_host}, not this one; pass --replacing-source if \
-		 this host takes over from it (its identity and secret key come with the data), or \
-		 --as-copy to restore the data without them so this host cannot sync or report as it"
+		 this host takes over from it (its identity comes with the data), or --as-copy to \
+		 restore the data without it so this host cannot act as that server"
 	)
 }
 
@@ -600,7 +599,7 @@ async fn copy_capture(source: &std::path::Path, staging: &std::path::Path) -> Re
 
 /// Plan the follower restores: for each def that (transitively) follows the
 /// restored type, the snapshot paired with its leader's. A copy leaves out the
-/// source's secret key before pairing, so a key that cannot be paired does not
+/// source's identity defs before pairing, so one that cannot be paired does not
 /// refuse a restore that would never use it.
 ///
 /// spec: BAK#restore, BAK#restore-as-a-copy
@@ -620,10 +619,10 @@ async fn plan_followers(
 			if !visited.insert(follower_def.r#type.clone()) {
 				continue;
 			}
-			if as_copy && matches!(follower_def.method, Method::TamanuSecretKey(_)) {
+			if as_copy && follower_def.identity {
 				info!(
 					backup_type = %follower_def.r#type,
-					"not restoring the source server's secret key into a copy",
+					"not restoring the source server's identity into a copy",
 				);
 				continue;
 			}

@@ -73,6 +73,9 @@ pub struct BackupDef {
 	pub post_restore: Vec<Hook>,
 	/// The selected method.
 	pub method: Method,
+	/// The data identifies the host it was taken from, so a restore that makes a
+	/// copy of that host rather than replacing it leaves this def out.
+	pub identity: bool,
 }
 
 /// Raw on-disk shape; the method tables are mutually exclusive options validated
@@ -92,6 +95,8 @@ struct RawDef {
 	pre_restore: Vec<Hook>,
 	#[serde(default)]
 	post_restore: Vec<Hook>,
+	#[serde(default)]
+	identity: Option<bool>,
 	#[serde(default)]
 	simple: Option<SimpleConfig>,
 	#[serde(default)]
@@ -128,6 +133,9 @@ impl RawDef {
 			post: self.post,
 			pre_restore: self.pre_restore,
 			post_restore: self.post_restore,
+			identity: self
+				.identity
+				.unwrap_or(matches!(method, Method::TamanuSecretKey(_))),
 			method,
 		})
 	}
@@ -271,6 +279,18 @@ mod tests {
 		assert_eq!(def.method.name(), "postgresql");
 		assert!(def.pre.is_empty());
 		assert!(def.tags.is_empty());
+	}
+
+	#[test]
+	fn identity_defaults_on_only_for_a_secret_key() {
+		let key = parse_def("type = \"k\"\n[tamanu_secret_key]\n").unwrap();
+		assert!(key.identity);
+		let data = parse_def("type = \"d\"\n[simple]\npath = \"/srv/d\"\n").unwrap();
+		assert!(!data.identity);
+		let cert = parse_def("type = \"c\"\nidentity = true\n[simple]\npath = \"/etc/c\"\n").unwrap();
+		assert!(cert.identity);
+		let shared = parse_def("type = \"s\"\nidentity = false\n[tamanu_secret_key]\n").unwrap();
+		assert!(!shared.identity);
 	}
 
 	#[test]

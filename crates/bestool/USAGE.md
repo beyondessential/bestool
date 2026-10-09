@@ -740,7 +740,7 @@ Restore a backup from Canopy's repository
    By default, restoring a type also restores each def that declares `after` on it, from the earliest snapshot of that def's type taken at or after the one being restored, never an earlier one, which could lack content the restored data references.
 * `--as-copy` — Restore another server's backup as a copy of it, not a replacement.
 
-   The source's secret key is not restored. Without it the copy cannot read the source's credentials or device key, so it cannot sync or report as the server it came from; Tamanu refuses to start on it until its `forget_server_identity()` has been run.
+   Defs that identify the source server (`identity`, on by default for a secret key) are not restored, so the copy cannot act as the server it came from.
 * `--replacing-source` — Restore another server's backup to take over from it, identity included.
 
    One of this or `--as-copy` is required when the snapshot was taken by a different server: this host either replaces the source or must not pass itself off as it.
