@@ -89,6 +89,8 @@ A method exposes a `prepare` step that produces the path kopia snapshots (plus a
 
 The device authenticates to Canopy with the identity established at enrolment — the tailscale path where available, otherwise the device mTLS certificate.
 A registration that holds no device key still runs backups and restores over the tailscale path; only a host that has neither a device key nor a reachable tailnet fails, and it fails saying so.
+When Canopy refuses a call over the tailscale path because it does not accept the host's tailnet identity, the call is retried over the device mTLS certificate, and later calls use mTLS until the next reload re-probes the tailnet.
+A host with no device key reports the refusal.
 Four endpoints back the system:
 
 - **Register capabilities** — the device posts the set of backup types it can run.

@@ -130,6 +130,11 @@ pub async fn tailscale_client(make_builder: &ClientBuilderFactory) -> Option<req
 ///    ([`CERT_VALIDITY_DAYS`]); for long-running daemons, [`Self::renew`]
 ///    should tick on [`CERT_RENEW_AFTER`] to swap in a fresh cert before expiry.
 ///
+/// The tailscale probe asks an endpoint that needs no auth, so it cannot tell a
+/// tailnet node canopy trusts from one it does not. When a call over tailscale is
+/// refused for the tailnet identity (`auth-tailnet-node-not-permitted`) and a
+/// device key is held, the transport falls back to mTLS and retries the call.
+///
 /// [`Self::refresh`] re-probes tailscale and swaps modes on reload.
 ///
 /// [`connect`](crate::connect) and [`connect_to`](crate::connect_to) build one
@@ -287,9 +292,15 @@ impl ReqwestTransport {
 	/// `path` is the mTLS-mode path (e.g. `/backup-target`); over tailscale the
 	/// same endpoint is mounted under `/public`, so this prepends it.
 	///
+	/// The flag is whether that path is tailscale, so a caller whose request
+	/// canopy refuses for its tailnet identity knows whether mTLS is left to try.
+	///
 	/// A join failure is reported as [`Error::transport`]: the request never
 	/// reaches canopy, which is what that variant means.
-	async fn endpoint_url(&self, path: &str) -> bes_canopy_api::Result<(reqwest::Client, Url)> {
+	async fn endpoint_url(
+		&self,
+		path: &str,
+	) -> bes_canopy_api::Result<(reqwest::Client, Url, bool)> {
 		let state = self.state.read().await;
 		let url = match &*state {
 			State::Tailscale(_) => self
@@ -298,7 +309,26 @@ impl ReqwestTransport {
 				.map_err(Error::transport)?,
 			State::Mtls(_) => self.base_url.join(path).map_err(Error::transport)?,
 		};
-		Ok((state.http(), url))
+		Ok((state.http(), url, state.is_tailscale()))
+	}
+
+	/// Leave the tailscale path for mTLS after canopy refused the tailnet
+	/// identity. Returns whether mTLS is now carrying calls, which needs a device
+	/// key.
+	///
+	/// The probe that picks tailscale hits an unauthenticated endpoint, so it
+	/// cannot tell a tailnet node canopy trusts from one it does not; only a
+	/// real call learns that.
+	async fn leave_tailnet(&self) -> Result<bool> {
+		let Some(pem) = &self.device_key else {
+			return Ok(false);
+		};
+		let mut state = self.state.write().await;
+		if state.is_tailscale() {
+			debug!("canopy refused the tailnet identity, falling back to mTLS");
+			*state = State::Mtls(build_mtls_http(&self.make_builder, &pem.0)?);
+		}
+		Ok(true)
 	}
 
 	/// GET a path, routed via tailscale when available, returning the raw response.
@@ -353,7 +383,36 @@ impl ReqwestTransport {
 	/// Redirects are not followed: a redirect, or an answer from any origin but
 	/// the one addressed, is refused rather than returned.
 	async fn raw_get(&self, tailscale_path: &str, mtls_path: &str) -> Result<reqwest::Response> {
-		let (http, url) = {
+		let (response, via_tailnet) = self.raw_get_once(tailscale_path, mtls_path).await?;
+		if !via_tailnet || response.status() != reqwest::StatusCode::FORBIDDEN {
+			return Ok(response);
+		}
+
+		let status = response.status();
+		let headers = response.headers().clone();
+		let body = response
+			.bytes()
+			.await
+			.into_diagnostic()
+			.wrap_err("reading canopy's refusal")?;
+		if refuses_tailnet_identity(status, &body) && self.leave_tailnet().await? {
+			return Ok(self.raw_get_once(tailscale_path, mtls_path).await?.0);
+		}
+
+		let mut refusal = http::Response::new(body);
+		*refusal.status_mut() = status;
+		*refusal.headers_mut() = headers;
+		Ok(reqwest::Response::from(refusal))
+	}
+
+	/// One attempt of [`Self::raw_get`] on the current auth path, reporting
+	/// whether that path was tailscale.
+	async fn raw_get_once(
+		&self,
+		tailscale_path: &str,
+		mtls_path: &str,
+	) -> Result<(reqwest::Response, bool)> {
+		let (http, url, via_tailnet) = {
 			let state = self.state.read().await;
 			let url = match &*state {
 				State::Tailscale(_) => self
@@ -367,7 +426,7 @@ impl ReqwestTransport {
 					.into_diagnostic()
 					.wrap_err("building mTLS GET URL")?,
 			};
-			(state.http(), url)
+			(state.http(), url, state.is_tailscale())
 		};
 
 		debug!(%url, "GET via canopy");
@@ -387,7 +446,7 @@ impl ReqwestTransport {
 			bail!("canopy GET {url} was answered from {}", response.url());
 		}
 
-		Ok(response)
+		Ok((response, via_tailnet))
 	}
 
 	/// Start a request to an arbitrary canopy endpoint on the current auth path.
@@ -401,7 +460,7 @@ impl ReqwestTransport {
 		method: reqwest::Method,
 		path: &str,
 	) -> Result<reqwest::RequestBuilder> {
-		let (http, url) = self.endpoint_url(path).await.into_diagnostic()?;
+		let (http, url, _) = self.endpoint_url(path).await.into_diagnostic()?;
 		debug!(%url, %method, "arbitrary canopy request");
 		Ok(http.request(method, url))
 	}
@@ -410,14 +469,36 @@ impl ReqwestTransport {
 #[async_trait::async_trait]
 impl CanopyTransport for ReqwestTransport {
 	async fn call(&self, request: CanopyRequest) -> bes_canopy_api::Result<CanopyResponse> {
-		let (parts, body) = request.into_parts();
-		let path = parts.uri.to_string();
-		let (http, url) = self.endpoint_url(&path).await?;
-		debug!(%url, method = %parts.method, "canopy request");
+		let (response, via_tailnet) = self.send(&request).await?;
+		if via_tailnet
+			&& refuses_tailnet_identity(response.status(), response.body())
+			&& self
+				.leave_tailnet()
+				.await
+				.map_err(|err| Error::transport(std::io::Error::other(err.to_string())))?
+		{
+			return Ok(self.send(&request).await?.0);
+		}
+		Ok(response)
+	}
+}
 
-		let mut req = http.request(parts.method, url).headers(parts.headers);
-		if !body.is_empty() {
-			req = req.body(body);
+impl ReqwestTransport {
+	/// One attempt of a generated call on the current auth path, reporting
+	/// whether that path was tailscale.
+	async fn send(
+		&self,
+		request: &CanopyRequest,
+	) -> bes_canopy_api::Result<(CanopyResponse, bool)> {
+		let path = request.uri().to_string();
+		let (http, url, via_tailnet) = self.endpoint_url(&path).await?;
+		debug!(%url, method = %request.method(), "canopy request");
+
+		let mut req = http
+			.request(request.method().clone(), url)
+			.headers(request.headers().clone());
+		if !request.body().is_empty() {
+			req = req.body(request.body().clone());
 		}
 
 		let response = req.send().await.map_err(Error::transport)?;
@@ -431,8 +512,27 @@ impl CanopyTransport for ReqwestTransport {
 		*out.status_mut() = status;
 		*out.version_mut() = version;
 		*out.headers_mut() = headers;
-		Ok(out)
+		Ok((out, via_tailnet))
 	}
+}
+
+/// Whether canopy's answer says it does not accept the tailnet identity the
+/// request came from (`auth-tailnet-node-not-permitted`), as against any other
+/// refusal, which mTLS would not change.
+fn refuses_tailnet_identity(status: reqwest::StatusCode, body: &[u8]) -> bool {
+	if status != reqwest::StatusCode::FORBIDDEN {
+		return false;
+	}
+	let Ok(document) = serde_json::from_slice::<serde_json::Value>(body) else {
+		return false;
+	};
+	document
+		.get("type")
+		.and_then(|kind| kind.as_str())
+		.is_some_and(|kind| {
+			kind.trim_end_matches('/')
+				.ends_with("/auth-tailnet-node-not-permitted")
+		})
 }
 
 /// Probe the tailscale canopy endpoint, returning a configured `reqwest::Client`
@@ -982,6 +1082,105 @@ mod tests {
 		assert_eq!(response.text().await.unwrap(), "SELECT 1;");
 	}
 
+	/// A transport on the tailscale path against `tailnet`, with mTLS calls
+	/// going to `canopy`.
+	fn tailnet_transport(
+		canopy: &str,
+		tailnet: &str,
+		device_key: Option<&str>,
+	) -> ReqwestTransport {
+		ReqwestTransport {
+			base_url: canopy.parse().unwrap(),
+			tailscale_url: tailnet.parse().unwrap(),
+			device_key: device_key.map(|key| Redacted(key.to_owned())),
+			make_builder: test_factory(),
+			state: RwLock::new(State::Tailscale(
+				build_probe_client("127.0.0.1", &[], &test_factory()).expect("a tailnet client"),
+			)),
+		}
+	}
+
+	/// The tailscale probe asks an unauthenticated endpoint, so it passes for a
+	/// tailnet node canopy does not accept; the refusal that follows on a real
+	/// call is what moves the transport to mTLS.
+	#[tokio::test]
+	async fn a_refused_tailnet_identity_falls_back_to_mtls() {
+		let (tailnet, _tailnet_server) = serve_once(
+			"HTTP/1.1 403 Forbidden\r\nContent-Type: application/problem+json\r\nContent-Length: 63\r\n\r\n{\"type\":\"/errors/auth-tailnet-node-not-permitted\",\"title\":\"no\"}",
+		);
+		let (canopy, canopy_server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
+		let client =
+			crate::CanopyClient::new(tailnet_transport(&canopy, &tailnet, Some(TEST_DEVICE_KEY)));
+
+		let servers = client
+			.servers()
+			.await
+			.expect("the call is retried over mTLS");
+		assert!(servers.is_empty());
+		assert!(!client.transport().is_tailscale().await);
+
+		let captured = canopy_server.join().unwrap();
+		assert!(
+			captured.request_line.starts_with("GET /servers "),
+			"unexpected request line: {}",
+			captured.request_line
+		);
+	}
+
+	#[tokio::test]
+	async fn a_refused_tailnet_identity_without_a_device_key_is_reported() {
+		let (tailnet, _tailnet_server) = serve_once(
+			"HTTP/1.1 403 Forbidden\r\nContent-Type: application/problem+json\r\nContent-Length: 63\r\n\r\n{\"type\":\"/errors/auth-tailnet-node-not-permitted\",\"title\":\"no\"}",
+		);
+		let client =
+			crate::CanopyClient::new(tailnet_transport(DEFAULT_CANOPY_URL, &tailnet, None));
+
+		let err = client
+			.servers()
+			.await
+			.expect_err("with no device key there is nothing to fall back to");
+		assert_eq!(err.http().map(|err| err.status.as_u16()), Some(403));
+		assert!(client.transport().is_tailscale().await);
+	}
+
+	/// mTLS would not change any other refusal, so it is not tried.
+	#[tokio::test]
+	async fn another_refusal_does_not_leave_the_tailnet() {
+		let (tailnet, _tailnet_server) = serve_once(
+			"HTTP/1.1 403 Forbidden\r\nContent-Type: application/problem+json\r\nContent-Length: 61\r\n\r\n{\"type\":\"/errors/auth-insufficient-permissions\",\"title\":\"no\"}",
+		);
+		let client = crate::CanopyClient::new(tailnet_transport(
+			&closed_url(),
+			&tailnet,
+			Some(TEST_DEVICE_KEY),
+		));
+
+		let err = client
+			.servers()
+			.await
+			.expect_err("the refusal is canopy's answer");
+		assert_eq!(err.http().map(|err| err.status.as_u16()), Some(403));
+		assert!(client.transport().is_tailscale().await);
+	}
+
+	#[cfg(feature = "raw-requests")]
+	#[tokio::test]
+	async fn a_raw_get_refused_on_the_tailnet_falls_back_to_mtls() {
+		let (tailnet, _tailnet_server) = serve_once(
+			"HTTP/1.1 403 Forbidden\r\nContent-Type: application/problem+json\r\nContent-Length: 63\r\n\r\n{\"type\":\"/errors/auth-tailnet-node-not-permitted\",\"title\":\"no\"}",
+		);
+		let (canopy, _canopy_server) =
+			serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
+		let transport = tailnet_transport(&canopy, &tailnet, Some(TEST_DEVICE_KEY));
+
+		let response = transport
+			.get("/public/x", "/x")
+			.await
+			.expect("the GET is retried over mTLS");
+		assert_eq!(response.text().await.unwrap(), "SELECT 1;");
+		assert!(!transport.is_tailscale().await);
+	}
+
 	#[tokio::test]
 	async fn tailscale_state_routes_under_public() {
 		let transport = ReqwestTransport {
@@ -991,7 +1190,7 @@ mod tests {
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(reqwest::Client::new())),
 		};
-		let (_, url) = transport.endpoint_url("/backup-target").await.unwrap();
+		let (_, url, _) = transport.endpoint_url("/backup-target").await.unwrap();
 		assert_eq!(url.as_str(), "https://tailnet.example/public/backup-target");
 	}
 
