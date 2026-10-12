@@ -1,6 +1,6 @@
 # Copied database check (TAM-7176)
 
-Spec: [CHK-CPY](../specs/tamanu/copied-database.md).
+Spec: [CHK-COPY](../specs/tamanu/copied-database.md).
 
 Linux clones are scrubbed by ops (beyondessential/ops#341) and pgro upgrade replicas by beyondessential/postgres-restore-operator#165.
 Windows clones have nothing automatic, and about half the clones in Canopy run Windows.

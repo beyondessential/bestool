@@ -1,6 +1,6 @@
 //! Whether a Tamanu database was copied from another server.
 //!
-//! spec: CHK-CPY
+//! spec: CHK-COPY
 
 use bestool_canopy::registration;
 
@@ -33,14 +33,14 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 	let database_server_id: Option<String> = match client.query_opt(SQL, &[]).await {
-		Ok(row) => row.and_then(|row| row.get(0)),
+		Ok(row) => row.and_then(|row| row.try_get(0).ok()),
 		Err(err) => return query_error_check(NAME, &err),
 	};
 
 	grade(database_server_id.as_deref(), &machine_server_id)
 }
 
-/// spec: CHK-CPY#outcomes
+/// spec: CHK-COPY#outcomes
 fn grade(database_server_id: Option<&str>, machine_server_id: &str) -> Check {
 	let Some(database_server_id) = database_server_id.filter(|id| !id.trim().is_empty()) else {
 		return Check::pass(NAME, "database records no server id");

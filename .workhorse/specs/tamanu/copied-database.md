@@ -1,5 +1,5 @@
 ---
-id: CHK-CPY
+id: CHK-COPY
 ---
 
 # Copied database
