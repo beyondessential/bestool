@@ -6,20 +6,19 @@ Linux clones are scrubbed by ops (beyondessential/ops#341) and pgro upgrade repl
 Windows clones have nothing automatic, and about half the clones in Canopy run Windows.
 This check covers every platform and every way of copying, because it reads the result rather than hooking the restore.
 
-## Depends on Canopy
+## Next: clearing a copy
 
-The device cannot read either fact it needs today.
+The check only reports today. Once a fleet run shows it fails on copies alone, add a self-heal that clears the copy, limited to machines Canopy ranks `clone`, so a production server with wrong Canopy records never clears its own identity.
 
-- `GET /servers/self` returns one server id, and cannot answer for a machine running more than one application.
-- `GET /machines/self` names its applications by type only, with no server ids.
-- Neither returns a rank.
-
-Canopy needs to tell an enrolled machine, for each server attached to it: the server id, the application type, and the rank.
+- Canopy: tell an enrolled machine its rank. `GET /machines/self` returns ids and application types only; the rank is on the machine row.
+- Clearing: stop the Tamanu services, run `forget_server_identity()`, on a central run Tamanu's upgrade (it recreates the settings key the function removes), start the services. alertd has no way yet to run Tamanu's upgrade on Windows.
+- Read the rank at the time of the attempt, and set a long minimum interval.
+- A Tamanu without the function is left alone.
 
 ## Open questions
 
-- Are Tamanu's recorded server id (`metaServerId`, set when Tamanu first POSTs `/servers`) and the server Canopy attaches to the machine always the same id on a healthy server?
-  If any healthy server has two, the check fails there. Before enabling the heal, run the check report-only across the fleet and look at every failure.
+- Is Tamanu's recorded server id (`metaServerId`) the machine id on every healthy server?
+  A Tamanu whose status push Canopy rejects could hold anything, and the check would fail there. Look at every failure from the first fleet run before adding the heal.
 - How are the Windows clones refreshed today: `bestool canopy restore`, a whole-machine Kopia restore, or by hand?
   A whole-machine restore would also bring the source's bestool registration across; the check then compares two copied ids and passes. Worth confirming which.
 - A Tamanu deployment that sets the global `metaServer.serverId` setting keeps reporting as that id after the function runs, because the function leaves settings that are not secret alone.

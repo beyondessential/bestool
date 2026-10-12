@@ -36,6 +36,7 @@ pub mod caddyfile_version;
 pub mod canopy_certificates;
 pub mod canopy_registration;
 pub mod certificate_notification_errors;
+pub mod copied_database;
 pub mod db_connect;
 pub mod db_version;
 pub mod disk_free;
@@ -614,6 +615,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("version", db_version::run, postgres, off_wire),
 		entry!("migrations", migrations::run, tamanu_app),
 		entry!("reporting_roles", reporting_roles::run, tamanu_app),
+		entry!("copied_database", copied_database::run, tamanu_app),
 		// Its heal is the one write any check makes to Tamanu's database.
 		entry!(
 			"reporting_schema",
