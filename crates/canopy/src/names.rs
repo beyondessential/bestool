@@ -108,7 +108,12 @@ impl Refusal {
 /// The last segment of the problem document's `type`, which is
 /// `/errors/<slug>`.
 fn problem_slug(err: &CanopyHttpError) -> Option<String> {
-	let document: serde_json::Value = serde_json::from_slice(&err.body).ok()?;
+	problem_slug_of(&err.body)
+}
+
+/// [`problem_slug`] for a response body read before it became an error.
+pub(crate) fn problem_slug_of(body: &[u8]) -> Option<String> {
+	let document: serde_json::Value = serde_json::from_slice(body).ok()?;
 	let uri = document.get("type")?.as_str()?;
 	uri.trim_end_matches('/')
 		.rsplit('/')

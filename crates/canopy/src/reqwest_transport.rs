@@ -23,7 +23,7 @@ use tracing::debug;
 
 use bes_canopy_api::Error;
 
-use crate::{CanopyRequest, CanopyResponse, CanopyTransport, Redacted};
+use crate::{CanopyRequest, CanopyResponse, CanopyTransport, Redacted, names::problem_slug_of};
 
 pub const DEFAULT_CANOPY_URL: &str = "https://meta.tamanu.app";
 
@@ -134,6 +134,8 @@ pub async fn tailscale_client(make_builder: &ClientBuilderFactory) -> Option<req
 /// tailnet node canopy trusts from one it does not. When a call over tailscale is
 /// refused for the tailnet identity (`auth-tailnet-node-not-permitted`) and a
 /// device key is held, the transport falls back to mTLS and retries the call.
+/// Generated calls, raw GETs and artifact downloads retry this way; a request
+/// started with `request` is the caller's to send, so it gets the refusal.
 ///
 /// [`Self::refresh`] re-probes tailscale and swaps modes on reload.
 ///
@@ -389,6 +391,7 @@ impl ReqwestTransport {
 		}
 
 		let status = response.status();
+		let version = response.version();
 		let headers = response.headers().clone();
 		let body = response
 			.bytes()
@@ -401,6 +404,7 @@ impl ReqwestTransport {
 
 		let mut refusal = http::Response::new(body);
 		*refusal.status_mut() = status;
+		*refusal.version_mut() = version;
 		*refusal.headers_mut() = headers;
 		Ok(reqwest::Response::from(refusal))
 	}
@@ -475,7 +479,7 @@ impl CanopyTransport for ReqwestTransport {
 			&& self
 				.leave_tailnet()
 				.await
-				.map_err(|err| Error::transport(std::io::Error::other(err.to_string())))?
+				.map_err(|err| Error::Transport(err.into()))?
 		{
 			return Ok(self.send(&request).await?.0);
 		}
@@ -516,23 +520,14 @@ impl ReqwestTransport {
 	}
 }
 
+/// The problem type canopy refuses a tailnet node it does not accept with.
+const TAILNET_NODE_NOT_PERMITTED: &str = "auth-tailnet-node-not-permitted";
+
 /// Whether canopy's answer says it does not accept the tailnet identity the
-/// request came from (`auth-tailnet-node-not-permitted`), as against any other
-/// refusal, which mTLS would not change.
+/// request came from, as against any other refusal, which mTLS would not change.
 fn refuses_tailnet_identity(status: reqwest::StatusCode, body: &[u8]) -> bool {
-	if status != reqwest::StatusCode::FORBIDDEN {
-		return false;
-	}
-	let Ok(document) = serde_json::from_slice::<serde_json::Value>(body) else {
-		return false;
-	};
-	document
-		.get("type")
-		.and_then(|kind| kind.as_str())
-		.is_some_and(|kind| {
-			kind.trim_end_matches('/')
-				.ends_with("/auth-tailnet-node-not-permitted")
-		})
+	status == reqwest::StatusCode::FORBIDDEN
+		&& problem_slug_of(body).as_deref() == Some(TAILNET_NODE_NOT_PERMITTED)
 }
 
 /// Probe the tailscale canopy endpoint, returning a configured `reqwest::Client`
