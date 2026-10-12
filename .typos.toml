@@ -1,4 +1,10 @@
 [default]
+# Spec ids are short uppercase codes, not words.
+extend-ignore-re = [
+  "(?m)^id: [A-Z][A-Z0-9-]*$",
+  "spec: [A-Z][A-Z0-9-]*",
+  "\\[[A-Z][A-Z0-9-]*\\]\\(",
+]
 
 [files]
 extend-exclude = ["CHANGELOG.md", "crates/psql/EXAMPLES.md"]
@@ -6,8 +12,6 @@ extend-exclude = ["CHANGELOG.md", "crates/psql/EXAMPLES.md"]
 [default.extend-words]
 larg = "larg" # left arg (in parsers)
 MIGH = "MIGH" # base64 PEM data in tests
-NAM = "NAM" # spec id (.workhorse/specs/canopy/dns-names.md)
-ALOG = "ALOG" # spec id (.workhorse/specs/bestool/alertd-logs.md)
 unparseable = "unparseable" # incredibly common typo and honestly idgaf
 invokable = "invokable" # Workhorse-managed wording (AGENTS.md, skills)
 HPE = "HPE" # server vendor, as it appears in SMBIOS
