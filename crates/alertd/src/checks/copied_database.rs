@@ -33,7 +33,11 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		return Check::skip(NAME, "no DB connection", "db unavailable");
 	};
 	let database_server_id: Option<String> = match client.query_opt(SQL, &[]).await {
-		Ok(row) => row.and_then(|row| row.try_get(0).ok()),
+		Ok(None) => None,
+		Ok(Some(row)) => match row.try_get(0) {
+			Ok(value) => value,
+			Err(err) => return query_error_check(NAME, &err),
+		},
 		Err(err) => return query_error_check(NAME, &err),
 	};
 
@@ -42,13 +46,14 @@ pub async fn run(ctx: TamanuCx) -> Check {
 
 /// spec: CHK-COPY#outcomes
 fn grade(database_server_id: Option<&str>, machine_server_id: &str) -> Check {
-	let Some(database_server_id) = database_server_id.filter(|id| !id.trim().is_empty()) else {
+	let Some(database_server_id) = database_server_id
+		.map(str::trim)
+		.filter(|id| !id.is_empty())
+	else {
 		return Check::pass(NAME, "database records no server id");
 	};
-	if database_server_id
-		.trim()
-		.eq_ignore_ascii_case(machine_server_id.trim())
-	{
+	let machine_server_id = machine_server_id.trim();
+	if database_server_id.eq_ignore_ascii_case(machine_server_id) {
 		return Check::pass(NAME, "database belongs to this server");
 	}
 	Check::fail(
