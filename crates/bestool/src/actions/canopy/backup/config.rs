@@ -57,7 +57,7 @@ pub struct BackupDef {
 	/// The Canopy backup-type name (label only).
 	pub r#type: String,
 	/// A type this def follows: after a successful run of that type, this def
-	/// runs too, so a pair like database-then-secrets stays ordered.
+	/// runs too, so a pair like database-then-blob-store stays ordered.
 	pub after: Option<String>,
 	/// Extra kopia tags merged with the canopy-* tags.
 	pub tags: BTreeMap<String, String>,
@@ -103,7 +103,10 @@ struct RawDef {
 impl RawDef {
 	fn into_def(self) -> Result<BackupDef> {
 		let method = match (self.simple, self.postgresql, self.tamanu_secret_key) {
-			(Some(simple), None, None) => Method::Simple(simple),
+			(Some(simple), None, None) => {
+				simple.validate(&self.r#type)?;
+				Method::Simple(simple)
+			}
 			(None, Some(postgresql), None) => Method::Postgresql(postgresql),
 			(None, None, Some(secret_key)) => Method::TamanuSecretKey(secret_key),
 			(None, None, None) => bail!(
@@ -322,17 +325,17 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_after() {
+	fn parses_after_and_path_command() {
 		let def = parse_def(
 			r#"
-			type = "tamanu-secrets"
+			type = "tamanu-blobs"
 			after = "tamanu-postgres"
 			[simple]
-			path = "/var/lib/containers/storage/secrets"
+			path_command = ["bestool", "tamanu", "blob-root"]
 			"#,
 		)
 		.unwrap();
-		assert_eq!(def.r#type, "tamanu-secrets");
+		assert_eq!(def.r#type, "tamanu-blobs");
 		assert_eq!(def.after.as_deref(), Some("tamanu-postgres"));
 		assert_eq!(def.method.name(), "simple");
 	}
@@ -408,6 +411,32 @@ mod tests {
 		assert!(format!("{err}").contains("its own"));
 	}
 
+	#[test]
+	fn rejects_simple_with_both_path_forms() {
+		let err = parse_def(
+			r#"
+			type = "bad"
+			[simple]
+			path = "/a"
+			path_command = ["resolve-path"]
+			"#,
+		)
+		.unwrap_err();
+		assert!(format!("{err}").contains("exactly one"));
+	}
+
+	#[test]
+	fn rejects_simple_with_no_path_form() {
+		let err = parse_def(
+			r#"
+			type = "bad"
+			[simple]
+			"#,
+		)
+		.unwrap_err();
+		assert!(format!("{err}").contains("neither"));
+	}
+
 	#[tokio::test]
 	async fn followers_of_selects_by_after_in_type_order() {
 		let dir = std::env::temp_dir().join(format!("bestool-followers-{}", std::process::id()));
@@ -419,8 +448,8 @@ mod tests {
 		.await
 		.unwrap();
 		tokio::fs::write(
-			dir.join("secrets.toml"),
-			"type = \"tamanu-secrets\"\nafter = \"tamanu-postgres\"\n[simple]\npath = \"/srv/secrets\"\n",
+			dir.join("blobs.toml"),
+			"type = \"tamanu-blobs\"\nafter = \"tamanu-postgres\"\n[simple]\npath = \"/srv/blobs\"\n",
 		)
 		.await
 		.unwrap();
@@ -433,8 +462,8 @@ mod tests {
 
 		let followers = followers_of(&dir, "tamanu-postgres").await.unwrap();
 		let types: Vec<&str> = followers.iter().map(|d| d.r#type.as_str()).collect();
-		assert_eq!(types, vec!["assets", "tamanu-secrets"]);
-		assert!(followers_of(&dir, "tamanu-secrets").await.unwrap().is_empty());
+		assert_eq!(types, vec!["assets", "tamanu-blobs"]);
+		assert!(followers_of(&dir, "tamanu-blobs").await.unwrap().is_empty());
 
 		tokio::fs::remove_dir_all(&dir).await.ok();
 	}
