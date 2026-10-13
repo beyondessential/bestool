@@ -12,7 +12,9 @@ const SQL: &str = "SELECT value FROM local_system_facts WHERE key = 'metaServerI
 
 pub async fn run(ctx: TamanuCx) -> Check {
 	let machine_server_id = match registration::load().await {
-		Ok(reg) => reg.and_then(|reg| reg.server_id),
+		Ok(reg) => reg
+			.and_then(|reg| reg.server_id)
+			.filter(|id| !id.trim().is_empty()),
 		Err(err) => {
 			return Check::skip(
 				NAME,
