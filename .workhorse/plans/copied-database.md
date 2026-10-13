@@ -21,8 +21,6 @@ The check only reports today. Once a fleet run shows it fails on copies alone, a
   A Tamanu whose status push Canopy rejects could hold anything, and the check would fail there. Look at every failure from the first fleet run before adding the heal.
 - How are the Windows clones refreshed today: `bestool canopy restore`, a whole-machine Kopia restore, or by hand?
   A whole-machine restore brings the source's bestool registration across too. It is encrypted with a key derived from the machine id, so on a different machine it fails to decrypt and the check skips. A copied virtual machine keeps its machine id, so it reads, both ids are the source's, and the check passes. Worth confirming which happens.
-- A Tamanu deployment that sets the global `metaServer.serverId` setting keeps reporting as that id after the function runs, because the function leaves settings that are not secret alone.
-  Check whether any deployment sets it.
 
 ## Also worth doing in Canopy
 
