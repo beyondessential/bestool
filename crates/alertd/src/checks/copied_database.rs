@@ -4,7 +4,7 @@
 
 use bestool_canopy::registration;
 
-use super::{TamanuCx, query_error_check};
+use super::{TamanuCx, query_error_check, row_error_check};
 use crate::check::Check;
 
 const NAME: &str = "copied_database";
@@ -36,7 +36,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		Ok(None) => None,
 		Ok(Some(row)) => match row.try_get(0) {
 			Ok(value) => value,
-			Err(err) => return query_error_check(NAME, &err),
+			Err(err) => return row_error_check(NAME, &err),
 		},
 		Err(err) => return query_error_check(NAME, &err),
 	};
