@@ -62,6 +62,8 @@ pub mod report_errors;
 pub mod reporting_roles;
 pub mod reporting_schema;
 pub mod service_resources;
+pub mod sync_facility_failed;
+pub mod sync_facility_hung;
 pub mod sync_facility_stale;
 pub mod sync_lookup;
 pub mod sync_restart_loop;
@@ -733,6 +735,8 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("fhir_job_errors", fhir_job_errors::run, central),
 		entry!("sync_session_errors", sync_session_errors::run, central),
 		entry!("sync_facility_stale", sync_facility_stale::run, central),
+		entry!("sync_facility_failed", sync_facility_failed::run, facility),
+		entry!("sync_facility_hung", sync_facility_hung::run, facility),
 		entry!("sync_snapshot_tables", sync_snapshot_tables::run, central),
 		entry!("sync_lookup", sync_lookup::run, central),
 		entry!("sync_restart_loop", sync_restart_loop::run, central),
