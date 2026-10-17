@@ -249,6 +249,48 @@ mod tests {
 		client.prepare(super::SQL).await.expect("prepare");
 	}
 
+	// A temp table shadows the real one for this connection only, so the query
+	// runs over seeded sessions without touching the database's own.
+	#[tokio::test]
+	async fn grades_open_sessions_by_device_silence_not_age() {
+		let Some(ctx) = central_ctx().await else {
+			return;
+		};
+		let client = ctx.db().await.expect("central connection");
+		client
+			.batch_execute(
+				"CREATE TEMP TABLE sync_sessions (start_time timestamptz, \
+					last_connection_time timestamptz, completed_at timestamptz); \
+				INSERT INTO sync_sessions VALUES \
+				(now() - '8h'::interval, now() - '1 minute'::interval, NULL), \
+				(now() - '80 minutes'::interval, now() - '30 minutes'::interval, NULL), \
+				(now() - '80 minutes'::interval, now() - '70 minutes'::interval, NULL), \
+				(now() - '5h'::interval, now() - '3h'::interval, NULL), \
+				(now() - '5h'::interval, NULL, NULL), \
+				(now() - '5h'::interval, now() - '3h'::interval, now() - '2h'::interval)",
+			)
+			.await
+			.expect("seed");
+
+		let row = client
+			.query_one(
+				super::SQL,
+				&[&3600.0_f64, &(super::FAIL_GRACE_SECONDS as f64)],
+			)
+			.await
+			.expect("query");
+		let open = Open::from_row(&row).unwrap();
+
+		assert_eq!(
+			open,
+			Open {
+				active: 5,
+				left_open: 3,
+				past_grace: 2
+			}
+		);
+	}
+
 	#[tokio::test]
 	async fn runs_against_central() {
 		let Some(ctx) = central_ctx().await else {

@@ -243,6 +243,68 @@ mod tests {
 		client.prepare(super::SQL).await.expect("prepare");
 	}
 
+	// Temp tables shadow the real ones for this connection only, so the query
+	// runs over seeded sessions without touching the database's own.
+	#[tokio::test]
+	async fn counts_only_a_tablets_failed_syncs_inside_the_window() {
+		let Some(ctx) = central_ctx().await else {
+			return;
+		};
+		let client = ctx.db().await.expect("central connection");
+		client
+			.batch_execute(
+				"CREATE TEMP TABLE facilities (id text, name text); \
+				INSERT INTO facilities VALUES ('f1', 'Apia'); \
+				CREATE TEMP TABLE sync_sessions (start_time timestamptz, \
+					last_connection_time timestamptz, completed_at timestamptz, \
+					errors text[], parameters jsonb); \
+				INSERT INTO sync_sessions VALUES \
+				(now() - '5h'::interval, now() - '4h'::interval, now() - '3h'::interval, \
+					ARRAY['Session marked as completed due to inactivity'], \
+					'{\"deviceId\":\"A\",\"isMobile\":\"true\",\"facilityIds\":[\"f1\"]}'), \
+				(now() - '6h'::interval, now() - '6h'::interval, now() - '5h'::interval, \
+					ARRAY['x','Session marked as completed due to its device reconnecting'], \
+					'{\"deviceId\":\"A\",\"isMobile\":\"true\",\"facilityIds\":[\"f1\"]}'), \
+				(now() - '4h'::interval, now() - '3h'::interval, NULL, NULL, \
+					'{\"deviceId\":\"A\",\"isMobile\":\"true\",\"facilityIds\":[\"f1\"]}'), \
+				(now() - '30h'::interval, now() - '29h'::interval, now() - '28h'::interval, \
+					ARRAY['Session marked as completed due to inactivity'], \
+					'{\"deviceId\":\"A\",\"isMobile\":\"true\"}'), \
+				(now() - '1h'::interval, now() - '10 minutes'::interval, NULL, NULL, \
+					'{\"deviceId\":\"B\",\"isMobile\":\"true\"}'), \
+				(now() - '1h'::interval, now() - '30 minutes'::interval, now() - '20 minutes'::interval, \
+					NULL, '{\"deviceId\":\"B\",\"isMobile\":\"true\"}'), \
+				(now() - '5h'::interval, now() - '4h'::interval, now() - '3h'::interval, \
+					ARRAY['Session marked as completed due to inactivity'], \
+					'{\"deviceId\":\"S\",\"facilityIds\":[\"f1\"]}'), \
+				(now() - '5h'::interval, now() - '4h'::interval, now() - '3h'::interval, \
+					ARRAY['Session marked as completed due to inactivity'], '{\"isMobile\":\"true\"}')",
+			)
+			.await
+			.expect("seed");
+
+		let window_hours = super::WINDOW_HOURS as f64;
+		let stale_window = 3600.0_f64;
+		let rows = client
+			.query(
+				super::SQL,
+				&[
+					&window_hours,
+					&super::CLOSED_FOR_INACTIVITY,
+					&super::CLOSED_FOR_RECONNECT,
+					&stale_window,
+				],
+			)
+			.await
+			.expect("query");
+		let tablets: Vec<Tablet> = rows.iter().map(|r| Tablet::from_row(r).unwrap()).collect();
+
+		assert_eq!(tablets.len(), 1, "only tablet A has a failed sync");
+		assert_eq!(tablets[0].id, "A");
+		assert_eq!(tablets[0].failed, 3);
+		assert_eq!(tablets[0].facility_names, vec!["Apia"]);
+	}
+
 	#[tokio::test]
 	async fn runs_against_central() {
 		let Some(ctx) = central_ctx().await else {
