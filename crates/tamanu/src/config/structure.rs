@@ -43,6 +43,10 @@ pub struct TamanuConfig {
 	/// Absent where the key is mounted from outside the filesystem (a container's
 	/// podman secret), which the config names by env var instead.
 	pub crypto: Option<Crypto>,
+	/// `schedules` block, kept as read so that a value of an unexpected shape
+	/// costs only the setting it carries rather than the whole config.
+	#[serde(default)]
+	pub schedules: serde_json::Value,
 }
 
 impl TamanuConfig {
@@ -81,6 +85,22 @@ impl TamanuConfig {
 				.as_ref()
 				.is_some_and(|id| !id.is_empty())
 			|| self.sync.as_ref().is_some_and(|s| s.host.is_some())
+	}
+
+	/// Tamanu's default for how long central waits, with no connection from a
+	/// session's device, before it closes the session.
+	pub const DEFAULT_STALE_SYNC_SESSION_SECONDS: u64 = 3600;
+
+	/// How long central lets a sync session sit with no connection from its
+	/// device before closing it, in seconds.
+	///
+	/// `schedules.staleSyncSessionCleaner.staleSessionSeconds`, or Tamanu's
+	/// default when the config does not set one.
+	pub fn stale_sync_session_seconds(&self) -> u64 {
+		self.schedules
+			.pointer("/staleSyncSessionCleaner/staleSessionSeconds")
+			.and_then(serde_json::Value::as_u64)
+			.unwrap_or(Self::DEFAULT_STALE_SYNC_SESSION_SECONDS)
 	}
 
 	/// Mirrors `getPrimaryTimeZone()` in Tamanu: prefers `primaryTimeZone`,
@@ -184,6 +204,7 @@ impl TamanuConfig {
 			integrations: Integrations::default(),
 			sync: None,
 			crypto: None,
+			schedules: serde_json::Value::Null,
 		}
 	}
 }
@@ -353,6 +374,26 @@ mod tests {
 		serde_json::json!({
 			"db": { "name": "x", "username": "u", "password": "p" },
 		})
+	}
+
+	#[test]
+	fn stale_sync_session_window_is_read_from_the_schedules_block() {
+		let mut json = base();
+		json["schedules"] = serde_json::json!({
+			"staleSyncSessionCleaner": { "staleSessionSeconds": 1800 },
+		});
+		assert_eq!(parse(json).stale_sync_session_seconds(), 1800);
+	}
+
+	#[test]
+	fn stale_sync_session_window_defaults_when_unset_or_malformed() {
+		assert_eq!(parse(base()).stale_sync_session_seconds(), 3600);
+
+		let mut json = base();
+		json["schedules"] = serde_json::json!({
+			"staleSyncSessionCleaner": { "staleSessionSeconds": "soon" },
+		});
+		assert_eq!(parse(json).stale_sync_session_seconds(), 3600);
 	}
 
 	#[test]

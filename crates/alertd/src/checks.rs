@@ -68,6 +68,7 @@ pub mod sync_restart_loop;
 pub mod sync_session_errors;
 pub mod sync_sessions;
 pub mod sync_snapshot_tables;
+pub mod sync_tablet_failures;
 pub mod tailscale;
 pub mod tailscale_config;
 pub mod tamanu_http;
@@ -736,6 +737,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("sync_snapshot_tables", sync_snapshot_tables::run, central),
 		entry!("sync_lookup", sync_lookup::run, central),
 		entry!("sync_restart_loop", sync_restart_loop::run, central),
+		entry!("sync_tablet_failures", sync_tablet_failures::run, central),
 		entry!(
 			"fhir_service_requests_unresolved",
 			fhir_service_requests_unresolved::run,

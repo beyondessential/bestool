@@ -46,8 +46,6 @@ The durations are telemetry and do not affect the result.
 
 ## Applicability
 
-The check only applies to a central server.
-
 - It skips when the database cannot be reached, so that a database outage remains something the daemon can alert on rather than something that stops it.
 - It skips when the sync sessions table is not present.
 - It reports broken when its query is faulty, and failed when its query fails for any other reason.
