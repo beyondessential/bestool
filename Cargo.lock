@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "bestool"
-version = "2.5.4"
+version = "2.5.5"
 dependencies = [
  "age",
  "algae-cli",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-alertd"
-version = "28.4.3"
+version = "28.4.4"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-tamanu"
-version = "0.19.21"
+version = "0.19.22"
 dependencies = [
  "bestool-canopy",
  "bestool-postgres",
