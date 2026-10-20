@@ -33,6 +33,9 @@ The check reads every trust store that TLS connections from the machine or its T
 - When a Tamanu deployment on the machine has a bundled Node.js runtime, the default trust store of that runtime.
 
 A Tamanu trust store is absent, rather than unreadable, when the machine has no Tamanu or no running server container or bundled runtime to read it from.
+It is unreadable when the machine's containers or the server container's system trust bundle could not be read.
+
+A trust store that holds no certificates, or that could only be read in part, counts as unreadable, unless what was read already trusts a distrusted root.
 
 ## Outcome
 
