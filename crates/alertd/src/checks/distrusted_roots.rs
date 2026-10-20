@@ -90,12 +90,12 @@ fn container_readings(stores: Result<NodeStores, String>) -> Vec<Reading> {
 		Ok(stores) => vec![
 			Reading {
 				store: CONTAINER_NODE_STORE,
-				outcome: Ok(trusted_among(&stores.node)),
+				outcome: store_outcome(&stores.node, &[]),
 			},
 			Reading {
 				store: CONTAINER_SYSTEM_BUNDLE,
 				outcome: match (stores.system, stores.system_error) {
-					(Some(system), _) => Ok(trusted_among(&system)),
+					(Some(system), _) => store_outcome(&system, &[]),
 					(None, error) => Err(error.unwrap_or_else(|| "not reported".into())),
 				},
 			},
@@ -123,7 +123,7 @@ async fn tamanu_readings(root: Option<&std::path::Path>) -> Vec<Reading> {
 		Ok(None) => Vec::new(),
 		Ok(Some(output)) => vec![Reading {
 			store,
-			outcome: parse_node_output(&output).map(|stores| trusted_among(&stores.node)),
+			outcome: parse_node_output(&output).and_then(|stores| store_outcome(&stores.node, &[])),
 		}],
 		Err(err) => vec![Reading {
 			store,
@@ -175,16 +175,13 @@ fn host_trusted() -> Result<Vec<&'static DistrustedRoot>, String> {
 		.map(|cert| fingerprint_of(cert))
 		.collect();
 	let errors: Vec<String> = result.errors.iter().map(ToString::to_string).collect();
-	host_store_outcome(&fingerprints, &errors)
+	store_outcome(&fingerprints, &errors)
 }
 
 /// A distrusted root found is trusted whatever else failed to load; otherwise a
 /// store that loaded with errors, or loaded nothing at all, was not fully read.
-#[cfg_attr(
-	windows,
-	expect(dead_code, reason = "Windows reads its untrusted store")
-)]
-fn host_store_outcome(
+// spec: CHK-DTR#trust-stores
+fn store_outcome(
 	fingerprints: &[String],
 	errors: &[String],
 ) -> Result<Vec<&'static DistrustedRoot>, String> {
@@ -194,12 +191,12 @@ fn host_store_outcome(
 	}
 	if !errors.is_empty() {
 		return Err(format!(
-			"could not fully load the host trust store: {}",
+			"could not fully load the trust store: {}",
 			errors.join("; ")
 		));
 	}
 	if fingerprints.is_empty() {
-		return Err("the host trust store has no certificates".into());
+		return Err("the trust store has no certificates".into());
 	}
 	Ok(trusted)
 }
@@ -350,6 +347,17 @@ RwfSAjEAnbpV/KlK6O3t5nYBQnvI+GDZjVGLVTv7jHvrZQnD+JbNR6iC8hZVdyR+EhCVBCyj
 	}
 
 	#[test]
+	fn empty_container_stores_are_unreadable() {
+		let readings = container_readings(Ok(NodeStores {
+			node: vec![],
+			system: Some(vec![]),
+			system_error: None,
+		}));
+		assert_eq!(readings.len(), 2);
+		assert!(readings.iter().all(|reading| reading.outcome.is_err()));
+	}
+
+	#[test]
 	fn an_unreadable_listing_leaves_both_container_stores_unread() {
 		let readings = container_readings(Err("podman ps exited with 125".into()));
 		assert_eq!(readings.len(), 2);
@@ -357,15 +365,15 @@ RwfSAjEAnbpV/KlK6O3t5nYBQnvI+GDZjVGLVTv7jHvrZQnD+JbNR6iC8hZVdyR+EhCVBCyj
 	}
 
 	#[test]
-	fn host_store_load_errors_or_emptiness_are_not_a_clean_read() {
+	fn load_errors_or_emptiness_are_not_a_clean_read() {
 		let other = vec!["00:11".to_string()];
 		let with_g3 = vec!["00:11".to_string(), G3.fingerprint.to_string()];
 		let errors = vec!["unreadable file".to_string()];
 
-		assert_eq!(host_store_outcome(&with_g3, &errors).unwrap(), vec![G3]);
-		assert!(host_store_outcome(&other, &errors).is_err());
-		assert!(host_store_outcome(&[], &[]).is_err());
-		assert!(host_store_outcome(&other, &[]).unwrap().is_empty());
+		assert_eq!(store_outcome(&with_g3, &errors).unwrap(), vec![G3]);
+		assert!(store_outcome(&other, &errors).is_err());
+		assert!(store_outcome(&[], &[]).is_err());
+		assert!(store_outcome(&other, &[]).unwrap().is_empty());
 	}
 
 	#[test]
