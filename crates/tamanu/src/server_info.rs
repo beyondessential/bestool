@@ -558,6 +558,48 @@ async fn windows_embedded_node_version(root: &Path) -> Option<String> {
 	parse_node_version(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Evaluate a Node.js script with the runtime bundled alongside a Windows
+/// Tamanu server and return what it printed.
+///
+/// `Ok(None)` when there is no bundled runtime under `root`; `Err` when there is
+/// but the script could not be run with it.
+// spec: CHK-DTR#trust-stores
+#[cfg(windows)]
+pub async fn embedded_node_eval(root: &Path, script: &str) -> Result<Option<String>, String> {
+	let node = windows_embedded_node_path(root);
+	if !node.exists() {
+		return Ok(None);
+	}
+
+	let mut command = tokio::process::Command::new(&node);
+	command.args(["-e", script]);
+	node_script_output(command, &node.display().to_string())
+		.await
+		.map(Some)
+}
+
+/// Run a prepared `node -e` command and return what it printed, or why it
+/// could not run. `runner` names what ran the script, for the error.
+// spec: CHK-DTR#trust-stores
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) async fn node_script_output(
+	mut command: tokio::process::Command,
+	runner: &str,
+) -> Result<String, String> {
+	let output = command
+		.output()
+		.await
+		.map_err(|err| format!("could not run {runner}: {err}"))?;
+	if !output.status.success() {
+		return Err(format!(
+			"{runner} exited with {}: {}",
+			output.status,
+			String::from_utf8_lossy(&output.stderr).trim()
+		));
+	}
+	Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 #[cfg(windows)]
 fn windows_embedded_node_path(root: &Path) -> PathBuf {
 	root.join("runtime").join("node.exe")

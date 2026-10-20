@@ -718,6 +718,8 @@ dependencies = [
  "reqwest",
  "rustix 1.1.5",
  "rustls",
+ "rustls-native-certs",
+ "schannel",
  "serde",
  "serde_json",
  "sha2 0.11.0",

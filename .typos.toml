@@ -4,6 +4,10 @@ extend-ignore-re = [
   "(?m)^id: [A-Z][A-Z0-9-]*$",
   "spec: [A-Z][A-Z0-9-]*",
   "\\[[A-Z][A-Z0-9-]*\\]\\([^)]*\\.md",
+  # Colon-separated hex, as certificate fingerprints are written.
+  "(?:[0-9A-Fa-f]{2}:){7,}[0-9A-Fa-f]{2}",
+  # Base64 inside PEM certificates.
+  "(?s)-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
 ]
 
 [files]
