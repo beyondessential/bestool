@@ -269,19 +269,11 @@ pub async fn container_node_eval(script: &str) -> Result<Option<String>, String>
 	let Some(container) = find_running_tamanu_container().await? else {
 		return Ok(None);
 	};
-	let output = podman_command()
-		.args(["exec", &container, "node", "-e", script])
-		.output()
+	let mut command = podman_command();
+	command.args(["exec", &container, "node", "-e", script]);
+	crate::server_info::node_script_output(command, &format!("node in {container}"))
 		.await
-		.map_err(|err| format!("could not run podman: {err}"))?;
-	if !output.status.success() {
-		return Err(format!(
-			"node in {container} exited with {}: {}",
-			output.status,
-			String::from_utf8_lossy(&output.stderr).trim()
-		));
-	}
-	Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+		.map(Some)
 }
 
 /// The name of a running Tamanu server container, if one is up.

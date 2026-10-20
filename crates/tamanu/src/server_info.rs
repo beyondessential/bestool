@@ -571,20 +571,33 @@ pub async fn embedded_node_eval(root: &Path, script: &str) -> Result<Option<Stri
 		return Ok(None);
 	}
 
-	let output = tokio::process::Command::new(&node)
-		.args(["-e", script])
+	let mut command = tokio::process::Command::new(&node);
+	command.args(["-e", script]);
+	node_script_output(command, &node.display().to_string())
+		.await
+		.map(Some)
+}
+
+/// Run a prepared `node -e` command and return what it printed, or why it
+/// could not run. `runner` names what ran the script, for the error.
+// spec: CHK-DTR#trust-stores
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) async fn node_script_output(
+	mut command: tokio::process::Command,
+	runner: &str,
+) -> Result<String, String> {
+	let output = command
 		.output()
 		.await
-		.map_err(|err| format!("could not run {}: {err}", node.display()))?;
+		.map_err(|err| format!("could not run {runner}: {err}"))?;
 	if !output.status.success() {
 		return Err(format!(
-			"{} exited with {}: {}",
-			node.display(),
+			"{runner} exited with {}: {}",
 			output.status,
 			String::from_utf8_lossy(&output.stderr).trim()
 		));
 	}
-	Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+	Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(windows)]
