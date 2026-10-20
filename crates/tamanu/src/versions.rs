@@ -266,7 +266,7 @@ pub async fn container_node_version() -> Option<String> {
 // spec: CHK-DTR#trust-stores
 #[cfg(target_os = "linux")]
 pub async fn container_node_eval(script: &str) -> Result<Option<String>, String> {
-	let Some(container) = running_tamanu_container().await else {
+	let Some(container) = find_running_tamanu_container().await? else {
 		return Ok(None);
 	};
 	let output = podman_command()
@@ -287,20 +287,38 @@ pub async fn container_node_eval(script: &str) -> Result<Option<String>, String>
 /// The name of a running Tamanu server container, if one is up.
 #[cfg(target_os = "linux")]
 async fn running_tamanu_container() -> Option<String> {
-	let output = podman_command()
+	find_running_tamanu_container()
+		.await
+		.inspect_err(|err| debug!(%err, "could not list containers"))
+		.ok()
+		.flatten()
+}
+
+/// The name of a running Tamanu server container: `Ok(None)` when none is up
+/// or podman isn't installed, `Err` when the containers could not be listed.
+#[cfg(target_os = "linux")]
+async fn find_running_tamanu_container() -> Result<Option<String>, String> {
+	let output = match podman_command()
 		.args(["ps", "--format", "{{.Names}}"])
 		.output()
 		.await
-		.ok()?;
+	{
+		Ok(output) => output,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+		Err(err) => return Err(format!("could not run podman: {err}")),
+	};
 	if !output.status.success() {
-		debug!(status = %output.status, "podman ps failed");
-		return None;
+		return Err(format!(
+			"podman ps exited with {}: {}",
+			output.status,
+			String::from_utf8_lossy(&output.stderr).trim()
+		));
 	}
-	String::from_utf8_lossy(&output.stdout)
+	Ok(String::from_utf8_lossy(&output.stdout)
 		.lines()
 		.map(str::trim)
 		.find(|name| is_tamanu_server_container(name))
-		.map(str::to_string)
+		.map(str::to_string))
 }
 
 /// Whether a container name is a Tamanu server (central or facility).

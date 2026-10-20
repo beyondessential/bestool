@@ -26,9 +26,10 @@ pub const DISTRUSTED_ROOTS: &[DistrustedRoot] = &[DistrustedRoot {
 	fingerprint: "86:A1:EC:BA:08:9C:4A:8D:3B:BE:27:34:C6:12:BA:34:1D:81:3E:04:3C:F9:E8:A8:62:CD:5C:57:A3:6B:BE:6B",
 }];
 
-/// Prints the fingerprints of the Node.js default trust store and of the system
-/// bundle beside it, as JSON. Falls back to the built-in roots on a Node.js too
-/// old to report its default store.
+/// Prints, as JSON, the fingerprints of the Node.js default trust store and of
+/// the system bundle beside it, or why the bundle could not be read. A Node.js
+/// too old to report its default store reports its built-in roots instead,
+/// which leaves out any added with `NODE_EXTRA_CA_CERTS`.
 const NODE_SCRIPT: &str = r#"
 const tls = require('tls');
 const { X509Certificate } = require('crypto');
@@ -36,12 +37,18 @@ const fs = require('fs');
 const fingerprint = pem => new X509Certificate(pem).fingerprint256;
 const node = (tls.getCACertificates ? tls.getCACertificates('default') : tls.rootCertificates).map(fingerprint);
 let system = null;
+let systemError = null;
 try {
 	system = (fs.readFileSync('/etc/ssl/certs/ca-certificates.crt', 'utf8')
 		.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? []).map(fingerprint);
-} catch {}
-console.log(JSON.stringify({ node, system }));
+} catch (err) {
+	systemError = String(err);
+}
+console.log(JSON.stringify({ node, system, systemError }));
 "#;
+
+const CONTAINER_NODE_STORE: &str = "Tamanu container Node.js store";
+const CONTAINER_SYSTEM_BUNDLE: &str = "Tamanu container system bundle";
 
 /// What one trust store said about the distrusted roots.
 #[derive(Debug)]
@@ -68,29 +75,41 @@ pub async fn run(ctx: MachineCx) -> Check {
 async fn tamanu_readings(_root: Option<&std::path::Path>) -> Vec<Reading> {
 	match bestool_tamanu::versions::container_node_eval(NODE_SCRIPT).await {
 		Ok(None) => Vec::new(),
-		Ok(Some(output)) => match parse_node_output(&output) {
-			Ok(stores) => {
-				let mut readings = vec![Reading {
-					store: "Tamanu container Node.js store",
-					outcome: Ok(trusted_among(&stores.node)),
-				}];
-				if let Some(system) = stores.system {
-					readings.push(Reading {
-						store: "Tamanu container system bundle",
-						outcome: Ok(trusted_among(&system)),
-					});
-				}
-				readings
-			}
-			Err(err) => vec![Reading {
-				store: "Tamanu container Node.js store",
+		Ok(Some(output)) => container_readings(parse_node_output(&output)),
+		Err(err) => container_readings(Err(err)),
+	}
+}
+
+/// The container's two stores, both unreadable when the listing is.
+#[cfg_attr(
+	not(target_os = "linux"),
+	expect(dead_code, reason = "containers are only read on Linux")
+)]
+fn container_readings(stores: Result<NodeStores, String>) -> Vec<Reading> {
+	match stores {
+		Ok(stores) => vec![
+			Reading {
+				store: CONTAINER_NODE_STORE,
+				outcome: Ok(trusted_among(&stores.node)),
+			},
+			Reading {
+				store: CONTAINER_SYSTEM_BUNDLE,
+				outcome: match (stores.system, stores.system_error) {
+					(Some(system), _) => Ok(trusted_among(&system)),
+					(None, error) => Err(error.unwrap_or_else(|| "not reported".into())),
+				},
+			},
+		],
+		Err(err) => vec![
+			Reading {
+				store: CONTAINER_NODE_STORE,
+				outcome: Err(err.clone()),
+			},
+			Reading {
+				store: CONTAINER_SYSTEM_BUNDLE,
 				outcome: Err(err),
-			}],
-		},
-		Err(err) => vec![Reading {
-			store: "Tamanu container Node.js store",
-			outcome: Err(err),
-		}],
+			},
+		],
 	}
 }
 
@@ -119,13 +138,11 @@ async fn tamanu_readings(_root: Option<&std::path::Path>) -> Vec<Reading> {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct NodeStores {
 	node: Vec<String>,
-	#[cfg_attr(
-		windows,
-		expect(dead_code, reason = "a bundled runtime has no system bundle beside it")
-	)]
 	system: Option<Vec<String>>,
+	system_error: Option<String>,
 }
 
 fn parse_node_output(output: &str) -> Result<NodeStores, String> {
@@ -152,17 +169,39 @@ fn host_trusted() -> Result<Vec<&'static DistrustedRoot>, String> {
 #[cfg(not(windows))]
 fn host_trusted() -> Result<Vec<&'static DistrustedRoot>, String> {
 	let result = rustls_native_certs::load_native_certs();
-	if result.certs.is_empty()
-		&& let Some(err) = result.errors.first()
-	{
-		return Err(format!("could not load the host trust store: {err}"));
-	}
 	let fingerprints: Vec<String> = result
 		.certs
 		.iter()
 		.map(|cert| fingerprint_of(cert))
 		.collect();
-	Ok(trusted_among(&fingerprints))
+	let errors: Vec<String> = result.errors.iter().map(ToString::to_string).collect();
+	host_store_outcome(&fingerprints, &errors)
+}
+
+/// A distrusted root found is trusted whatever else failed to load; otherwise a
+/// store that loaded with errors, or loaded nothing at all, was not fully read.
+#[cfg_attr(
+	windows,
+	expect(dead_code, reason = "Windows reads its untrusted store")
+)]
+fn host_store_outcome(
+	fingerprints: &[String],
+	errors: &[String],
+) -> Result<Vec<&'static DistrustedRoot>, String> {
+	let trusted = trusted_among(fingerprints);
+	if !trusted.is_empty() {
+		return Ok(trusted);
+	}
+	if !errors.is_empty() {
+		return Err(format!(
+			"could not fully load the host trust store: {}",
+			errors.join("; ")
+		));
+	}
+	if fingerprints.is_empty() {
+		return Err("the host trust store has no certificates".into());
+	}
+	Ok(trusted)
 }
 
 fn fingerprint_of(der: &[u8]) -> String {
@@ -258,16 +297,75 @@ mod tests {
 		assert!(trusted_among(&["00:11".to_string()]).is_empty());
 	}
 
+	/// emSign ECC Root CA - G3, as Node.js ships it.
+	const G3_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIICTjCCAdOgAwIBAgIKPPYHqWhwDtqLhDAKBggqhkjOPQQDAzBrMQswCQYDVQQGEwJJTjET
+MBEGA1UECxMKZW1TaWduIFBLSTElMCMGA1UEChMcZU11ZGhyYSBUZWNobm9sb2dpZXMgTGlt
+aXRlZDEgMB4GA1UEAxMXZW1TaWduIEVDQyBSb290IENBIC0gRzMwHhcNMTgwMjE4MTgzMDAw
+WhcNNDMwMjE4MTgzMDAwWjBrMQswCQYDVQQGEwJJTjETMBEGA1UECxMKZW1TaWduIFBLSTEl
+MCMGA1UEChMcZU11ZGhyYSBUZWNobm9sb2dpZXMgTGltaXRlZDEgMB4GA1UEAxMXZW1TaWdu
+IEVDQyBSb290IENBIC0gRzMwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQjpQy4LRL1KPOxst3i
+AhKAnjlfSU2fySU0WXTsuwYc58Byr+iuL+FBVIcUqEqy6HyC5ltqtdyzdc6LBtCGI79G1Y4P
+PwT01xySfvalY8L1X44uT6EYGQIrMgqCZH0Wk9GjQjBAMB0GA1UdDgQWBBR8XQKEE9TMipuB
+zhccLikenEhjQjAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQD
+AwNpADBmAjEAvvNhzwIQHWSVB7gYboiFBS+DCBeQyh+KTOgNG3qxrdWBCUfvO6wIBHxcmbHt
+RwfSAjEAnbpV/KlK6O3t5nYBQnvI+GDZjVGLVTv7jHvrZQnD+JbNR6iC8hZVdyR+EhCVBCyj
+-----END CERTIFICATE-----
+";
+
+	#[test]
+	fn fingerprint_is_that_of_the_certificate() {
+		let (_, pem) = x509_parser::pem::parse_x509_pem(G3_PEM.as_bytes()).unwrap();
+		let cert = pem.parse_x509().unwrap();
+		assert_eq!(
+			cert.subject().to_string(),
+			"C=IN, OU=emSign PKI, O=eMudhra Technologies Limited, CN=emSign ECC Root CA - G3"
+		);
+		assert_eq!(fingerprint_of(&pem.contents), G3.fingerprint);
+	}
+
 	#[test]
 	fn parses_node_output() {
 		let stores = parse_node_output(&format!(
-			"{{\"node\":[\"{}\"],\"system\":null}}\n",
+			"{{\"node\":[\"{}\"],\"system\":null,\"systemError\":\"ENOENT\"}}\n",
 			G3.fingerprint
 		))
 		.unwrap();
 		assert_eq!(trusted_among(&stores.node), vec![G3]);
 		assert!(stores.system.is_none());
+		assert_eq!(stores.system_error.as_deref(), Some("ENOENT"));
 		assert!(parse_node_output("not json").is_err());
+	}
+
+	#[test]
+	fn an_unreadable_container_bundle_is_unreadable_not_absent() {
+		let readings = container_readings(Ok(NodeStores {
+			node: vec![],
+			system: None,
+			system_error: Some("EACCES".into()),
+		}));
+		assert_eq!(readings.len(), 2);
+		assert_eq!(readings[1].store, CONTAINER_SYSTEM_BUNDLE);
+		assert!(matches!(&readings[1].outcome, Err(err) if err == "EACCES"));
+	}
+
+	#[test]
+	fn an_unreadable_listing_leaves_both_container_stores_unread() {
+		let readings = container_readings(Err("podman ps exited with 125".into()));
+		assert_eq!(readings.len(), 2);
+		assert!(readings.iter().all(|reading| reading.outcome.is_err()));
+	}
+
+	#[test]
+	fn host_store_load_errors_or_emptiness_are_not_a_clean_read() {
+		let other = vec!["00:11".to_string()];
+		let with_g3 = vec!["00:11".to_string(), G3.fingerprint.to_string()];
+		let errors = vec!["unreadable file".to_string()];
+
+		assert_eq!(host_store_outcome(&with_g3, &errors).unwrap(), vec![G3]);
+		assert!(host_store_outcome(&other, &errors).is_err());
+		assert!(host_store_outcome(&[], &[]).is_err());
+		assert!(host_store_outcome(&other, &[]).unwrap().is_empty());
 	}
 
 	#[test]
