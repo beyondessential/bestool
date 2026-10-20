@@ -38,6 +38,7 @@ tokio-rustls = "0.26.4"
 tracing = { workspace = true }
 url = { version = "2.5.8", features = ["serde"] }
 x509-parser = "0.18.1"
+rustls-native-certs = "0.8.4"
 
 [dev-dependencies]
 rcgen.workspace = true
@@ -49,3 +50,6 @@ tokio = { workspace = true, features = ["test-util"] }
 # geteuid(), to tell whether we're root without reading /proc (which the
 # daemon's own sandbox can refuse).
 rustix = { version = "1", features = ["process"] }
+
+[target."cfg(windows)".dependencies]
+schannel = "0.1.29"

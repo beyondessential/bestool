@@ -39,6 +39,7 @@ pub mod certificate_notification_errors;
 pub mod db_connect;
 pub mod db_version;
 pub mod disk_free;
+pub mod distrusted_roots;
 pub mod external_users;
 pub mod fhir_config;
 pub mod fhir_job_errors;
@@ -647,6 +648,9 @@ pub fn all() -> Vec<CheckEntry> {
 		// CLI-only, so keep it off the wire.
 		entry!("uptime", uptime::run, machine, off_wire),
 		entry!("time_sync", time_sync::run, machine),
+		// Reads the host's trust store and those of the Tamanu runtime the machine
+		// runs, which is found through the machine rather than an application.
+		entry!("distrusted_roots", distrusted_roots::run, machine),
 		// Needs a reachable Tamanu DB / deployment but not the config files, so it
 		// runs against a `TAMANU_DATABASE_URL`-only host too.
 		entry!("tamanu_http", tamanu_http::run, tamanu_app),
