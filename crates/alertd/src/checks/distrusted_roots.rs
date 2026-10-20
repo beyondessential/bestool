@@ -2,6 +2,7 @@
 //!
 //! spec: CHK-DTR
 
+#[cfg(any(target_os = "linux", windows, test))]
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
@@ -30,6 +31,7 @@ pub const DISTRUSTED_ROOTS: &[DistrustedRoot] = &[DistrustedRoot {
 /// the system bundle beside it, or why the bundle could not be read. A Node.js
 /// too old to report its default store reports its built-in roots instead,
 /// which leaves out any added with `NODE_EXTRA_CA_CERTS`.
+#[cfg(any(target_os = "linux", windows, test))]
 const NODE_SCRIPT: &str = r#"
 const tls = require('tls');
 const { X509Certificate } = require('crypto');
@@ -47,7 +49,9 @@ try {
 console.log(JSON.stringify({ node, system, systemError }));
 "#;
 
+#[cfg(any(target_os = "linux", test))]
 const CONTAINER_NODE_STORE: &str = "Tamanu container Node.js store";
+#[cfg(any(target_os = "linux", test))]
 const CONTAINER_SYSTEM_BUNDLE: &str = "Tamanu container system bundle";
 
 /// What one trust store said about the distrusted roots.
@@ -64,9 +68,13 @@ pub async fn run(ctx: MachineCx) -> Check {
 		outcome: host_trusted(),
 	}];
 
-	if let Some(tamanu) = &ctx.tamanu {
-		readings.extend(tamanu_readings(tamanu.root.as_deref()).await);
-	}
+	// A running server container is found by itself, whether or not the install
+	// was; only a bundled runtime needs the install root to be found.
+	let root = ctx
+		.tamanu
+		.as_ref()
+		.and_then(|tamanu| tamanu.root.as_deref());
+	readings.extend(tamanu_readings(root).await);
 
 	grade(&readings)
 }
@@ -81,10 +89,7 @@ async fn tamanu_readings(_root: Option<&std::path::Path>) -> Vec<Reading> {
 }
 
 /// The container's two stores, both unreadable when the listing is.
-#[cfg_attr(
-	not(target_os = "linux"),
-	expect(dead_code, reason = "containers are only read on Linux")
-)]
+#[cfg(any(target_os = "linux", test))]
 fn container_readings(stores: Result<NodeStores, String>) -> Vec<Reading> {
 	match stores {
 		Ok(stores) => vec![
@@ -137,14 +142,24 @@ async fn tamanu_readings(_root: Option<&std::path::Path>) -> Vec<Reading> {
 	Vec::new()
 }
 
+#[cfg(any(target_os = "linux", windows, test))]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NodeStores {
 	node: Vec<String>,
+	#[cfg_attr(
+		all(windows, not(test)),
+		expect(dead_code, reason = "a bundled runtime has no system bundle beside it")
+	)]
 	system: Option<Vec<String>>,
+	#[cfg_attr(
+		all(windows, not(test)),
+		expect(dead_code, reason = "a bundled runtime has no system bundle beside it")
+	)]
 	system_error: Option<String>,
 }
 
+#[cfg(any(target_os = "linux", windows, test))]
 fn parse_node_output(output: &str) -> Result<NodeStores, String> {
 	serde_json::from_str(output.trim())
 		.map_err(|err| format!("unreadable trust store listing: {err}"))
