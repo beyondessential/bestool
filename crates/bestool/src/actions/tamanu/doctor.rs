@@ -286,7 +286,7 @@ async fn canopy_client() -> Option<bestool_canopy::CanopyClient> {
 		.unwrap_or(bestool_canopy::DEFAULT_CANOPY_URL)
 		.parse()
 		.ok()?;
-	let tailscale_url = bestool_canopy::TAILSCALE_URL.parse().ok()?;
+	let tailscale_url = bestool_canopy::tailnet_for(&base_url);
 	bestool_canopy::connect_to(
 		base_url,
 		tailscale_url,

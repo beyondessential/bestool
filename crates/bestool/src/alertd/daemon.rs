@@ -98,11 +98,10 @@ pub async fn run_with_shutdown(
 		.unwrap_or_else(|| bestool_alertd::canopy::DEFAULT_CANOPY_URL.to_owned())
 		.parse()
 		.map_err(|err| miette!("canopy api_url is not a URL: {err}"))?;
+	let tailscale_url = bestool_alertd::canopy::tailnet_for(&base_url);
 	let canopy_client = match connect_to(
 		base_url,
-		bestool_alertd::canopy::TAILSCALE_URL
-			.parse()
-			.expect("default tailscale URL is valid"),
+		tailscale_url,
 		daemon_config.device_key_pem.as_ref().map(|r| r.0.as_str()),
 		crate::alertd::http_builder,
 	)
