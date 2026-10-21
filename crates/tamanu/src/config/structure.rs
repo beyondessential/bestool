@@ -234,12 +234,26 @@ pub struct Crypto {
 #[serde(rename_all = "camelCase")]
 pub struct Sync {
 	/// URL of the central server this facility syncs against. Only set on
-	/// facility servers.
+	/// facility servers, and only where it hasn't moved to local system facts:
+	/// Tamanu's packaged config ships it empty, which reads as unset.
+	#[serde(default, deserialize_with = "empty_as_none_url")]
 	pub host: Option<Url>,
 	/// Facility-only: connection details for the sync sub-process's
 	/// `POST /sync/run` / `GET /sync/status` API. Bound to localhost by
 	/// default and not authed, so callers must be local to the box.
 	pub sync_api_connection: Option<SyncApiConnection>,
+}
+
+fn empty_as_none_url<'de, D>(deserializer: D) -> std::result::Result<Option<Url>, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	use serde::Deserialize as _;
+
+	Option::<String>::deserialize(deserializer)?
+		.filter(|s| !s.trim().is_empty())
+		.map(|s| Url::parse(&s).map_err(serde::de::Error::custom))
+		.transpose()
 }
 
 /// Facility sync sub-process address (`sync.syncApiConnection`).
@@ -439,6 +453,39 @@ mod tests {
 		let mut json = base();
 		json["sync"] = serde_json::json!({ "host": "https://central.example.org" });
 		assert!(parse(json).is_facility());
+	}
+
+	#[test]
+	fn empty_or_null_sync_host_parses_as_unset() {
+		// Tamanu's packaged facility config ships `host: ""`, as the sync host
+		// now comes from local system facts instead.
+		for host in [serde_json::json!(""), serde_json::Value::Null] {
+			let mut json = base();
+			json["sync"] = serde_json::json!({ "host": host });
+			let config = parse(json);
+			assert!(config.sync.as_ref().unwrap().host.is_none());
+			assert!(!config.is_facility());
+		}
+	}
+
+	#[test]
+	fn sync_host_that_is_not_a_url_is_rejected() {
+		let mut json = base();
+		json["sync"] = serde_json::json!({ "host": "not a url" });
+		assert!(serde_json::from_value::<TamanuConfig>(json).is_err());
+	}
+
+	#[test]
+	fn empty_sync_host_keeps_sync_api_connection() {
+		let mut json = base();
+		json["sync"] = serde_json::json!({
+			"host": "",
+			"syncApiConnection": { "port": 4200 },
+		});
+		assert_eq!(
+			parse(json).sync_api_url().unwrap().as_str(),
+			"http://localhost:4200/"
+		);
 	}
 
 	#[test]
