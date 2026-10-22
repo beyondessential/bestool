@@ -107,9 +107,9 @@ async fn full_lifecycle_through_proxy() {
 		"snapshot".into(),
 		"create".into(),
 		"--description".into(),
-		"tamanu-secrets".into(),
+		"tamanu-blobs".into(),
 		"--tags".into(),
-		"canopy-type:tamanu-secrets".into(),
+		"canopy-type:tamanu-blobs".into(),
 		data.to_string_lossy().into_owned(),
 	])
 	.await;
@@ -122,8 +122,8 @@ async fn full_lifecycle_through_proxy() {
 	let [snapshot] = &listed[..] else {
 		panic!("expected exactly one snapshot, got {}", listed.len())
 	};
-	assert_eq!(snapshot.description, "tamanu-secrets");
-	assert_eq!(snapshot.tag("canopy-type"), Some("tamanu-secrets"));
+	assert_eq!(snapshot.description, "tamanu-blobs");
+	assert_eq!(snapshot.tag("canopy-type"), Some("tamanu-blobs"));
 
 	let snapshot_id = snapshot.id.clone();
 	run(vec![
