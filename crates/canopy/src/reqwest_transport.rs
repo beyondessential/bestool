@@ -145,9 +145,9 @@ pub struct ReqwestTransport {
 	/// Base URL for the mTLS path (canopy's public API, from the registration's
 	/// `api_url`). Used only on the mTLS path. Fixed for the transport's lifetime.
 	base_url: Url,
-	/// Base URL for the tailscale path (defaults to [`TAILSCALE_URL`]). Used only
-	/// on the tailscale path. Fixed for the transport's lifetime.
-	tailscale_url: Url,
+	/// Base URL for the tailscale path, or `None` to never use it (see
+	/// [`tailnet_for`]). Fixed for the transport's lifetime.
+	tailscale_url: Option<Url>,
 	device_key: Option<Redacted<String>>,
 	/// Produces the base client builder; see [`ClientBuilderFactory`].
 	make_builder: ClientBuilderFactory,
@@ -192,14 +192,14 @@ impl ReqwestTransport {
 	/// [`ClientBuilderFactory`].
 	pub async fn new(
 		base_url: Url,
-		tailscale_url: Url,
+		tailscale_url: Option<Url>,
 		device_key_pem: Option<&str>,
 		make_builder: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
 	) -> Result<Option<Self>> {
 		let device_key = device_key_pem.map(|s| Redacted(s.to_owned()));
 		let make_builder: ClientBuilderFactory = Arc::new(make_builder);
 
-		if let Some(http) = probe_tailscale(&tailscale_url, &make_builder, true).await {
+		if let Some(http) = probe_optional(tailscale_url.as_ref(), &make_builder, true).await {
 			debug!("canopy: tailscale endpoint reachable, preferring it");
 			return Ok(Some(Self {
 				base_url,
@@ -233,7 +233,7 @@ impl ReqwestTransport {
 		let http = build_mtls_http(&test_factory(), TEST_DEVICE_KEY).unwrap();
 		Self {
 			base_url: base.parse().unwrap(),
-			tailscale_url: TAILSCALE_URL.parse().unwrap(),
+			tailscale_url: Some(TAILSCALE_URL.parse().unwrap()),
 			device_key: Some(Redacted(TEST_DEVICE_KEY.to_owned())),
 			make_builder: test_factory(),
 			state: RwLock::new(State::Mtls(http)),
@@ -249,7 +249,9 @@ impl ReqwestTransport {
 	///
 	/// Intended to be called when the daemon receives a reload signal.
 	pub async fn refresh(&self) -> Result<()> {
-		if let Some(http) = probe_tailscale(&self.tailscale_url, &self.make_builder, false).await {
+		if let Some(http) =
+			probe_optional(self.tailscale_url.as_ref(), &self.make_builder, false).await
+		{
 			let mut state = self.state.write().await;
 			if !state.is_tailscale() {
 				debug!("canopy refresh: switching to tailscale path");
@@ -305,8 +307,7 @@ impl ReqwestTransport {
 	) -> bes_canopy_api::Result<(reqwest::Client, Url, bool)> {
 		let state = self.state.read().await;
 		let url = match &*state {
-			State::Tailscale(_) => self
-				.tailscale_url
+			State::Tailscale(_) => tailnet(&self.tailscale_url)
 				.join(&format!("/public{path}"))
 				.map_err(Error::transport)?,
 			State::Mtls(_) => self.base_url.join(path).map_err(Error::transport)?,
@@ -419,8 +420,7 @@ impl ReqwestTransport {
 		let (http, url, via_tailnet) = {
 			let state = self.state.read().await;
 			let url = match &*state {
-				State::Tailscale(_) => self
-					.tailscale_url
+				State::Tailscale(_) => tailnet(&self.tailscale_url)
 					.join(tailscale_path)
 					.into_diagnostic()
 					.wrap_err("building tailscale GET URL")?,
@@ -824,11 +824,52 @@ fn build_mtls_http(
 		.wrap_err("building canopy HTTP client")
 }
 
+/// The tailnet endpoint to try for a device registered against `base_url`.
+///
+/// The tailnet route only reaches the default canopy, so a device registered
+/// with any other canopy must not take it.
+pub fn tailnet_for(base_url: &Url) -> Option<Url> {
+	let default: Url = DEFAULT_CANOPY_URL
+		.parse()
+		.expect("default canopy URL is valid");
+	(base_url.origin() == default.origin()).then(|| {
+		TAILSCALE_URL
+			.parse()
+			.expect("default tailscale URL is valid")
+	})
+}
+
+fn tailnet(tailscale_url: &Option<Url>) -> &Url {
+	tailscale_url
+		.as_ref()
+		.expect("the tailscale state is only entered after probing a tailnet endpoint")
+}
+
+async fn probe_optional(
+	tailscale_url: Option<&Url>,
+	make_builder: &ClientBuilderFactory,
+	discover: bool,
+) -> Option<reqwest::Client> {
+	probe_tailscale(tailscale_url?, make_builder, discover).await
+}
+
 #[cfg(test)]
 mod tests {
 	use crate::test_support::{TEST_DEVICE_KEY, closed_url, serve_once, test_factory};
 
 	use super::*;
+
+	#[test]
+	fn only_the_default_canopy_takes_the_tailnet() {
+		assert_eq!(
+			tailnet_for(&DEFAULT_CANOPY_URL.parse().unwrap()),
+			Some(TAILSCALE_URL.parse().unwrap()),
+		);
+		assert_eq!(
+			tailnet_for(&"https://canopy-local.test:8443".parse().unwrap()),
+			None
+		);
+	}
 
 	#[tokio::test]
 	async fn transport_sets_the_canopy_user_agent_on_the_wire() {
@@ -872,7 +913,7 @@ mod tests {
 		let (tailnet, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
 		let transport = ReqwestTransport::new(
 			DEFAULT_CANOPY_URL.parse().unwrap(),
-			tailnet.parse().unwrap(),
+			Some(tailnet.parse().unwrap()),
 			None,
 			reqwest::Client::builder,
 		)
@@ -886,7 +927,7 @@ mod tests {
 	async fn no_device_key_and_no_tailnet_leaves_no_auth_path() {
 		let transport = ReqwestTransport::new(
 			DEFAULT_CANOPY_URL.parse().unwrap(),
-			closed_url().parse().unwrap(),
+			Some(closed_url().parse().unwrap()),
 			None,
 			reqwest::Client::builder,
 		)
@@ -899,7 +940,7 @@ mod tests {
 	async fn device_key_carries_the_call_when_the_tailnet_is_unreachable() {
 		let transport = ReqwestTransport::new(
 			DEFAULT_CANOPY_URL.parse().unwrap(),
-			closed_url().parse().unwrap(),
+			Some(closed_url().parse().unwrap()),
 			Some(TEST_DEVICE_KEY),
 			reqwest::Client::builder,
 		)
@@ -921,7 +962,7 @@ mod tests {
 		// Tailscale-state transport with no device key — renew is a no-op.
 		let transport = ReqwestTransport {
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
-			tailscale_url: TAILSCALE_URL.parse().unwrap(),
+			tailscale_url: Some(TAILSCALE_URL.parse().unwrap()),
 			device_key: None,
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(reqwest::Client::new())),
@@ -986,7 +1027,7 @@ mod tests {
 		let (canopy, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
 		let transport = ReqwestTransport {
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
-			tailscale_url: canopy.parse().unwrap(),
+			tailscale_url: Some(canopy.parse().unwrap()),
 			device_key: None,
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(
@@ -1013,7 +1054,7 @@ mod tests {
 		let (canopy, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
 		let transport = ReqwestTransport {
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
-			tailscale_url: canopy.parse().unwrap(),
+			tailscale_url: Some(canopy.parse().unwrap()),
 			device_key: None,
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(
@@ -1041,7 +1082,7 @@ mod tests {
 
 		let transport = ReqwestTransport {
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
-			tailscale_url: canopy.parse().unwrap(),
+			tailscale_url: Some(canopy.parse().unwrap()),
 			device_key: None,
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(
@@ -1062,7 +1103,7 @@ mod tests {
 		let (canopy, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nSELECT 1;");
 		let transport = ReqwestTransport {
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
-			tailscale_url: canopy.parse().unwrap(),
+			tailscale_url: Some(canopy.parse().unwrap()),
 			device_key: None,
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(
@@ -1086,7 +1127,7 @@ mod tests {
 	) -> ReqwestTransport {
 		ReqwestTransport {
 			base_url: canopy.parse().unwrap(),
-			tailscale_url: tailnet.parse().unwrap(),
+			tailscale_url: Some(tailnet.parse().unwrap()),
 			device_key: device_key.map(|key| Redacted(key.to_owned())),
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(
@@ -1180,7 +1221,7 @@ mod tests {
 	async fn tailscale_state_routes_under_public() {
 		let transport = ReqwestTransport {
 			base_url: DEFAULT_CANOPY_URL.parse().unwrap(),
-			tailscale_url: "https://tailnet.example".parse().unwrap(),
+			tailscale_url: Some("https://tailnet.example".parse().unwrap()),
 			device_key: None,
 			make_builder: test_factory(),
 			state: RwLock::new(State::Tailscale(reqwest::Client::new())),

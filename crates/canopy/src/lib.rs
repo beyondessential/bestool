@@ -47,7 +47,7 @@ pub use connect::{connect, connect_to};
 pub use reqwest;
 pub use reqwest_transport::{
 	CERT_RENEW_AFTER, ClientBuilderFactory, DEFAULT_CANOPY_URL, ReqwestTransport, TAILSCALE_URL,
-	device_identity, tailscale_client,
+	device_identity, tailnet_for, tailscale_client,
 };
 
 /// The typed canopy client, defaulting to bestool's [`ReqwestTransport`].

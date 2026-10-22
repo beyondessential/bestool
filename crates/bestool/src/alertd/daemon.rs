@@ -4,7 +4,7 @@ use miette::{Result, miette};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info};
 
-use bestool_alertd::canopy::connect;
+use bestool_alertd::canopy::connect_to;
 
 use crate::alertd::{
 	DaemonConfig, LogError, context::InternalContext, http_server, metrics, tasks::TaskContext,
@@ -90,7 +90,18 @@ pub async fn run_with_shutdown(
 
 	metrics::record_activity();
 
-	let canopy_client = match connect(
+	let base_url = bestool_alertd::canopy::registration::load()
+		.await
+		.ok()
+		.flatten()
+		.and_then(|reg| reg.api_url)
+		.unwrap_or_else(|| bestool_alertd::canopy::DEFAULT_CANOPY_URL.to_owned())
+		.parse()
+		.map_err(|err| miette!("canopy api_url is not a URL: {err}"))?;
+	let tailscale_url = bestool_alertd::canopy::tailnet_for(&base_url);
+	let canopy_client = match connect_to(
+		base_url,
+		tailscale_url,
 		daemon_config.device_key_pem.as_ref().map(|r| r.0.as_str()),
 		crate::alertd::http_builder,
 	)

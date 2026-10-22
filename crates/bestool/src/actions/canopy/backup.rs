@@ -1239,10 +1239,7 @@ pub(super) async fn build_client(
 	base_url: Url,
 	device_key: Option<&str>,
 ) -> Result<Arc<CanopyClient>> {
-	let tailscale_url = bestool_canopy::TAILSCALE_URL
-		.parse()
-		.into_diagnostic()
-		.wrap_err("parsing default canopy tailscale URL")?;
+	let tailscale_url = bestool_canopy::tailnet_for(&base_url);
 	let client =
 		connect_to(base_url, tailscale_url, device_key, crate::http::client_builder)
 			.await?

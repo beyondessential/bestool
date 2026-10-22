@@ -30,9 +30,11 @@ pub async fn connect(
 		crate::DEFAULT_CANOPY_URL
 			.parse()
 			.expect("default canopy URL is valid"),
-		crate::TAILSCALE_URL
-			.parse()
-			.expect("default tailscale URL is valid"),
+		Some(
+			crate::TAILSCALE_URL
+				.parse()
+				.expect("default tailscale URL is valid"),
+		),
 		device_key_pem,
 		make_builder,
 	)
@@ -43,11 +45,12 @@ pub async fn connect(
 ///
 /// `base_url` is canopy's public API URL (the registration's `api_url`), used on
 /// the mTLS path; `tailscale_url` is the tailnet endpoint used on the tailscale
-/// path. Both are fixed for the client's lifetime. See [`connect`] for the other
+/// path, or `None` to use mTLS only (see [`tailnet_for`](crate::tailnet_for)).
+/// Both are fixed for the client's lifetime. See [`connect`] for the other
 /// arguments and the default-endpoint form.
 pub async fn connect_to(
 	base_url: Url,
-	tailscale_url: Url,
+	tailscale_url: Option<Url>,
 	device_key_pem: Option<&str>,
 	make_builder: impl Fn() -> reqwest::ClientBuilder + Send + Sync + 'static,
 ) -> Result<Option<CanopyClient>> {
@@ -75,7 +78,7 @@ mod tests {
 		let (tailnet, _server) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]");
 		let client = connect_to(
 			DEFAULT_CANOPY_URL.parse().unwrap(),
-			tailnet.parse().unwrap(),
+			Some(tailnet.parse().unwrap()),
 			None,
 			reqwest::Client::builder,
 		)
@@ -94,7 +97,7 @@ mod tests {
 	async fn connect_to_yields_no_client_without_an_auth_path() {
 		let client = connect_to(
 			DEFAULT_CANOPY_URL.parse().unwrap(),
-			closed_url().parse().unwrap(),
+			Some(closed_url().parse().unwrap()),
 			None,
 			reqwest::Client::builder,
 		)

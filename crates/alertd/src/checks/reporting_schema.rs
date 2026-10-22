@@ -1416,13 +1416,12 @@ mod tests {
 	}
 
 	/// A client reaching the canopy at `base` over the device credential, the
-	/// path a server off the tailnet takes: the tailnet probe is aimed at a
-	/// closed port.
+	/// path a server off the tailnet takes.
 	async fn canopy_at(base: &str) -> Arc<CanopyClient> {
 		let key = bestool_canopy::certificates::generate_key().expect("a device key");
 		let transport = bestool_canopy::ReqwestTransport::new(
 			base.parse().expect("the canopy URL"),
-			closed_url().parse().expect("the tailnet URL"),
+			None,
 			Some(&key.serialize_pem()),
 			reqwest::Client::builder,
 		)
