@@ -48,9 +48,11 @@ The check therefore carries the relationship as known data:
 | `MedicationRequest` | `medication_requests` | `pharmacy_order_prescriptions` | all | prompt |
 | `Specimen` | `specimens` | `lab_requests` | those with a specimen attached | prompt |
 | `Encounter` | `encounters` | `encounters` | those that are not a survey response | prompt |
-| `MediciReport` | `non_fhir_medici_report` | `encounters` | those that are not a survey response | deferred |
+| `MediciReport` | `non_fhir_medici_report` | `encounters` | those that are not a survey response and have ended | deferred |
 
 A resource with more than one upstream table reports one gap and one age across all of them, not one per upstream.
+
+A record's age, and whether it falls within the window, is measured from when it became due for materialisation: when it was written for every resource but `MediciReport`, and when its encounter was last changed for `MediciReport`.
 
 Because the three narrowed upstreams are the only ones Tamanu narrows, the check measures the same records Tamanu's own materialisation does, rather than an approximation of them.
 

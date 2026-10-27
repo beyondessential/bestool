@@ -122,6 +122,10 @@ const ENABLEMENT_KEY: &str = "fhir.worker.resourceMaterialisationEnabled";
 struct Upstream {
 	table: &'static str,
 	filter: Option<&'static str>,
+
+	/// The `timestamp with time zone` column marking when a record became due
+	/// for materialisation, which its gap is aged from and the window bounds.
+	clock: &'static str,
 }
 
 /// A materialised FHIR resource and where it materialises from.
@@ -147,10 +151,12 @@ const RESOURCES: &[Resource] = &[
 			Upstream {
 				table: "lab_requests",
 				filter: None,
+				clock: "created_at",
 			},
 			Upstream {
 				table: "imaging_requests",
 				filter: None,
+				clock: "created_at",
 			},
 		],
 	},
@@ -161,6 +167,7 @@ const RESOURCES: &[Resource] = &[
 		upstreams: &[Upstream {
 			table: "patients",
 			filter: None,
+			clock: "created_at",
 		}],
 	},
 	Resource {
@@ -170,6 +177,7 @@ const RESOURCES: &[Resource] = &[
 		upstreams: &[Upstream {
 			table: "users",
 			filter: None,
+			clock: "created_at",
 		}],
 	},
 	Resource {
@@ -179,6 +187,7 @@ const RESOURCES: &[Resource] = &[
 		upstreams: &[Upstream {
 			table: "facilities",
 			filter: None,
+			clock: "created_at",
 		}],
 	},
 	Resource {
@@ -188,6 +197,7 @@ const RESOURCES: &[Resource] = &[
 		upstreams: &[Upstream {
 			table: "administered_vaccines",
 			filter: None,
+			clock: "created_at",
 		}],
 	},
 	Resource {
@@ -197,6 +207,7 @@ const RESOURCES: &[Resource] = &[
 		upstreams: &[Upstream {
 			table: "pharmacy_order_prescriptions",
 			filter: None,
+			clock: "created_at",
 		}],
 	},
 	Resource {
@@ -206,6 +217,7 @@ const RESOURCES: &[Resource] = &[
 		upstreams: &[Upstream {
 			table: "lab_requests",
 			filter: Some("u.specimen_attached = true"),
+			clock: "created_at",
 		}],
 	},
 	Resource {
@@ -215,17 +227,24 @@ const RESOURCES: &[Resource] = &[
 		upstreams: &[Upstream {
 			table: "encounters",
 			filter: Some("u.encounter_type <> 'surveyResponse'"),
+			clock: "created_at",
 		}],
 	},
 	// Not a FHIR resource served to integrations but a single-purpose report,
-	// materialised behind everything else and so permanently backlogged.
+	// materialised behind everything else and so permanently backlogged. Tamanu
+	// only materialises it once the encounter has ended, so an open encounter is
+	// not a gap however old it is, and an ended one is aged from when it ended.
+	// `end_date` is a naive local string, so `updated_at` stands in for it: it is
+	// stamped by the discharge and only moves later, so it can understate a gap's
+	// age but never overstate it.
 	Resource {
 		name: "MediciReport",
 		table: "non_fhir_medici_report",
 		pace: Pace::Deferred,
 		upstreams: &[Upstream {
 			table: "encounters",
-			filter: Some("u.encounter_type <> 'surveyResponse'"),
+			filter: Some("u.encounter_type <> 'surveyResponse' AND u.end_date IS NOT NULL"),
+			clock: "updated_at",
 		}],
 	},
 ];
@@ -758,10 +777,11 @@ fn gap_query(resource: &Resource) -> String {
 				.map(|f| format!(" AND {f}"))
 				.unwrap_or_default();
 			format!(
-				"SELECT u.created_at FROM {upstream} u \
+				"SELECT u.{clock} AS due_at FROM {upstream} u \
 				 LEFT JOIN fhir.{resource} r ON r.upstream_id = u.id \
 				 WHERE r.id IS NULL AND u.deleted_at IS NULL \
-				 AND u.created_at > now() - interval '{window}'{filter}",
+				 AND u.{clock} > now() - interval '{window}'{filter}",
+				clock = upstream.clock,
 				upstream = upstream.table,
 				resource = resource.table,
 				window = resource.pace.profile().window,
@@ -772,7 +792,7 @@ fn gap_query(resource: &Resource) -> String {
 
 	format!(
 		"SELECT count(*)::bigint AS gap, \
-		 coalesce(max(extract(epoch FROM now() - g.created_at)), 0)::bigint AS lag_seconds \
+		 coalesce(max(extract(epoch FROM now() - g.due_at)), 0)::bigint AS lag_seconds \
 		 FROM ({branches}) g"
 	)
 }
@@ -1198,6 +1218,15 @@ mod tests {
 			gap_query(encounters).contains("AND u.encounter_type <> 'surveyResponse'"),
 			"encounter filter missing"
 		);
+		assert!(!gap_query(encounters).contains("end_date"));
+
+		let medici = RESOURCES.iter().find(|r| r.name == "MediciReport").unwrap();
+		let sql = gap_query(medici);
+		assert!(sql.contains("AND u.encounter_type <> 'surveyResponse'"));
+		assert!(
+			sql.contains("AND u.end_date IS NOT NULL"),
+			"an open encounter has no MediciReport to expect"
+		);
 	}
 
 	/// A measurement as it would come back from [`measure`], for grading and
@@ -1361,8 +1390,19 @@ mod tests {
 	fn deferred_resource_gets_the_longer_window() {
 		let medici = RESOURCES.iter().find(|r| r.name == "MediciReport").unwrap();
 		assert!(
-			gap_query(medici).contains("u.created_at > now() - interval '7 days'"),
+			gap_query(medici).contains("u.updated_at > now() - interval '7 days'"),
 			"a five-day threshold needs a window that outlasts it"
+		);
+	}
+
+	#[test]
+	fn medici_report_is_aged_from_when_the_encounter_ended() {
+		let medici = RESOURCES.iter().find(|r| r.name == "MediciReport").unwrap();
+		let sql = gap_query(medici);
+		assert!(sql.contains("SELECT u.updated_at AS due_at"));
+		assert!(
+			!sql.contains("created_at"),
+			"a long admission discharged today must not read as days old"
 		);
 	}
 
