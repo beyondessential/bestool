@@ -52,12 +52,7 @@ The check therefore carries the relationship as known data:
 
 A resource with more than one upstream table reports one gap and one age across all of them, not one per upstream.
 
-An encounter that has not ended is never expected to have a `MediciReport`, however long it has been open.
 A record's age, and whether it falls within the window, is measured from when it became due for materialisation: when it was written for every resource but `MediciReport`, and when its encounter was last changed for `MediciReport`.
-
-> [!NOTE]
-> An encounter's end is recorded only as a local date without a zone, so the last change to the encounter stands in for when it ended.
-> Ending an encounter changes it, and any later change only makes the age read younger, so a gap can be understated but never overstated.
 
 Because the three narrowed upstreams are the only ones Tamanu narrows, the check measures the same records Tamanu's own materialisation does, rather than an approximation of them.
 
