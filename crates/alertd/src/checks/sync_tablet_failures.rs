@@ -3,7 +3,8 @@
 //! A tablet that loses its connection in the field leaves a sync unfinished,
 //! which says little about it. One that fails again and again points to
 //! something an operator can act on. The check counts each tablet's failed syncs
-//! in the last 24 hours and fails the tablet at five or more.
+//! in the last 24 hours and fails the tablet at five or more, unless it also
+//! completed a sync in that time: its records are still reaching central.
 //!
 //! A sync fails when central closed its session because the tablet went silent,
 //! when central closed it because the tablet reconnected and began a new session,
@@ -39,29 +40,34 @@ const CLOSED_FOR_RECONNECT: &str = "Session marked as completed due to its devic
 // A device's facilities are those of its latest failed session, and a facility
 // with no record is named by its id. A left-open session whose device never
 // connected after starting is as silent as its start.
-const SQL: &str = "WITH failed AS ( \
+const SQL: &str = "WITH sessions AS ( \
 		SELECT parameters->>'deviceId' AS device_id, \
 			CASE WHEN jsonb_typeof(parameters->'facilityIds') = 'array' \
 				THEN parameters->'facilityIds' ELSE '[]'::jsonb END AS facility_ids, \
-			COALESCE(completed_at, last_connection_time, start_time) AS failed_at \
+			COALESCE(completed_at, last_connection_time, start_time) AS ended_at, \
+			CASE WHEN completed_at IS NOT NULL \
+				THEN COALESCE(errors && ARRAY[$2, $3]::text[], false) \
+				ELSE COALESCE(last_connection_time, start_time) \
+					< now() - make_interval(secs => $4::float8) END AS failed, \
+			completed_at IS NOT NULL AND COALESCE(cardinality(errors), 0) = 0 AS succeeded \
 		FROM sync_sessions \
 		WHERE parameters->>'isMobile' = 'true' \
 			AND parameters->>'deviceId' IS NOT NULL \
 			AND ( \
-				(completed_at > now() - ($1::float8 * interval '1 hour') \
-					AND errors && ARRAY[$2, $3]::text[]) \
+				completed_at > now() - ($1::float8 * interval '1 hour') \
 				OR (completed_at IS NULL \
 					AND COALESCE(last_connection_time, start_time) \
-						> now() - ($1::float8 * interval '1 hour') \
-					AND COALESCE(last_connection_time, start_time) \
-						< now() - make_interval(secs => $4::float8)) \
+						> now() - ($1::float8 * interval '1 hour')) \
 			) \
 	), grouped AS ( \
-		SELECT device_id, count(*)::bigint AS failed_count, \
-			(array_agg(facility_ids ORDER BY failed_at DESC))[1] AS facility_ids \
-		FROM failed GROUP BY device_id \
+		SELECT device_id, count(*) FILTER (WHERE failed) AS failed_count, \
+			bool_or(succeeded) AS synced, \
+			(array_agg(facility_ids ORDER BY ended_at DESC) FILTER (WHERE failed))[1] \
+				AS facility_ids \
+		FROM sessions GROUP BY device_id \
+		HAVING bool_or(failed) \
 	) \
-	SELECT g.device_id, g.failed_count, \
+	SELECT g.device_id, g.failed_count, g.synced, \
 		ARRAY(SELECT jsonb_array_elements_text(g.facility_ids))::text[] AS facility_ids, \
 		ARRAY(SELECT COALESCE(f.name, i.id) \
 			FROM jsonb_array_elements_text(g.facility_ids) AS i(id) \
@@ -72,6 +78,7 @@ const SQL: &str = "WITH failed AS ( \
 struct Tablet {
 	id: String,
 	failed: i64,
+	synced: bool,
 	facility_ids: Vec<String>,
 	facility_names: Vec<String>,
 }
@@ -81,17 +88,22 @@ impl Tablet {
 		Ok(Self {
 			id: row.try_get("device_id")?,
 			failed: row.try_get("failed_count")?,
+			synced: row.try_get("synced")?,
 			facility_ids: row.try_get("facility_ids")?,
 			facility_names: row.try_get("facility_names")?,
 		})
 	}
 
+	fn is_failing(&self) -> bool {
+		self.failed >= FAIL_FAILURES && !self.synced
+	}
+
 	fn instance(&self) -> Instance {
-		let instance = if self.failed >= FAIL_FAILURES {
+		let instance = if self.is_failing() {
 			Instance::fail(
 				&self.id,
 				format!(
-					"{} failed syncs in the last {WINDOW_HOURS} hours",
+					"{} failed syncs and none completed in the last {WINDOW_HOURS} hours",
 					self.failed
 				),
 			)
@@ -99,6 +111,7 @@ impl Tablet {
 			Instance::pass(&self.id)
 		}
 		.with_detail("failed_count", self.failed)
+		.with_detail("synced", self.synced)
 		.with_detail("facility_ids", self.facility_ids.clone());
 
 		if self.facility_names.is_empty() {
@@ -110,12 +123,14 @@ impl Tablet {
 }
 
 fn report(tablets: &[Tablet]) -> Check {
-	let fail_n = tablets.iter().filter(|t| t.failed >= FAIL_FAILURES).count();
+	let fail_n = tablets.iter().filter(|t| t.is_failing()).count();
 
 	let summary = if fail_n == 0 {
 		"no tablet failing its syncs".to_string()
 	} else {
-		format!("{fail_n} tablet(s) with {FAIL_FAILURES} or more failed syncs in {WINDOW_HOURS}h")
+		format!(
+			"{fail_n} tablet(s) with {FAIL_FAILURES} or more failed syncs and none completed in {WINDOW_HOURS}h"
+		)
 	};
 
 	Check::instanced(
@@ -126,7 +141,7 @@ fn report(tablets: &[Tablet]) -> Check {
 	.with_detail("fail_failures", FAIL_FAILURES)
 	.with_detail("window_hours", WINDOW_HOURS)
 	.with_stat(Stat::gauge("fail", fail_n as f64).help(format!(
-		"Tablets with {FAIL_FAILURES} or more failed syncs in {WINDOW_HOURS} hours"
+		"Tablets with {FAIL_FAILURES} or more failed syncs and none completed in {WINDOW_HOURS} hours"
 	)))
 }
 
@@ -177,6 +192,7 @@ mod tests {
 		Tablet {
 			id: id.into(),
 			failed,
+			synced: false,
 			facility_ids: vec![format!("id-{name}")],
 			facility_names: vec![name.into()],
 		}
@@ -199,11 +215,21 @@ mod tests {
 	}
 
 	#[test]
+	fn a_tablet_that_also_completed_a_sync_passes() {
+		let mut t = tablet("tab-a", "Apia", 12);
+		t.synced = true;
+		let check = report(&[t]);
+		assert!(matches!(check.status, CheckStatus::Pass));
+		assert_eq!(check.summary, "no tablet failing its syncs");
+	}
+
+	#[test]
 	fn an_instance_carries_its_label_and_detail() {
 		let check = report(&[tablet("tab-a", "Apia", 7)]);
 		let a = &check.instances.as_ref().unwrap()[0];
 		assert_eq!(a.label.as_deref(), Some("Apia"));
 		assert_eq!(a.detail["failed_count"], 7);
+		assert_eq!(a.detail["synced"], false);
 		assert_eq!(a.detail["facility_ids"], serde_json::json!(["id-Apia"]));
 		assert_eq!(check.details["fail_failures"], 5);
 		assert_eq!(check.details["window_hours"], 24);
@@ -278,7 +304,15 @@ mod tests {
 					ARRAY['Session marked as completed due to inactivity'], \
 					'{\"deviceId\":\"S\",\"facilityIds\":[\"f1\"]}'), \
 				(now() - '5h'::interval, now() - '4h'::interval, now() - '3h'::interval, \
-					ARRAY['Session marked as completed due to inactivity'], '{\"isMobile\":\"true\"}')",
+					ARRAY['Session marked as completed due to inactivity'], '{\"isMobile\":\"true\"}'), \
+				(now() - '5h'::interval, now() - '4h'::interval, now() - '3h'::interval, \
+					ARRAY['Session marked as completed due to inactivity'], \
+					'{\"deviceId\":\"C\",\"isMobile\":\"true\"}'), \
+				(now() - '2h'::interval, now() - '2h'::interval, now() - '2h'::interval, \
+					'{}', '{\"deviceId\":\"C\",\"isMobile\":\"true\"}'), \
+				(now() - '6h'::interval, now() - '6h'::interval, now() - '6h'::interval, \
+					ARRAY['could not serialize access due to concurrent update'], \
+					'{\"deviceId\":\"A\",\"isMobile\":\"true\"}')",
 			)
 			.await
 			.expect("seed");
@@ -299,10 +333,13 @@ mod tests {
 			.expect("query");
 		let tablets: Vec<Tablet> = rows.iter().map(|r| Tablet::from_row(r).unwrap()).collect();
 
-		assert_eq!(tablets.len(), 1, "only tablet A has a failed sync");
+		assert_eq!(tablets.len(), 2, "only tablets A and C have a failed sync");
 		assert_eq!(tablets[0].id, "A");
 		assert_eq!(tablets[0].failed, 3);
+		assert!(!tablets[0].synced, "a session with errors is not a success");
 		assert_eq!(tablets[0].facility_names, vec!["Apia"]);
+		assert_eq!(tablets[1].id, "C");
+		assert!(tablets[1].synced);
 	}
 
 	#[tokio::test]
