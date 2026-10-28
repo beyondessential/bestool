@@ -29,6 +29,9 @@ A sync that completed without being closed by central is not a failure, however 
 The check counts each tablet's failed syncs within the last twenty-four hours.
 A failure is dated by when central closed the session, or, for a session left open, by when its tablet last connected.
 
+A sync succeeds when its session completed within the window with no errors.
+The check notes whether each tablet with a failure also had a successful sync in the window.
+
 ## Reporting
 
 The check reports one instance per tablet with at least one failed sync in the window, keyed by the device's id.
@@ -37,13 +40,14 @@ A tablet with none has nothing to grade and is not reported.
 An instance's result is:
 
 - passed when the tablet has fewer than five failed syncs in the window.
-- failed when it has five or more.
+- passed when it has five or more and also a successful sync in the window, since its records are still reaching central.
+- failed when it has five or more and no successful sync in the window.
 
 An instance's label is the names of the facilities named by the tablet's most recent failed session, joined with a comma.
 Their names are read from central's facility records, and a facility with no record is named by its id.
-Its detail carries the number of failed syncs and the ids of those facilities.
+Its detail carries the number of failed syncs, whether the tablet had a successful sync, and the ids of those facilities.
 
-The check declares a gauge of the number of tablets past the fail threshold ([MET](metrics.md)).
+The check declares a gauge of the number of failed tablets ([MET](metrics.md)).
 
 A deployment with no failed tablet sync in the window reports an empty set of instances.
 
