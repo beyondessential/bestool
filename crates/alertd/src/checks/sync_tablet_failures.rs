@@ -40,42 +40,40 @@ const CLOSED_FOR_RECONNECT: &str = "Session marked as completed due to its devic
 // A device's facilities are those of its latest failed session, and a facility
 // with no record is named by its id. A left-open session whose device never
 // connected after starting is as silent as its start.
-const SQL: &str = "WITH failed AS ( \
+const SQL: &str = "WITH sessions AS ( \
 		SELECT parameters->>'deviceId' AS device_id, \
 			CASE WHEN jsonb_typeof(parameters->'facilityIds') = 'array' \
 				THEN parameters->'facilityIds' ELSE '[]'::jsonb END AS facility_ids, \
-			COALESCE(completed_at, last_connection_time, start_time) AS failed_at \
+			COALESCE(completed_at, last_connection_time, start_time) AS ended_at, \
+			CASE WHEN completed_at IS NOT NULL \
+				THEN COALESCE(errors && ARRAY[$2, $3]::text[], false) \
+				ELSE COALESCE(last_connection_time, start_time) \
+					< now() - make_interval(secs => $4::float8) END AS failed, \
+			completed_at IS NOT NULL AND COALESCE(cardinality(errors), 0) = 0 AS succeeded \
 		FROM sync_sessions \
 		WHERE parameters->>'isMobile' = 'true' \
 			AND parameters->>'deviceId' IS NOT NULL \
 			AND ( \
-				(completed_at > now() - ($1::float8 * interval '1 hour') \
-					AND errors && ARRAY[$2, $3]::text[]) \
+				completed_at > now() - ($1::float8 * interval '1 hour') \
 				OR (completed_at IS NULL \
 					AND COALESCE(last_connection_time, start_time) \
-						> now() - ($1::float8 * interval '1 hour') \
-					AND COALESCE(last_connection_time, start_time) \
-						< now() - make_interval(secs => $4::float8)) \
+						> now() - ($1::float8 * interval '1 hour')) \
 			) \
-	), succeeded AS ( \
-		SELECT DISTINCT parameters->>'deviceId' AS device_id \
-		FROM sync_sessions \
-		WHERE parameters->>'isMobile' = 'true' \
-			AND completed_at > now() - ($1::float8 * interval '1 hour') \
-			AND COALESCE(cardinality(errors), 0) = 0 \
 	), grouped AS ( \
-		SELECT device_id, count(*)::bigint AS failed_count, \
-			(array_agg(facility_ids ORDER BY failed_at DESC))[1] AS facility_ids \
-		FROM failed GROUP BY device_id \
+		SELECT device_id, count(*) FILTER (WHERE failed) AS failed_count, \
+			bool_or(succeeded) AS synced, \
+			(array_agg(facility_ids ORDER BY ended_at DESC) FILTER (WHERE failed))[1] \
+				AS facility_ids \
+		FROM sessions GROUP BY device_id \
+		HAVING bool_or(failed) \
 	) \
-	SELECT g.device_id, g.failed_count, s.device_id IS NOT NULL AS synced, \
+	SELECT g.device_id, g.failed_count, g.synced, \
 		ARRAY(SELECT jsonb_array_elements_text(g.facility_ids))::text[] AS facility_ids, \
 		ARRAY(SELECT COALESCE(f.name, i.id) \
 			FROM jsonb_array_elements_text(g.facility_ids) AS i(id) \
 			LEFT JOIN facilities f ON f.id::text = i.id \
 			ORDER BY 1)::text[] AS facility_names \
-	FROM grouped g LEFT JOIN succeeded s ON s.device_id = g.device_id \
-	ORDER BY g.failed_count DESC";
+	FROM grouped g ORDER BY g.failed_count DESC";
 
 struct Tablet {
 	id: String,
