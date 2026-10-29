@@ -83,11 +83,10 @@ Enablement for a resource is resolved from the first of these that is available:
 
 1. The deployment's stored setting for that resource, under `fhir.worker.resourceMaterialisationEnabled`. A resource enabled for any one facility is enabled server-wide, matching how the deployment merges the setting across facilities, so a per-facility reading is not needed.
 2. The deployment's configuration, under `integrations.fhir.worker.resourceMaterialisationEnabled`, which is where versions before the setting existed keep the same flags.
-3. Whether the resource has ever materialised anything: a resource with at least one FHIR row is treated as enabled, and one with none as disabled.
+3. Tamanu's own default: `Patient` enabled, every other resource disabled. The settings schema and the pre-2.60 configuration defaults agree on this.
 
-The last of these is inference rather than a reading, and it exists so the check still functions where neither of the declared sources carries the resource.
-Its failure mode is to under-report a resource that is enabled but has yet to materialise anything, and to report a growing gap for one disabled after rows had accumulated — which is itself worth surfacing, as materialisation having been switched off with data already present.
-The check reports, per resource, which of the three answered, so an operator can see when a verdict rests on inference.
+The check reads enablement the way Tamanu does, so a resource disabled by default is not measured even when its FHIR table holds rows from a time it was enabled.
+The check reports, per resource, which of the three answered.
 
 A resource whose materialisation is disabled is omitted from the measurement entirely and declares no metrics, rather than reporting a gap of zero: a zero would be indistinguishable from a resource that is enabled and up to date.
 

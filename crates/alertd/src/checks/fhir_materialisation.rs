@@ -139,6 +139,11 @@ struct Resource {
 	name: &'static str,
 	table: &'static str,
 	pace: Pace,
+
+	/// Whether Tamanu materialises it when nothing declares otherwise, the same
+	/// in its settings schema and its pre-2.60 config defaults.
+	enabled_by_default: bool,
+
 	upstreams: &'static [Upstream],
 }
 
@@ -147,6 +152,7 @@ const RESOURCES: &[Resource] = &[
 		name: "ServiceRequest",
 		table: "service_requests",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[
 			Upstream {
 				table: "lab_requests",
@@ -164,6 +170,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Patient",
 		table: "patients",
 		pace: Pace::Prompt,
+		enabled_by_default: true,
 		upstreams: &[Upstream {
 			table: "patients",
 			filter: None,
@@ -174,6 +181,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Practitioner",
 		table: "practitioners",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "users",
 			filter: None,
@@ -184,6 +192,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Organization",
 		table: "organizations",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "facilities",
 			filter: None,
@@ -194,6 +203,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Immunization",
 		table: "immunizations",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "administered_vaccines",
 			filter: None,
@@ -204,6 +214,7 @@ const RESOURCES: &[Resource] = &[
 		name: "MedicationRequest",
 		table: "medication_requests",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "pharmacy_order_prescriptions",
 			filter: None,
@@ -214,6 +225,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Specimen",
 		table: "specimens",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "lab_requests",
 			filter: Some("u.specimen_attached = true"),
@@ -224,6 +236,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Encounter",
 		table: "encounters",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "encounters",
 			filter: Some("u.encounter_type <> 'surveyResponse'"),
@@ -241,6 +254,7 @@ const RESOURCES: &[Resource] = &[
 		name: "MediciReport",
 		table: "non_fhir_medici_report",
 		pace: Pace::Deferred,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "encounters",
 			filter: Some("u.encounter_type <> 'surveyResponse' AND u.end_date IS NOT NULL"),
@@ -250,15 +264,15 @@ const RESOURCES: &[Resource] = &[
 ];
 
 /// Which of the enablement sources answered for a resource, reported alongside
-/// its numbers so an operator can tell a reading from an inference.
+/// its numbers so an operator can tell a declared flag from a default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
 	/// The deployment's stored setting.
 	Setting,
 	/// The deployment's configuration, where Tamanu before 2.60 keeps the flags.
 	Config,
-	/// Inferred from whether the resource has ever materialised anything.
-	Observed,
+	/// Neither declares it, so Tamanu's own default applies.
+	Default,
 }
 
 impl Source {
@@ -266,7 +280,7 @@ impl Source {
 		match self {
 			Source::Setting => "setting",
 			Source::Config => "config",
-			Source::Observed => "observed",
+			Source::Default => "default",
 		}
 	}
 }
@@ -378,16 +392,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 			continue;
 		}
 
-		let (enabled, source) = match resolve_enablement(resource, &settings, &ctx) {
-			Some(resolved) => resolved,
-			None => match has_any_row(&client, resource.table).await {
-				Ok(any) => (any, Source::Observed),
-				Err(err) => {
-					errored.insert(resource.name, err.to_string());
-					continue;
-				}
-			},
-		};
+		let (enabled, source) = resolve_enablement(resource, &settings, &ctx);
 		if !enabled {
 			disabled.insert(resource.name, source.as_str());
 			continue;
@@ -719,27 +724,23 @@ fn merge_enablement(pairs: &[(String, Value)]) -> BTreeMap<String, bool> {
 }
 
 /// Enablement as declared: the stored setting first, then configuration, which
-/// is where Tamanu before 2.60 keeps the same flags. `None` when neither
-/// declares this resource, leaving it to be inferred.
+/// is where Tamanu before 2.60 keeps the same flags, then Tamanu's default.
 fn resolve_enablement(
 	resource: &Resource,
 	settings: &BTreeMap<String, bool>,
 	ctx: &TamanuCx,
-) -> Option<(bool, Source)> {
+) -> (bool, Source) {
 	if let Some(&enabled) = settings.get(resource.name) {
-		return Some((enabled, Source::Setting));
+		return (enabled, Source::Setting);
 	}
-	ctx.config
+	if let Some(&enabled) = ctx
+		.config
 		.fhir_resource_materialisation_enabled()
 		.get(resource.name)
-		.map(|&enabled| (enabled, Source::Config))
-}
-
-/// Whether the resource has ever materialised anything, as the last resort for
-/// enablement. Stops at the first row rather than counting.
-async fn has_any_row(client: &PgClient, table: &str) -> Result<bool, tokio_postgres::Error> {
-	let sql = format!("SELECT EXISTS (SELECT 1 FROM fhir.{table} LIMIT 1) AS present");
-	client.query_one(&sql, &[]).await?.try_get("present")
+	{
+		return (enabled, Source::Config);
+	}
+	(resource.enabled_by_default, Source::Default)
 }
 
 /// The number of upstream records inside the window with no FHIR row, and the
@@ -996,7 +997,7 @@ mod tests {
 		);
 		assert_eq!(
 			patient["enablement"], "setting",
-			"the stored setting should answer, not inference"
+			"the stored setting should answer, not the default"
 		);
 		assert!(
 			patient["gap"].as_i64().unwrap_or(0) >= 1,
@@ -1065,13 +1066,13 @@ mod tests {
 
 	#[test]
 	fn disabled_and_upstream_absent_resources_are_skipped_instances() {
-		let disabled = BTreeMap::from([("Specimen", "observed")]);
+		let disabled = BTreeMap::from([("Specimen", "default")]);
 		let out = instances(&[], &disabled, &["Immunization"], &BTreeMap::new(), &[]);
 
 		let specimen = find(&out, "Specimen");
 		assert!(specimen.status.is_skip());
 		assert_eq!(specimen.detail["state"], "disabled");
-		assert_eq!(specimen.detail["enablement"], "observed");
+		assert_eq!(specimen.detail["enablement"], "default");
 
 		let immunization = find(&out, "Immunization");
 		assert!(immunization.status.is_skip());
@@ -1102,7 +1103,7 @@ mod tests {
 
 	#[test]
 	fn a_check_with_every_resource_set_aside_is_skipped_but_still_reports_them() {
-		let disabled = BTreeMap::from([("Specimen", "observed")]);
+		let disabled = BTreeMap::from([("Specimen", "default")]);
 		let check = Check::instanced(
 			NAME,
 			"s",
@@ -1480,11 +1481,17 @@ mod tests {
 	}
 
 	#[test]
-	fn config_answers_when_no_setting_row_exists() {
+	fn tamanu_default_answers_when_nothing_declares_the_resource() {
 		let ctx = facility_ctx();
-		let resource = RESOURCES.iter().find(|r| r.name == "Patient").unwrap();
-		// Neither source carries it, so enablement is left to be inferred.
-		assert_eq!(resolve_enablement(resource, &BTreeMap::new(), &ctx), None);
+		let find = |name| RESOURCES.iter().find(|r| r.name == name).unwrap();
+		assert_eq!(
+			resolve_enablement(find("Patient"), &BTreeMap::new(), &ctx),
+			(true, Source::Default)
+		);
+		assert_eq!(
+			resolve_enablement(find("Immunization"), &BTreeMap::new(), &ctx),
+			(false, Source::Default)
+		);
 	}
 
 	#[test]
@@ -1497,14 +1504,14 @@ mod tests {
 
 		assert_eq!(
 			resolve_enablement(resource, &BTreeMap::new(), &ctx),
-			Some((false, Source::Config)),
+			(false, Source::Config),
 			"config answers on a Tamanu that keeps the flags there"
 		);
 
 		let settings = BTreeMap::from([("ServiceRequest".to_string(), true)]);
 		assert_eq!(
 			resolve_enablement(resource, &settings, &ctx),
-			Some((true, Source::Setting)),
+			(true, Source::Setting),
 			"the stored setting wins once the deployment has one"
 		);
 	}
