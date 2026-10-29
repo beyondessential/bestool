@@ -30,7 +30,7 @@ use bestool_tamanu::{
 
 use crate::{
 	check::{Check, CheckOutcome, OverallResult},
-	checks, heal, msupply,
+	checks, heal, mobile_usage, msupply,
 	ownership::HostApplication,
 	progress::{DoctorEvent, ProgressSender},
 	runtime, server_info,
@@ -1127,6 +1127,11 @@ pub async fn perform_sweep(
 	.await;
 	facts.tamanu_root = tamanu_root;
 	facts.tamanu_server_kind = tamanu_server_kind;
+	if tamanu_server_kind == Some("central")
+		&& let Some(client) = facts_db.as_deref()
+	{
+		facts.active_mobile_devices = mobile_usage::active_devices(client).await;
+	}
 	let pg_version = facts.pg_version.clone();
 	// `binary_version` is the running binary's (bestool's) version, threaded in
 	// by the caller. Evaluating `env!("CARGO_PKG_VERSION")` here would resolve

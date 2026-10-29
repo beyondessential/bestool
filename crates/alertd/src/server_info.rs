@@ -130,6 +130,9 @@ pub struct TamanuInfo {
 	/// `countryTimeZone` config).
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub timezone: Option<String>,
+	/// Mobile devices that synced to this central in the last 30 days.
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub active_mobile_devices: Option<i64>,
 }
 
 /// The Postgres installation's own facts.
@@ -166,6 +169,7 @@ pub struct ServerFacts {
 	pub canonical_url: Option<String>,
 	pub current_sync_tick: Option<String>,
 	pub timezone: Option<String>,
+	pub active_mobile_devices: Option<i64>,
 	pub pg_version: Option<String>,
 	pub tamanu_root: Option<String>,
 	pub tamanu_server_kind: Option<&'static str>,
@@ -233,6 +237,7 @@ pub async fn gather(
 		canonical_url: facts.canonical_url,
 		current_sync_tick: facts.current_sync_tick,
 		timezone: facts.timezone,
+		active_mobile_devices: facts.active_mobile_devices,
 	};
 
 	let postgres = PostgresInfo {
