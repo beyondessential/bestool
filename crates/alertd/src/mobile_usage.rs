@@ -55,8 +55,35 @@ pub async fn active_devices(client: &tokio_postgres::Client) -> Option<i64> {
 mod tests {
 	use std::time::Instant;
 
-	use super::{LAST, active_devices};
+	use super::{LAST, SQL, WINDOW_DAYS, active_devices};
 	use crate::checks::test_support::central_ctx;
+
+	// A temp table shadows the real one for this connection only, so the query
+	// runs over seeded sessions without touching the database's own.
+	#[tokio::test]
+	async fn counts_each_mobile_device_once_within_the_window() {
+		let Some(ctx) = central_ctx().await else {
+			return;
+		};
+		let client = ctx.db().await.expect("central connection");
+		client
+			.batch_execute(
+				"CREATE TEMP TABLE sync_sessions (parameters jsonb, completed_at timestamptz); \
+				INSERT INTO sync_sessions VALUES \
+				('{\"deviceId\": \"tab-a\", \"isMobile\": true}', now() - '1 day'::interval), \
+				('{\"deviceId\": \"tab-a\", \"isMobile\": true}', now() - '2 days'::interval), \
+				('{\"deviceId\": \"tab-b\", \"isMobile\": true}', now() - '29 days'::interval), \
+				('{\"deviceId\": \"tab-old\", \"isMobile\": true}', now() - '31 days'::interval), \
+				('{\"deviceId\": \"tab-open\", \"isMobile\": true}', NULL), \
+				('{\"deviceId\": \"facility-1\", \"isMobile\": false}', now() - '1 day'::interval), \
+				('{\"deviceId\": \"facility-2\"}', now() - '1 day'::interval)",
+			)
+			.await
+			.expect("seed");
+
+		let row = client.query_one(SQL, &[&WINDOW_DAYS]).await.expect("query");
+		assert_eq!(row.get::<_, i64>(0), 2);
+	}
 
 	#[tokio::test]
 	async fn counts_against_central_then_serves_the_cached_count() {

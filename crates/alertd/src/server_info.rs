@@ -440,4 +440,23 @@ mod tests {
 		assert!(parse_tag_keys("\n  \n\n").is_empty());
 		assert_eq!(parse_tag_keys("\nName\n\n"), vec!["Name".to_string()]);
 	}
+
+	// Canopy reads the figure by this exact key.
+	#[test]
+	fn active_mobile_devices_goes_out_under_canopys_key_zero_included() {
+		let info = TamanuInfo {
+			active_mobile_devices: Some(0),
+			..Default::default()
+		};
+		assert_eq!(
+			serde_json::to_value(&info).unwrap()["activeMobileDevices"],
+			serde_json::json!(0)
+		);
+		assert!(
+			serde_json::to_value(TamanuInfo::default())
+				.unwrap()
+				.get("activeMobileDevices")
+				.is_none()
+		);
+	}
 }
