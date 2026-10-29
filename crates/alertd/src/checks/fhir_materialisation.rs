@@ -139,6 +139,11 @@ struct Resource {
 	name: &'static str,
 	table: &'static str,
 	pace: Pace,
+
+	/// Whether Tamanu materialises it when nothing declares otherwise, the same
+	/// in its settings schema and its pre-2.60 config defaults.
+	enabled_by_default: bool,
+
 	upstreams: &'static [Upstream],
 }
 
@@ -147,6 +152,7 @@ const RESOURCES: &[Resource] = &[
 		name: "ServiceRequest",
 		table: "service_requests",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[
 			Upstream {
 				table: "lab_requests",
@@ -164,6 +170,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Patient",
 		table: "patients",
 		pace: Pace::Prompt,
+		enabled_by_default: true,
 		upstreams: &[Upstream {
 			table: "patients",
 			filter: None,
@@ -174,6 +181,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Practitioner",
 		table: "practitioners",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "users",
 			filter: None,
@@ -184,6 +192,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Organization",
 		table: "organizations",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "facilities",
 			filter: None,
@@ -194,6 +203,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Immunization",
 		table: "immunizations",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "administered_vaccines",
 			filter: None,
@@ -204,6 +214,7 @@ const RESOURCES: &[Resource] = &[
 		name: "MedicationRequest",
 		table: "medication_requests",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "pharmacy_order_prescriptions",
 			filter: None,
@@ -214,6 +225,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Specimen",
 		table: "specimens",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "lab_requests",
 			filter: Some("u.specimen_attached = true"),
@@ -224,6 +236,7 @@ const RESOURCES: &[Resource] = &[
 		name: "Encounter",
 		table: "encounters",
 		pace: Pace::Prompt,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "encounters",
 			filter: Some("u.encounter_type <> 'surveyResponse'"),
@@ -241,6 +254,7 @@ const RESOURCES: &[Resource] = &[
 		name: "MediciReport",
 		table: "non_fhir_medici_report",
 		pace: Pace::Deferred,
+		enabled_by_default: false,
 		upstreams: &[Upstream {
 			table: "encounters",
 			filter: Some("u.encounter_type <> 'surveyResponse' AND u.end_date IS NOT NULL"),
@@ -709,10 +723,6 @@ fn merge_enablement(pairs: &[(String, Value)]) -> BTreeMap<String, bool> {
 	flags
 }
 
-/// Resources Tamanu materialises when nothing declares otherwise, the same in
-/// its settings schema and its pre-2.60 config defaults.
-const ENABLED_BY_DEFAULT: &[&str] = &["Patient"];
-
 /// Enablement as declared: the stored setting first, then configuration, which
 /// is where Tamanu before 2.60 keeps the same flags, then Tamanu's default.
 fn resolve_enablement(
@@ -730,7 +740,7 @@ fn resolve_enablement(
 	{
 		return (enabled, Source::Config);
 	}
-	(ENABLED_BY_DEFAULT.contains(&resource.name), Source::Default)
+	(resource.enabled_by_default, Source::Default)
 }
 
 /// The number of upstream records inside the window with no FHIR row, and the
