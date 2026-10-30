@@ -1130,7 +1130,9 @@ pub async fn perform_sweep(
 	if tamanu_server_kind == Some("central")
 		&& let Some(client) = facts_db.as_deref()
 	{
-		facts.active_mobile_devices = mobile_usage::active_devices(client).await;
+		let central = ApplicationRef::tamanu(ApplicationKind::TamanuCentral);
+		let store = store::FileStore::for_subject(&Subject::Application(central));
+		facts.active_mobile_devices = mobile_usage::active_devices(client, &store).await;
 	}
 	let pg_version = facts.pg_version.clone();
 	// `binary_version` is the running binary's (bestool's) version, threaded in
