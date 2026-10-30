@@ -1644,6 +1644,43 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a_central_sweep_reports_its_active_mobile_devices() {
+		const URL: &str = "postgresql://localhost/tamanu-central";
+		let Ok(pool) = bestool_postgres::pool::create_pool_sized(
+			URL,
+			"bestool-alertd-test",
+			checks::POOL_SIZE,
+			bestool_postgres::pool::Prompt::Never,
+		)
+		.await
+		else {
+			return;
+		};
+
+		let sweep = perform_sweep(
+			"0.0.0-test",
+			Some(targets_for(URL, true)),
+			reqwest::Client::new(),
+			&["machine:memory".into()],
+			&[],
+			None,
+			None,
+			None,
+			false,
+			Some(pool),
+		)
+		.await
+		.unwrap();
+
+		let apps = sweep.payload.applications.as_ref().expect("applications");
+		let central = apps
+			.values()
+			.find(|app| app.type_ == "tamanu-central")
+			.expect("central application");
+		assert!(central.detail.get("activeMobileDevices").is_some());
+	}
+
+	#[tokio::test]
 	async fn the_sweep_announces_its_plan_before_any_result() {
 		// The display cannot know which applications the host has, so the sweep
 		// says what it will run — and says it before the first result lands.
