@@ -57,6 +57,7 @@ pub mod memory;
 pub mod migrations;
 pub mod munin;
 pub mod patient_communication_errors;
+pub mod patient_mandatory_nulls;
 pub mod pg_checksums;
 pub mod pg_tuning;
 pub mod report_errors;
@@ -732,6 +733,13 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!(
 			"patient_communication_errors",
 			patient_communication_errors::run,
+			central
+		),
+		// Temporary: tells whether patients.date_of_birth and patients.sex can be
+		// made NOT NULL.
+		entry!(
+			"patient_mandatory_nulls",
+			patient_mandatory_nulls::run,
 			central
 		),
 		entry!("report_errors", report_errors::run, central),
