@@ -21,6 +21,12 @@ const OVERLAP_SECS: i64 = 5 * 60;
 
 const KEY: &str = "mobile_usage";
 
+// This runs in the facts gather, outside the deadline the checks run under, and
+// a plain SELECT waits behind any DDL on `sync_sessions`, so a migration on a
+// central being upgraded would otherwise stall the whole sweep.
+const GUARD: &str = "SET statement_timeout = '5min'; SET lock_timeout = '5s'";
+const UNGUARD: &str = "SET statement_timeout = DEFAULT; SET lock_timeout = DEFAULT";
+
 const SQL: &str = "SELECT parameters->>'deviceId', \
 	extract(epoch FROM max(completed_at))::bigint \
 	FROM sync_sessions \
@@ -56,6 +62,19 @@ pub async fn active_devices(
 }
 
 async fn read(
+	client: &tokio_postgres::Client,
+	stored: Option<&Seen>,
+) -> Result<Seen, tokio_postgres::Error> {
+	client.batch_execute(GUARD).await?;
+	let seen = counted(client, stored).await;
+	// The connection goes back to the sweep's pool, so the limits end here.
+	let reset = client.batch_execute(UNGUARD).await;
+	let seen = seen?;
+	reset?;
+	Ok(seen)
+}
+
+async fn counted(
 	client: &tokio_postgres::Client,
 	stored: Option<&Seen>,
 ) -> Result<Seen, tokio_postgres::Error> {
@@ -157,5 +176,31 @@ mod tests {
 			vec!["tab-a", "tab-kept"]
 		);
 		assert!(seen.read_to >= now);
+	}
+
+	#[tokio::test]
+	async fn it_leaves_the_pooled_connection_as_it_found_it() {
+		let Some(ctx) = central_ctx().await else {
+			return;
+		};
+		let client = ctx.db().await.expect("central connection");
+		client.batch_execute(SEED).await.expect("seed");
+
+		let setting = async |name: &str| -> String {
+			client
+				.query_one(&format!("SHOW {name}"), &[])
+				.await
+				.unwrap()
+				.get(0)
+		};
+		let before = (
+			setting("statement_timeout").await,
+			setting("lock_timeout").await,
+		);
+
+		active_devices(&client, &MemoryStore::new()).await;
+
+		assert_eq!(setting("statement_timeout").await, before.0);
+		assert_eq!(setting("lock_timeout").await, before.1);
 	}
 }
