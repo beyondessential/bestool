@@ -30,7 +30,7 @@ use bestool_tamanu::{
 
 use crate::{
 	check::{Check, CheckOutcome, OverallResult},
-	checks, heal, msupply,
+	checks, heal, mobile_usage, msupply,
 	ownership::HostApplication,
 	progress::{DoctorEvent, ProgressSender},
 	runtime, server_info,
@@ -1127,6 +1127,13 @@ pub async fn perform_sweep(
 	.await;
 	facts.tamanu_root = tamanu_root;
 	facts.tamanu_server_kind = tamanu_server_kind;
+	if tamanu_server_kind == Some("central")
+		&& let Some(client) = facts_db.as_deref()
+	{
+		let central = ApplicationRef::tamanu(ApplicationKind::TamanuCentral);
+		let store = store::FileStore::for_subject(&Subject::Application(central));
+		facts.active_mobile_devices = mobile_usage::active_devices(client, &store).await;
+	}
 	let pg_version = facts.pg_version.clone();
 	// `binary_version` is the running binary's (bestool's) version, threaded in
 	// by the caller. Evaluating `env!("CARGO_PKG_VERSION")` here would resolve
@@ -1636,6 +1643,43 @@ mod tests {
 		assert!(sweep.payload.applications.is_none());
 		let machine = sweep.payload.machine.as_ref().expect("machine target");
 		assert!(!wire_names(&machine.health).contains(&"tamanu_http".to_string()));
+	}
+
+	#[tokio::test]
+	async fn a_central_sweep_reports_its_active_mobile_devices() {
+		const URL: &str = "postgresql://localhost/tamanu-central";
+		let Ok(pool) = bestool_postgres::pool::create_pool_sized(
+			URL,
+			"bestool-alertd-test",
+			checks::POOL_SIZE,
+			bestool_postgres::pool::Prompt::Never,
+		)
+		.await
+		else {
+			return;
+		};
+
+		let sweep = perform_sweep(
+			"0.0.0-test",
+			Some(targets_for(URL, true)),
+			reqwest::Client::new(),
+			&["machine:memory".into()],
+			&[],
+			None,
+			None,
+			None,
+			false,
+			Some(pool),
+		)
+		.await
+		.unwrap();
+
+		let apps = sweep.payload.applications.as_ref().expect("applications");
+		let central = apps
+			.values()
+			.find(|app| app.type_ == "tamanu-central")
+			.expect("central application");
+		assert!(central.detail.get("activeMobileDevices").is_some());
 	}
 
 	#[tokio::test]
