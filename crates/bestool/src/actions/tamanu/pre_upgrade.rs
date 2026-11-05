@@ -80,7 +80,7 @@ pub async fn run(args: PreUpgradeArgs, ctx: Context) -> Result<()> {
 		Some((_, root)) => root.clone(),
 		None if args.dry_run => bail!("{target} isn't downloaded yet; run without --dry-run to fetch it"),
 		None => {
-			let kind = detect_kind(&config, Some(&client)).await;
+			let kind = detect_kind(&config, Some(&client), Some(&current_root)).await;
 			download::run(
 				DownloadArgs {
 					kind: artifact_type(kind).into(),

@@ -61,7 +61,7 @@ pub async fn locate(root: &Path, package: Option<&str>) -> Result<SecretKeyLocat
 	let config = load_config(root, package)?;
 	let kind = match package.and_then(ApiServerKind::from_str_ci) {
 		Some(kind) => kind,
-		None => detect_kind(&config, None).await,
+		None => detect_kind(&config, None, Some(root)).await,
 	};
 	let key_file = config
 		.crypto

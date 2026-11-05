@@ -110,7 +110,7 @@ pub async fn discover_host_applications() -> Result<Vec<HostApplication>, String
 		Ok(Some((_, root))) => {
 			let config = bestool_tamanu::config::load_config(&root, None)
 				.map_err(|err| format!("could not read the Tamanu configuration: {err}"))?;
-			let kind = bestool_tamanu::detect_kind(&config, None).await;
+			let kind = bestool_tamanu::detect_kind(&config, None, Some(&root)).await;
 			out.push(HostApplication::tamanu(kind, &config));
 		}
 		Ok(None) => {}

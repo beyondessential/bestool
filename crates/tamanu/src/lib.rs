@@ -107,8 +107,8 @@ pub async fn try_find_tamanu(root: Option<&Path>) -> Result<Option<(Version, Pat
 ///
 /// A Windows upgrade unpacks the new release next to the running one and only
 /// later copies the local config into it. Until then the new release reads as
-/// stock defaults: no facility settings and no database credentials, so it
-/// would be taken for an unreachable central server.
+/// stock defaults, without the database credentials or anything else the
+/// install was set up with.
 fn newest_configured(
 	candidates: Vec<(Version, PathBuf)>,
 	is_configured: impl Fn(&Path) -> bool,
@@ -202,51 +202,75 @@ async fn select_active(candidates: &[(Version, PathBuf)]) -> Option<(Version, Pa
 
 /// Decide whether a Tamanu install is a facility or a central server.
 ///
-/// Two complementary signals, in order of trust:
+/// Signals, most authoritative first:
 ///
 /// 1. **Tamanu's local DB**, when available. The `local_system_facts` table
 ///    carries `facilityIds` and `syncHost` rows that the application itself
-///    only populates on facility servers. This is the most authoritative
-///    signal we have, since it reflects what the running Tamanu actually
-///    thinks it is — independent of config-file vintage or layout.
-/// 2. **The loaded config** (`TamanuConfig::is_facility`), which is checked
-///    when the DB signal isn't conclusive (no DB client, or no matching
-///    rows). Looks at three independent fields: `serverFacilityIds` (plural,
-///    new), `serverFacilityId` (singular, legacy — still in real-world
-///    facility use), and `sync.host` (only set on facilities).
+///    only populates on facility servers, so it reflects what the running
+///    Tamanu thinks it is.
+/// 2. **The install's layout**, when `root` is a release bundle. Central and
+///    facility ship as separate bundles: the `pm2.config.cjs` at a bundle's
+///    root runs from its own server's package, and only that server is under
+///    `packages/`. This is the one positive signal for central, and it holds
+///    before the bundle has been configured. A root carrying both servers and
+///    no bundle pm2 config (a source checkout) or neither (a container host)
+///    says nothing.
+/// 3. **The loaded config** (`TamanuConfig::is_facility`): `serverFacilityIds`
+///    (plural, new), `serverFacilityId` (singular, legacy, still in real-world
+///    facility use), or `sync.host` (only set on facilities).
 ///
-/// On disagreement between DB and config, the DB wins and we log a debug
-/// breadcrumb. Filesystem-based detection (looking at `packages/<name>`) was
-/// previously used here but is too fragile — container-based deployments
-/// don't have a `packages/` directory at all, and stale package directories
-/// on bare-metal installs misclassify the host.
-#[instrument(level = "debug", skip(db_client))]
+/// With none of these, the install is taken to be central.
+#[instrument(level = "debug", skip(config, db_client))]
 pub async fn detect_kind(
 	config: &config::TamanuConfig,
 	db_client: Option<&tokio_postgres::Client>,
+	root: Option<&Path>,
 ) -> ApiServerKind {
-	let config_says = if config.is_facility() {
-		Some(ApiServerKind::Facility)
-	} else {
-		None
-	};
-
-	let db_says = match db_client {
-		Some(c) => detect_kind_from_db(c).await,
-		None => None,
-	};
-
-	match (db_says, config_says) {
-		(Some(db), Some(cfg)) if db != cfg => {
-			debug!(?db, ?cfg, "DB and config disagree on kind; trusting DB");
-			db
-		}
-		(Some(k), _) | (_, Some(k)) => k,
-		(None, None) => {
-			debug!("no facility signal from DB or config; assuming central");
-			ApiServerKind::Central
-		}
+	if let Some(client) = db_client
+		&& let Some(kind) = detect_kind_from_db(client).await
+	{
+		return kind;
 	}
+
+	if let Some(kind) = root.and_then(detect_kind_from_layout) {
+		return kind;
+	}
+
+	if config.is_facility() {
+		return ApiServerKind::Facility;
+	}
+
+	debug!("no facility signal from DB, layout, or config; assuming central");
+	ApiServerKind::Central
+}
+
+/// The server a release bundle ships: the package its pm2 config runs from, or
+/// else the only server under `packages/`.
+fn detect_kind_from_layout(root: &Path) -> Option<ApiServerKind> {
+	if let Some(kind) = ["pm2.config.cjs", "pm2.config.js"]
+		.iter()
+		.find_map(|name| std::fs::read_to_string(root.join(name)).ok())
+		.and_then(|config| kind_from_pm2_config(&config))
+	{
+		return Some(kind);
+	}
+
+	let has = |kind: ApiServerKind| root.join("packages").join(kind.package_name()).is_dir();
+	match (has(ApiServerKind::Central), has(ApiServerKind::Facility)) {
+		(true, false) => Some(ApiServerKind::Central),
+		(false, true) => Some(ApiServerKind::Facility),
+		_ => None,
+	}
+}
+
+/// The server a bundle's pm2 config runs from, by its `cwd`. Release packaging
+/// sets it to `packages/<kind>-server`; the source tree's copy leaves it `.`.
+fn kind_from_pm2_config(config: &str) -> Option<ApiServerKind> {
+	static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+		regex::Regex::new(r#"const\s+cwd\s*=\s*['"`]packages/([a-z]+-server)['"`]"#).unwrap()
+	});
+	RE.captures(config)
+		.and_then(|captures| ApiServerKind::from_str_ci(&captures[1]))
 }
 
 /// Look at `local_system_facts` for facility-only keys.
@@ -354,6 +378,65 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn layout_decides_kind_for_a_single_server_bundle() {
+		let dir = tempfile::tempdir().unwrap();
+		let db = serde_json::json!({ "name": "x", "username": "u", "password": "p" });
+		let unconfigured = cfg_from(serde_json::json!({ "db": db }));
+		let facility_cfg = cfg_from(serde_json::json!({ "db": db, "serverFacilityIds": ["f1"] }));
+
+		let facility = dir.path().join("facility");
+		std::fs::create_dir_all(facility.join("packages/facility-server")).unwrap();
+		assert_eq!(
+			detect_kind(&unconfigured, None, Some(&facility)).await,
+			ApiServerKind::Facility,
+			"a facility bundle is a facility before it is configured"
+		);
+
+		let central = dir.path().join("central");
+		std::fs::create_dir_all(central.join("packages/central-server")).unwrap();
+		assert_eq!(
+			detect_kind(&unconfigured, None, Some(&central)).await,
+			ApiServerKind::Central,
+		);
+
+		let both = dir.path().join("both");
+		std::fs::create_dir_all(both.join("packages/central-server")).unwrap();
+		std::fs::create_dir_all(both.join("packages/facility-server")).unwrap();
+		assert_eq!(
+			detect_kind(&facility_cfg, None, Some(&both)).await,
+			ApiServerKind::Facility,
+			"a root with both servers defers to the config"
+		);
+
+		std::fs::write(
+			both.join("pm2.config.cjs"),
+			"const cwd = 'packages/central-server';\nprocess.env.NODE_CONFIG_DIR = cwd + '/config/';\n",
+		)
+		.unwrap();
+		assert_eq!(
+			detect_kind(&facility_cfg, None, Some(&both)).await,
+			ApiServerKind::Central,
+			"the bundle's pm2 config names its server"
+		);
+	}
+
+	#[test]
+	fn pm2_config_cwd() {
+		assert_eq!(
+			kind_from_pm2_config("const cwd = 'packages/facility-server';"),
+			Some(ApiServerKind::Facility)
+		);
+		assert_eq!(
+			kind_from_pm2_config(r#"const cwd = "packages/central-server";"#),
+			Some(ApiServerKind::Central)
+		);
+		assert_eq!(
+			kind_from_pm2_config("const cwd = '.'; // IMPORTANT: Leave this as-is"),
+			None
+		);
+	}
+
+	#[tokio::test]
 	async fn no_db_no_signal_defaults_to_central() {
 		// Config without any facility marker and no DB → central. That's
 		// the "fresh empty config" path; we used to return Facility from
@@ -361,7 +444,7 @@ mod tests {
 		let cfg = cfg_from(serde_json::json!({
 			"db": { "name": "x", "username": "u", "password": "p" },
 		}));
-		assert_eq!(detect_kind(&cfg, None).await, ApiServerKind::Central);
+		assert_eq!(detect_kind(&cfg, None, None).await, ApiServerKind::Central);
 	}
 
 	#[tokio::test]
@@ -370,7 +453,7 @@ mod tests {
 			"db": { "name": "x", "username": "u", "password": "p" },
 			"serverFacilityIds": ["f1"],
 		}));
-		assert_eq!(detect_kind(&cfg, None).await, ApiServerKind::Facility);
+		assert_eq!(detect_kind(&cfg, None, None).await, ApiServerKind::Facility);
 	}
 
 	#[tokio::test]
@@ -382,7 +465,7 @@ mod tests {
 			"db": { "name": "x", "username": "u", "password": "p" },
 			"serverFacilityId": "f1",
 		}));
-		assert_eq!(detect_kind(&cfg, None).await, ApiServerKind::Facility);
+		assert_eq!(detect_kind(&cfg, None, None).await, ApiServerKind::Facility);
 	}
 
 	#[tokio::test]
@@ -391,6 +474,6 @@ mod tests {
 			"db": { "name": "x", "username": "u", "password": "p" },
 			"sync": { "host": "https://central.example.org" },
 		}));
-		assert_eq!(detect_kind(&cfg, None).await, ApiServerKind::Facility);
+		assert_eq!(detect_kind(&cfg, None, None).await, ApiServerKind::Facility);
 	}
 }

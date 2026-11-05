@@ -879,7 +879,8 @@ pub async fn perform_sweep(
 	// of it and by the Tamanu application's own context.
 	let tamanu = match targets.as_ref().map(|tg| (tg, tg.tamanu.as_ref())) {
 		Some((targets, Some(t))) => {
-			let kind = bestool_tamanu::detect_kind(&targets.config, setup_client).await;
+			let kind =
+				bestool_tamanu::detect_kind(&targets.config, setup_client, t.root.as_deref()).await;
 			debug!(?kind, "detected Tamanu server kind for doctor sweep");
 
 			// With a real install, the version is the env-file/install version.
