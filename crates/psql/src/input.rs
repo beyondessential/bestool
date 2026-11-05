@@ -195,6 +195,28 @@ mod tests {
 	}
 
 	#[test]
+	fn test_handle_input_metacommand_mid_query() {
+		let state = ReplState::new();
+		let (buffer, actions) = handle_input("", "SELECT *", &state);
+		assert!(actions.is_empty());
+
+		let (buffer, actions) = handle_input(&buffer, "\\x", &state);
+		assert_eq!(actions.len(), 1);
+		assert!(matches!(actions[0].action, ReplAction::ToggleExpanded));
+		assert_eq!(buffer, "SELECT *");
+
+		let (buffer, actions) = handle_input(&buffer, "FROM users;", &state);
+		assert_eq!(buffer, "");
+		assert_eq!(actions.len(), 1);
+		match &actions[0].action {
+			ReplAction::Execute { sql, .. } => {
+				assert_eq!(sql, "SELECT *\nFROM users")
+			}
+			_ => panic!("Expected Execute action"),
+		}
+	}
+
+	#[test]
 	fn test_handle_input_multiline_query() {
 		let state = ReplState::new();
 		let (buffer1, actions1) = handle_input("", "SELECT *", &state);
@@ -238,9 +260,9 @@ mod tests {
 		assert_eq!(buffer1, "SELECT *");
 		assert_eq!(actions1.len(), 0);
 
-		// \q after incomplete query triggers quit
+		// \q after incomplete query triggers quit, keeping the query buffered
 		let (buffer2, actions2) = handle_input(&buffer1, "\\q", &state);
-		assert_eq!(buffer2, "");
+		assert_eq!(buffer2, "SELECT *");
 		assert_eq!(actions2.len(), 1);
 		assert!(matches!(actions2[0].action, ReplAction::Exit));
 	}
