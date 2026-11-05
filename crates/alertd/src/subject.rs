@@ -8,7 +8,7 @@ use bestool_tamanu::ApiServerKind;
 ///
 /// The wire type is an open set, so this enumerates only what bestool itself
 /// reports from a host: its Tamanu deployment, the Postgres installation under
-/// it, and mSupply. A machine commonly has Tamanu and Postgres, and they are
+/// it, mSupply, and Tupaia. A machine commonly has Tamanu and Postgres, and they are
 /// reported separately — "Tamanu as seen through its database" and "the health
 /// of Postgres itself" are different questions about different things.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,16 +25,20 @@ pub enum ApplicationKind {
 	/// The mSupply installation on this machine, reported whether or not the
 	/// host has a Tamanu or a database.
 	Msupply,
+	/// The Tupaia installation on this machine, which carries no checks of its
+	/// own but is reported so the machine has an application to be ranked by.
+	Tupaia,
 }
 
 impl ApplicationKind {
 	/// Every kind bestool can report, for lookups that go from a wire key back
 	/// to the kind that produced it.
-	pub const ALL: [Self; 4] = [
+	pub const ALL: [Self; 5] = [
 		Self::TamanuCentral,
 		Self::TamanuFacility,
 		Self::Postgres,
 		Self::Msupply,
+		Self::Tupaia,
 	];
 
 	/// The application type as canopy names it.
@@ -44,6 +48,7 @@ impl ApplicationKind {
 			Self::TamanuFacility => "tamanu-facility",
 			Self::Postgres => "postgres",
 			Self::Msupply => crate::msupply::TYPE_SLUG,
+			Self::Tupaia => crate::tupaia::TYPE_SLUG,
 		}
 	}
 
@@ -83,6 +88,15 @@ impl ApplicationRef {
 	/// The mSupply installed on the machine, of which there is one.
 	pub fn msupply() -> Self {
 		let kind = ApplicationKind::Msupply;
+		Self {
+			kind,
+			key: format!("host-{}", kind.type_slug()),
+		}
+	}
+
+	/// The Tupaia installed on the machine, of which there is one.
+	pub fn tupaia() -> Self {
+		let kind = ApplicationKind::Tupaia;
 		Self {
 			kind,
 			key: format!("host-{}", kind.type_slug()),
@@ -281,6 +295,7 @@ mod tests {
 		match kind {
 			ApplicationKind::Postgres => ApplicationRef::local_postgres(5432),
 			ApplicationKind::Msupply => ApplicationRef::msupply(),
+			ApplicationKind::Tupaia => ApplicationRef::tupaia(),
 			other => ApplicationRef::tamanu(other),
 		}
 	}
@@ -372,6 +387,27 @@ mod tests {
 		let msupply = ApplicationRef::msupply();
 		assert_eq!(msupply.key, "host-msupply");
 		assert_eq!(msupply.kind.type_slug(), "msupply");
+	}
+
+	#[test]
+	fn no_scope_admits_tupaia() {
+		let tupaia = app_ref(ApplicationKind::Tupaia);
+		for scope in [
+			TamanuScope::Any,
+			TamanuScope::Central,
+			TamanuScope::Facility,
+		] {
+			assert!(!scope.admits(&tupaia), "{scope:?} admitted Tupaia");
+		}
+		assert!(!HostedScope::Any.admits(&tupaia));
+		assert!(!ApplicationKind::Tupaia.is_tamanu());
+	}
+
+	#[test]
+	fn tupaia_is_keyed_by_its_type() {
+		let tupaia = ApplicationRef::tupaia();
+		assert_eq!(tupaia.key, "host-tupaia");
+		assert_eq!(tupaia.kind.type_slug(), "tupaia");
 	}
 
 	#[test]
