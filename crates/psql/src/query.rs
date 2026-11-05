@@ -207,6 +207,7 @@ fn should_hide_row_count(command: &str) -> bool {
 ///
 /// Postgres reports a row count for SELECT as well as DML, so whether the statement
 /// returns a result set decides between "0 rows" and the command's affected count.
+/// DML with RETURNING returns a result set but still reports what it changed, like psql.
 fn empty_result_status(
 	statement: &str,
 	returns_rows: bool,
@@ -214,12 +215,16 @@ fn empty_result_status(
 	duration: std::time::Duration,
 ) -> String {
 	let millis = duration.as_secs_f64() * 1000.0;
+	let command = statement.split_whitespace().next().unwrap_or("QUERY");
+	let is_dml = matches!(
+		command.to_uppercase().as_str(),
+		"INSERT" | "UPDATE" | "DELETE" | "MERGE"
+	);
 	let count = match rows_affected {
-		Some(count) if !returns_rows => count,
+		Some(count) if is_dml || !returns_rows => count,
 		_ => return format!("(0 rows, took {millis:.3} ms)"),
 	};
 
-	let command = statement.split_whitespace().next().unwrap_or("QUERY");
 	let verb = command_to_verb(command);
 	// CREATE TABLE AS and CREATE MATERIALIZED VIEW report "SELECT n"; other CREATEs
 	// carry no count, which the driver reads as 0
@@ -847,6 +852,15 @@ mod tests {
 		);
 		assert_eq!(
 			empty_result_status("DELETE FROM t RETURNING id", true, Some(0), d),
+			"(deleted 0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status(
+				"WITH d AS (DELETE FROM t RETURNING id) SELECT * FROM d",
+				true,
+				Some(0),
+				d
+			),
 			"(0 rows, took 3.771 ms)"
 		);
 		assert_eq!(
