@@ -3,7 +3,7 @@ use winnow::{
 	ascii::multispace0,
 	combinator::opt,
 	error::{ContextError, ErrMode},
-	token::{any, take_till},
+	token::any,
 };
 
 use super::{
@@ -122,10 +122,8 @@ fn parse_query_statement(
 
 	match sql_result {
 		SqlResult::Semicolon(sql) => {
-			// Skip the semicolon
 			';'.parse_next(input)?;
-			// Skip any trailing comment on the same line
-			let _ = skip_line_comment(input);
+			skip_trailing_comment(input);
 			let mut mods = QueryModifiers::new();
 			if state.expanded_mode {
 				mods.insert(super::QueryModifier::Expanded);
@@ -149,15 +147,27 @@ fn parse_query_statement(
 				return Err(ErrMode::Backtrack(ContextError::new()));
 			}
 
-			// Successfully parsed \g, now check for modifiers
-			let remaining_line: &str = take_till(0.., '\n').parse_next(input)?;
-			let _: Result<_, ContextError> = opt('\n').parse_next(input);
+			// The modifier and its argument run to the end of the line, stopping
+			// early at a comment or a `;`. A `;` here is a redundant terminator:
+			// it is consumed and anything after it is parsed as the next statement.
+			let line = &input[..input.find('\n').unwrap_or(input.len())];
+			let code = strip_comment(line).unwrap_or_default();
+			let modifier_text = match code.find(';') {
+				Some(pos) => {
+					*input = &input[pos + 1..];
+					skip_trailing_comment(input);
+					&code[..pos]
+				}
+				None => {
+					*input = &input[line.len()..];
+					let _: Result<_, ContextError> = opt('\n').parse_next(input);
+					code
+				}
+			};
 
-			// Check if there were modifiers after \g
 			let mut mods = QueryModifiers::new();
-			if !remaining_line.trim().is_empty() {
-				// Try to parse the full query with modifiers
-				let full_query = format!("{}\\g{}", sql, remaining_line);
+			if !modifier_text.trim().is_empty() {
+				let full_query = format!("{}\\g{}", sql, modifier_text);
 				if let Ok(Some((_, parsed_mods))) = parse_query_modifiers(&full_query) {
 					mods = parsed_mods;
 				}
@@ -247,13 +257,15 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 	Err(ErrMode::Backtrack(ContextError::new()))
 }
 
-fn skip_line_comment(input: &mut &str) -> Result<(), ErrMode<ContextError>> {
-	let line_rest: &str = take_till(0.., '\n').parse_next(input)?;
-	if strip_comment(line_rest).is_none() {
-		// Line is only a comment, skip the newline too
+/// After a terminator, consume the rest of the line if it holds nothing but
+/// whitespace or a comment. Anything else on the line is left in place to be
+/// parsed as the next statement.
+fn skip_trailing_comment(input: &mut &str) {
+	let line_end = input.find('\n').unwrap_or(input.len());
+	if strip_comment(&input[..line_end]).is_none() {
+		*input = &input[line_end..];
 		let _: Result<_, ContextError> = opt('\n').parse_next(input);
 	}
-	Ok(())
 }
 
 fn metacommand_to_action(metacmd: Metacommand) -> ReplAction {
@@ -312,7 +324,7 @@ fn metacommand_to_action(metacmd: Metacommand) -> ReplAction {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use super::{super::QueryModifier, *};
 
 	fn make_state() -> ReplState {
 		ReplState::new()
@@ -974,5 +986,93 @@ WHERE id IN (
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
+	}
+
+	fn executes(input: &str) -> (Vec<(String, QueryModifiers)>, String) {
+		let (actions, remaining) = parse_multi_input(input, &make_state());
+		let executes = actions
+			.into_iter()
+			.map(|s| match s.action {
+				ReplAction::Execute { sql, modifiers, .. } => (sql, modifiers),
+				other => panic!("Expected Execute, got {other:?}"),
+			})
+			.collect();
+		(executes, remaining)
+	}
+
+	fn mods(list: &[QueryModifier]) -> QueryModifiers {
+		list.iter().cloned().collect()
+	}
+
+	#[test]
+	fn test_modifier_with_trailing_semicolon() {
+		for (input, expected) in [
+			(
+				"SELECT 1 \\gset;",
+				mods(&[QueryModifier::VarSet { prefix: None }]),
+			),
+			(
+				"SELECT 1 \\gset p_;",
+				mods(&[QueryModifier::VarSet {
+					prefix: Some("p_".into()),
+				}]),
+			),
+			("SELECT 1 \\gx;", mods(&[QueryModifier::Expanded])),
+			("SELECT 1 \\gx ;", mods(&[QueryModifier::Expanded])),
+			("SELECT 1 \\gx; -- c", mods(&[QueryModifier::Expanded])),
+			(
+				"SELECT 1 \\go out.txt;",
+				mods(&[QueryModifier::Output {
+					file_path: "out.txt".into(),
+				}]),
+			),
+		] {
+			let (executes, remaining) = executes(input);
+			assert_eq!(remaining, "", "{input}");
+			assert_eq!(executes, vec![("SELECT 1".into(), expected)], "{input}");
+		}
+	}
+
+	#[test]
+	fn test_modifier_with_trailing_comment() {
+		let (executes, remaining) = executes("SELECT 1 \\gx -- c");
+		assert_eq!(remaining, "");
+		assert_eq!(
+			executes,
+			vec![("SELECT 1".into(), mods(&[QueryModifier::Expanded]))]
+		);
+	}
+
+	#[test]
+	fn test_modifier_semicolon_then_statement_on_same_line() {
+		let (executes, remaining) = executes("SELECT 1 \\gx; SELECT 2;");
+		assert_eq!(remaining, "");
+		assert_eq!(
+			executes,
+			vec![
+				("SELECT 1".into(), mods(&[QueryModifier::Expanded])),
+				("SELECT 2".into(), mods(&[])),
+			]
+		);
+	}
+
+	#[test]
+	fn test_two_statements_on_one_line() {
+		let (executes, remaining) = executes("SELECT 1; SELECT 2 \\gx");
+		assert_eq!(remaining, "");
+		assert_eq!(
+			executes,
+			vec![
+				("SELECT 1".into(), mods(&[])),
+				("SELECT 2".into(), mods(&[QueryModifier::Expanded])),
+			]
+		);
+	}
+
+	#[test]
+	fn test_semicolon_then_incomplete_statement_on_same_line() {
+		let (executes, remaining) = executes("SELECT 1; SELECT 2");
+		assert_eq!(remaining, "SELECT 2");
+		assert_eq!(executes, vec![("SELECT 1".into(), mods(&[]))]);
 	}
 }

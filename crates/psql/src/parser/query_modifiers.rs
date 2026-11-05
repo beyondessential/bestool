@@ -97,13 +97,6 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 		Ok((sql, cmd_and_arg.map(|(_, cmd)| cmd)))
 	}
 
-	// First check if input ends with semicolon
-	if input.trim_end().ends_with(';') {
-		let sql = input.trim_end().trim_end_matches(';').trim().to_string();
-		return Ok(Some((sql, QueryModifiers::new())));
-	}
-
-	// Try to parse metacommand
 	match parse_line.parse(input) {
 		Ok((sql, Some((modifier_chars, has_set, arg)))) => {
 			let mut modifiers = QueryModifiers::new();
@@ -159,18 +152,8 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_parse_query_modifiers_semicolon() {
-		let result = parse_query_modifiers("SELECT * FROM users;").unwrap();
-		assert!(result.is_some());
-		let (sql, mods) = result.unwrap();
-		assert_eq!(sql, "SELECT * FROM users");
-		assert!(!mods.contains(&QueryModifier::Expanded));
-		assert!(!mods.contains(&QueryModifier::Json));
-		assert!(
-			!mods
-				.iter()
-				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
-		);
+	fn test_parse_query_modifiers_semicolon_is_not_a_modifier() {
+		assert_eq!(parse_query_modifiers("SELECT * FROM users;").unwrap(), None);
 	}
 
 	#[test]
