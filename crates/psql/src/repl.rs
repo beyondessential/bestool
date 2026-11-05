@@ -125,6 +125,10 @@ impl ReplAction {
 				sql,
 				modifiers,
 			} => execute::handle_execute(ctx, input, sql, modifiers).await,
+			ReplAction::InvalidQueryModifier { modifier } => {
+				eprintln!("Error: unknown query modifier {modifier}, query not run");
+				ControlFlow::Continue(())
+			}
 		}
 	}
 }

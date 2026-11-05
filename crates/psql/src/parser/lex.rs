@@ -30,6 +30,12 @@ impl SqlLexState {
 			&& self.block_comment_depth == 0
 	}
 
+	/// True when a newline at this point leaves the scanner in ordinary code:
+	/// either it already is, or the newline ends a line comment.
+	pub(crate) fn in_code_after_newline(&self) -> bool {
+		self.in_code() || self.in_line_comment
+	}
+
 	/// Advance the state across the token starting at `chars[i]`, appending the
 	/// consumed character(s) to `out`. Returns the number of characters consumed
 	/// (more than one only for dollar-quote delimiters such as `$tag$`).

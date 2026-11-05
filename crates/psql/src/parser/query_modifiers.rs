@@ -92,18 +92,11 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 	>;
 
 	fn parse_line<'a>(input: &mut &'a str) -> ParseLineResult<'a> {
-		let sql = take_till(1.., |c| c == '\\').parse_next(input)?;
+		let sql = take_till(0.., |c| c == '\\').parse_next(input)?;
 		let cmd_and_arg = opt((space0, modifier)).parse_next(input)?;
 		Ok((sql, cmd_and_arg.map(|(_, cmd)| cmd)))
 	}
 
-	// First check if input ends with semicolon
-	if input.trim_end().ends_with(';') {
-		let sql = input.trim_end().trim_end_matches(';').trim().to_string();
-		return Ok(Some((sql, QueryModifiers::new())));
-	}
-
-	// Try to parse metacommand
 	match parse_line.parse(input) {
 		Ok((sql, Some((modifier_chars, has_set, arg)))) => {
 			let mut modifiers = QueryModifiers::new();
@@ -142,9 +135,11 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 				}
 			}
 
-			// Apply set modifier if present
-			// Note: 'set' and 'o' cannot both be present (arg is used for both)
-			if has_set && !has_output {
+			// `set` and `o` would both claim the one argument.
+			if has_set && has_output {
+				return Ok(None);
+			}
+			if has_set {
 				modifiers.insert(QueryModifier::VarSet { prefix: arg });
 			}
 
@@ -159,18 +154,8 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn test_parse_query_modifiers_semicolon() {
-		let result = parse_query_modifiers("SELECT * FROM users;").unwrap();
-		assert!(result.is_some());
-		let (sql, mods) = result.unwrap();
-		assert_eq!(sql, "SELECT * FROM users");
-		assert!(!mods.contains(&QueryModifier::Expanded));
-		assert!(!mods.contains(&QueryModifier::Json));
-		assert!(
-			!mods
-				.iter()
-				.any(|m| matches!(m, QueryModifier::VarSet { .. }))
-		);
+	fn test_parse_query_modifiers_semicolon_is_not_a_modifier() {
+		assert_eq!(parse_query_modifiers("SELECT * FROM users;").unwrap(), None);
 	}
 
 	#[test]
@@ -471,6 +456,18 @@ mod tests {
 		assert!(mods.contains(&QueryModifier::VarSet {
 			prefix: Some("myvar".to_string())
 		}));
+	}
+
+	#[test]
+	fn test_parse_query_modifiers_trailing_text() {
+		for input in [
+			r"SELECT 1 \gq",
+			r"SELECT 1 \gsett",
+			r"SELECT 1 \g out.txt",
+			r"SELECT 1 \gx out.txt",
+		] {
+			assert_eq!(parse_query_modifiers(input).unwrap(), None, "{input}");
+		}
 	}
 
 	#[test]

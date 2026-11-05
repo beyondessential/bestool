@@ -1,9 +1,11 @@
+use std::borrow::Cow;
+
 use winnow::{
 	Parser,
 	ascii::multispace0,
 	combinator::opt,
 	error::{ContextError, ErrMode},
-	token::{any, take_till},
+	token::any,
 };
 
 use super::{
@@ -27,12 +29,15 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<Statemen
 		return (vec![], String::new());
 	}
 
-	let mut remaining = input;
+	// Borrowed until a metacommand line has to be cut out of the middle.
+	let mut text = Cow::Borrowed(input);
+	let mut pos = 0;
 	let mut actions = Vec::new();
 
 	loop {
-		// Skip leading whitespace
+		let mut remaining = &text[pos..];
 		let _ = multispace0::<_, ContextError>.parse_next(&mut remaining);
+		pos = text.len() - remaining.len();
 
 		if remaining.is_empty() {
 			break;
@@ -41,46 +46,49 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<Statemen
 		let start_remaining = remaining;
 
 		// Try to parse a metacommand
-		if let Ok((text, action)) = parse_metacommand_action(&mut remaining) {
-			actions.push(Statement { text, action });
+		if let Ok((line, action)) = parse_metacommand_action(&mut remaining) {
+			actions.push(Statement { text: line, action });
+			pos = text.len() - remaining.len();
 			continue;
 		}
 
-		// Reset and try to parse a query
 		remaining = start_remaining;
-		if let Ok((sql, modifiers)) = parse_query_statement(&mut remaining, state) {
-			actions.push(Statement {
-				text: sql.clone(),
-				action: ReplAction::Execute {
-					input: sql.clone(),
-					sql,
-					modifiers,
-				},
-			});
+		if let Ok(statement) = parse_query_statement(&mut remaining, state) {
+			actions.push(statement);
+			pos = text.len() - remaining.len();
 			continue;
 		}
 
-		// No progress made, check if there's a metacommand on a following line
+		// Unterminated SQL running into a metacommand line: as in psql, the
+		// metacommand runs and the SQL stays buffered for later lines to continue.
 		remaining = start_remaining;
-		if let Some(newline_pos) = remaining.find('\n') {
-			let after_newline = remaining[newline_pos + 1..].trim_start();
-			if after_newline.starts_with('\\') {
-				// Skip to the metacommand line
-				remaining = &remaining[newline_pos + 1..];
+		let mut metacommand_line = remaining;
+		if let Ok(SqlResult::BeforeMetacommand(sql)) = sql_until_terminator(&mut metacommand_line) {
+			let sql_part = &remaining[..remaining.len() - metacommand_line.len()];
+			let mut after = metacommand_line.trim_start();
+			if sql.starts_with('\\') || sql.lines().all(|line| strip_comment(line).is_none()) {
+				// Nothing to keep: a comment, or an unrecognised metacommand.
+				pos = text.len() - metacommand_line.len();
+				continue;
+			}
+			if let Ok((line, action)) = parse_metacommand_action(&mut after) {
+				actions.push(Statement { text: line, action });
+				text = Cow::Owned(format!("{sql_part}{after}"));
+				pos = 0;
 				continue;
 			}
 		}
 
-		// No progress possible, break
 		break;
 	}
 
+	let remaining = &text[pos..];
 	if actions.is_empty() {
 		(vec![], input.to_string())
 	} else if remaining.trim().is_empty() {
 		(actions, String::new())
 	} else {
-		(actions, remaining.to_string())
+		(actions, remaining.trim_end().to_string())
 	}
 }
 
@@ -116,21 +124,23 @@ fn parse_metacommand_action(
 fn parse_query_statement(
 	input: &mut &str,
 	state: &ReplState,
-) -> Result<(String, QueryModifiers), ErrMode<ContextError>> {
+) -> Result<Statement, ErrMode<ContextError>> {
 	let start = *input;
 	let sql_result = sql_until_terminator(input)?;
 
 	match sql_result {
 		SqlResult::Semicolon(sql) => {
-			// Skip the semicolon
 			';'.parse_next(input)?;
-			// Skip any trailing comment on the same line
-			let _ = skip_line_comment(input);
+			skip_trailing_comment(input);
 			let mut mods = QueryModifiers::new();
 			if state.expanded_mode {
 				mods.insert(super::QueryModifier::Expanded);
 			}
-			Ok((sql, mods))
+			Ok(execute(sql, mods))
+		}
+		SqlResult::BeforeMetacommand(_) => {
+			*input = start;
+			Err(ErrMode::Backtrack(ContextError::new()))
 		}
 		SqlResult::BackslashG(sql) => {
 			// We need to parse \g and any modifiers
@@ -149,19 +159,39 @@ fn parse_query_statement(
 				return Err(ErrMode::Backtrack(ContextError::new()));
 			}
 
-			// Successfully parsed \g, now check for modifiers
-			let remaining_line: &str = take_till(0.., '\n').parse_next(input)?;
-			let _: Result<_, ContextError> = opt('\n').parse_next(input);
-
-			// Check if there were modifiers after \g
-			let mut mods = QueryModifiers::new();
-			if !remaining_line.trim().is_empty() {
-				// Try to parse the full query with modifiers
-				let full_query = format!("{}\\g{}", sql, remaining_line);
-				if let Ok(Some((_, parsed_mods))) = parse_query_modifiers(&full_query) {
-					mods = parsed_mods;
+			// The modifier and its argument run to the end of the line, stopping
+			// early at a comment or an unquoted `;`. A `;` here is a redundant
+			// terminator: it is consumed and anything after it is parsed as the
+			// next statement.
+			let line = &input[..input.find('\n').unwrap_or(input.len())];
+			let code = strip_comment(line).unwrap_or_default();
+			let modifier_text = match find_unquoted_semicolon(code) {
+				Some(pos) => {
+					*input = &input[pos + 1..];
+					skip_trailing_comment(input);
+					&code[..pos]
 				}
-			}
+				None => {
+					*input = &input[line.len()..];
+					let _: Result<_, ContextError> = opt('\n').parse_next(input);
+					code
+				}
+			};
+
+			let mut mods = if modifier_text.trim().is_empty() {
+				QueryModifiers::new()
+			} else {
+				match parse_query_modifiers(&format!("{sql}\\g{modifier_text}")) {
+					Ok(Some((_, mods))) => mods,
+					_ => {
+						let modifier = format!("\\{ch2}{}", modifier_text.trim_end());
+						return Ok(Statement {
+							text: format!("{sql} {modifier}"),
+							action: ReplAction::InvalidQueryModifier { modifier },
+						});
+					}
+				}
+			};
 
 			if state.expanded_mode
 				&& !mods
@@ -170,8 +200,36 @@ fn parse_query_statement(
 			{
 				mods.insert(super::QueryModifier::Expanded);
 			}
-			Ok((sql, mods))
+			Ok(execute(sql, mods))
 		}
+	}
+}
+
+fn find_unquoted_semicolon(text: &str) -> Option<usize> {
+	let chars: Vec<char> = text.chars().collect();
+	let mut state = SqlLexState::default();
+	let mut scratch = String::new();
+	let mut byte_pos = 0;
+	let mut i = 0;
+	while i < chars.len() {
+		if chars[i] == ';' && state.in_code() {
+			return Some(byte_pos);
+		}
+		let n = state.step(&chars, i, &mut scratch);
+		byte_pos += chars[i..i + n].iter().map(|c| c.len_utf8()).sum::<usize>();
+		i += n;
+	}
+	None
+}
+
+fn execute(sql: String, modifiers: QueryModifiers) -> Statement {
+	Statement {
+		text: sql.clone(),
+		action: ReplAction::Execute {
+			input: sql.clone(),
+			sql,
+			modifiers,
+		},
 	}
 }
 
@@ -179,6 +237,7 @@ fn parse_query_statement(
 enum SqlResult {
 	Semicolon(String),
 	BackslashG(String),
+	BeforeMetacommand(String),
 }
 
 /// Parse SQL until a terminator (semicolon or \g) is found
@@ -190,8 +249,9 @@ enum SqlResult {
 ///
 /// - a `;` in code ends the statement (left in the input for the caller);
 /// - a `\g`/`\G` in code ends the statement (left in the input for the caller);
-/// - a newline in code immediately followed by a non-`\g` metacommand ends the
-///   statement (the newline is consumed, the metacommand left for the caller).
+/// - a newline in code (or ending a line comment) immediately followed by a
+///   non-`\g` metacommand ends the SQL without completing the statement (the
+///   newline is consumed, the metacommand left for the caller).
 ///
 /// On a terminator, `*input` is advanced to point at the terminator (or, for the
 /// metacommand-newline case, at the metacommand). Returns `Backtrack` if the
@@ -219,20 +279,20 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 				*input = &original[byte_pos..];
 				return Ok(SqlResult::BackslashG(result.trim().to_string()));
 			}
+		}
 
-			// Newline followed by a (non-\g) metacommand ends the query here;
-			// consume the newline and leave the metacommand for the caller.
-			if ch == '\n' {
-				let mut k = i + 1;
-				while k < chars.len() && chars[k].is_whitespace() {
-					k += 1;
-				}
-				if chars.get(k) == Some(&'\\')
-					&& chars.get(k + 1).is_some_and(|c| *c != 'g' && *c != 'G')
-				{
-					*input = &original[byte_pos + ch.len_utf8()..];
-					return Ok(SqlResult::BackslashG(result.trim().to_string()));
-				}
+		// Newline followed by a (non-\g) metacommand ends the query here;
+		// consume the newline and leave the metacommand for the caller.
+		if ch == '\n' && state.in_code_after_newline() {
+			let mut k = i + 1;
+			while k < chars.len() && chars[k].is_whitespace() {
+				k += 1;
+			}
+			if chars.get(k) == Some(&'\\')
+				&& chars.get(k + 1).is_some_and(|c| *c != 'g' && *c != 'G')
+			{
+				*input = &original[byte_pos + ch.len_utf8()..];
+				return Ok(SqlResult::BeforeMetacommand(result.trim().to_string()));
 			}
 		}
 
@@ -247,13 +307,15 @@ fn sql_until_terminator(input: &mut &str) -> Result<SqlResult, ErrMode<ContextEr
 	Err(ErrMode::Backtrack(ContextError::new()))
 }
 
-fn skip_line_comment(input: &mut &str) -> Result<(), ErrMode<ContextError>> {
-	let line_rest: &str = take_till(0.., '\n').parse_next(input)?;
-	if strip_comment(line_rest).is_none() {
-		// Line is only a comment, skip the newline too
+/// After a terminator, consume the rest of the line if it holds nothing but
+/// whitespace or a comment. Anything else on the line is left in place to be
+/// parsed as the next statement.
+fn skip_trailing_comment(input: &mut &str) {
+	let line_end = input.find('\n').unwrap_or(input.len());
+	if strip_comment(&input[..line_end]).is_none() {
+		*input = &input[line_end..];
 		let _: Result<_, ContextError> = opt('\n').parse_next(input);
 	}
-	Ok(())
 }
 
 fn metacommand_to_action(metacmd: Metacommand) -> ReplAction {
@@ -312,7 +374,7 @@ fn metacommand_to_action(metacmd: Metacommand) -> ReplAction {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+	use super::{super::QueryModifier, *};
 
 	fn make_state() -> ReplState {
 		ReplState::new()
@@ -974,5 +1036,217 @@ WHERE id IN (
 		let (actions, remaining) = parse_multi_input(input, &state);
 		assert_eq!(remaining, "");
 		assert_eq!(actions.len(), 1);
+	}
+
+	fn executes(input: &str) -> (Vec<(String, QueryModifiers)>, String) {
+		let (actions, remaining) = parse_multi_input(input, &make_state());
+		let executes = actions
+			.into_iter()
+			.map(|s| match s.action {
+				ReplAction::Execute { sql, modifiers, .. } => (sql, modifiers),
+				other => panic!("Expected Execute, got {other:?}"),
+			})
+			.collect();
+		(executes, remaining)
+	}
+
+	fn mods(list: &[QueryModifier]) -> QueryModifiers {
+		list.iter().cloned().collect()
+	}
+
+	#[test]
+	fn test_modifier_with_trailing_semicolon() {
+		for (input, expected) in [
+			(
+				"SELECT 1 \\gset;",
+				mods(&[QueryModifier::VarSet { prefix: None }]),
+			),
+			(
+				"SELECT 1 \\gset p_;",
+				mods(&[QueryModifier::VarSet {
+					prefix: Some("p_".into()),
+				}]),
+			),
+			("SELECT 1 \\gx;", mods(&[QueryModifier::Expanded])),
+			("SELECT 1 \\gx ;", mods(&[QueryModifier::Expanded])),
+			("SELECT 1 \\gx; -- c", mods(&[QueryModifier::Expanded])),
+			(
+				"SELECT 1 \\go out.txt;",
+				mods(&[QueryModifier::Output {
+					file_path: "out.txt".into(),
+				}]),
+			),
+		] {
+			let (executes, remaining) = executes(input);
+			assert_eq!(remaining, "", "{input}");
+			assert_eq!(executes, vec![("SELECT 1".into(), expected)], "{input}");
+		}
+	}
+
+	#[test]
+	fn test_modifier_with_trailing_comment() {
+		let (executes, remaining) = executes("SELECT 1 \\gx -- c");
+		assert_eq!(remaining, "");
+		assert_eq!(
+			executes,
+			vec![("SELECT 1".into(), mods(&[QueryModifier::Expanded]))]
+		);
+	}
+
+	#[test]
+	fn test_modifier_semicolon_then_statement_on_same_line() {
+		let (executes, remaining) = executes("SELECT 1 \\gx; SELECT 2;");
+		assert_eq!(remaining, "");
+		assert_eq!(
+			executes,
+			vec![
+				("SELECT 1".into(), mods(&[QueryModifier::Expanded])),
+				("SELECT 2".into(), mods(&[])),
+			]
+		);
+	}
+
+	#[test]
+	fn test_two_statements_on_one_line() {
+		let (executes, remaining) = executes("SELECT 1; SELECT 2 \\gx");
+		assert_eq!(remaining, "");
+		assert_eq!(
+			executes,
+			vec![
+				("SELECT 1".into(), mods(&[])),
+				("SELECT 2".into(), mods(&[QueryModifier::Expanded])),
+			]
+		);
+	}
+
+	#[test]
+	fn test_semicolon_then_incomplete_statement_on_same_line() {
+		let (executes, remaining) = executes("SELECT 1; SELECT 2");
+		assert_eq!(remaining, "SELECT 2");
+		assert_eq!(executes, vec![("SELECT 1".into(), mods(&[]))]);
+	}
+
+	#[test]
+	fn test_unknown_modifier_is_rejected() {
+		for (input, modifier) in [
+			("SELECT 1 \\gsett", "\\gsett"),
+			("SELECT 1 \\gq;", "\\gq"),
+			("SELECT 1 \\Gq", "\\Gq"),
+			("SELECT 1 \\g out.txt", "\\g out.txt"),
+			("SELECT 1 \\gx out.txt -- c", "\\gx out.txt"),
+			("SELECT 1 \\goset out.txt", "\\goset out.txt"),
+		] {
+			let (actions, remaining) = parse_multi_input(input, &make_state());
+			assert_eq!(remaining, "", "{input}");
+			assert_eq!(actions.len(), 1, "{input}");
+			assert_eq!(actions[0].text, format!("SELECT 1 {modifier}"), "{input}");
+			assert_eq!(
+				actions[0].action,
+				ReplAction::InvalidQueryModifier {
+					modifier: modifier.into()
+				},
+				"{input}"
+			);
+		}
+	}
+
+	#[test]
+	fn test_unknown_modifier_does_not_stop_later_statements() {
+		let (actions, remaining) = parse_multi_input("SELECT 1 \\gq; SELECT 2;", &make_state());
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 2);
+		assert!(matches!(
+			actions[0].action,
+			ReplAction::InvalidQueryModifier { .. }
+		));
+		assert!(matches!(&actions[1].action, ReplAction::Execute { sql, .. } if sql == "SELECT 2"));
+	}
+
+	#[test]
+	fn test_unterminated_sql_stays_buffered_across_metacommand() {
+		for (input, buffered) in [
+			("SELECT 1\n\\x", "SELECT 1"),
+			("SELECT 1 -- c\n\\x", "SELECT 1 -- c"),
+			("SELECT 1\n  \\x\nFROM t", "SELECT 1\nFROM t"),
+		] {
+			let (actions, remaining) = parse_multi_input(input, &make_state());
+			assert_eq!(remaining, buffered, "{input}");
+			assert_eq!(actions.len(), 1, "{input}");
+			assert_eq!(actions[0].action, ReplAction::ToggleExpanded, "{input}");
+		}
+	}
+
+	#[test]
+	fn test_unterminated_sql_completed_after_metacommand() {
+		let (actions, remaining) = parse_multi_input("SELECT *\n\\x\nFROM t;", &make_state());
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 2);
+		assert_eq!(actions[0].action, ReplAction::ToggleExpanded);
+		assert!(
+			matches!(&actions[1].action, ReplAction::Execute { sql, .. } if sql == "SELECT *\nFROM t")
+		);
+	}
+
+	#[test]
+	fn test_comment_before_metacommand_is_not_buffered() {
+		let (actions, remaining) = parse_multi_input("-- c\n\\x", &make_state());
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 1);
+		assert_eq!(actions[0].action, ReplAction::ToggleExpanded);
+	}
+
+	#[test]
+	fn test_backslash_line_inside_string_is_not_a_metacommand() {
+		let input = "SELECT 'a\n\\x'";
+		let (actions, remaining) = parse_multi_input(input, &make_state());
+		assert!(actions.is_empty());
+		assert_eq!(remaining, input);
+	}
+
+	#[test]
+	fn test_sql_before_unknown_metacommand_is_kept() {
+		let input = "SELECT 1\n\\zzz";
+		let (actions, remaining) = parse_multi_input(input, &make_state());
+		assert!(actions.is_empty());
+		assert_eq!(remaining, input);
+	}
+
+	#[test]
+	fn test_quoted_semicolon_in_modifier_argument() {
+		for (input, file_path) in [
+			("SELECT 1 \\go \"out;txt\"", "\"out;txt\""),
+			("SELECT 1 \\go 'out;txt';", "'out;txt'"),
+		] {
+			let (executes, remaining) = executes(input);
+			assert_eq!(remaining, "", "{input}");
+			assert_eq!(
+				executes,
+				vec![(
+					"SELECT 1".into(),
+					mods(&[QueryModifier::Output {
+						file_path: file_path.into()
+					}])
+				)],
+				"{input}"
+			);
+		}
+	}
+
+	#[test]
+	fn test_modifier_with_empty_query() {
+		let (executes, remaining) = executes("\\gx");
+		assert_eq!(remaining, "");
+		assert_eq!(
+			executes,
+			vec![(String::new(), mods(&[QueryModifier::Expanded]))]
+		);
+
+		let (actions, _) = parse_multi_input("\\gq", &make_state());
+		assert_eq!(
+			actions[0].action,
+			ReplAction::InvalidQueryModifier {
+				modifier: "\\gq".into()
+			}
+		);
 	}
 }
