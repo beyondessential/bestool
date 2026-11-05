@@ -192,6 +192,32 @@ fn should_hide_row_count(command: &str) -> bool {
 	)
 }
 
+/// Status line for a statement that produced no rows.
+///
+/// Postgres reports a row count for SELECT as well as DML, so whether the statement
+/// returns a result set decides between "0 rows" and the command's affected count.
+fn empty_result_status(
+	statement: &str,
+	returns_rows: bool,
+	rows_affected: Option<u64>,
+	duration: std::time::Duration,
+) -> String {
+	let millis = duration.as_secs_f64() * 1000.0;
+	let count = match rows_affected {
+		Some(count) if !returns_rows => count,
+		_ => return format!("(0 rows, took {millis:.3} ms)"),
+	};
+
+	let command = statement.split_whitespace().next().unwrap_or("QUERY");
+	let verb = command_to_verb(command);
+	if should_hide_row_count(command) {
+		format!("({verb}, took {millis:.3} ms)")
+	} else {
+		let plural = if count == 1 { "" } else { "s" };
+		format!("({verb} {count} row{plural}, took {millis:.3} ms)")
+	}
+}
+
 /// Execute a single SQL statement and display the results.
 async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	statement: &str,
@@ -217,9 +243,14 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	let start_time = std::time::Instant::now();
 	let mut progress_shown = false;
 
-	// Use query_raw to get both typed rows and affected count
-	let row_stream = tokio::select! {
-		result = ctx.client.query_raw(statement, &[] as &[i32; 0]) => {
+	// Prepare explicitly (query_raw would otherwise do it internally) so we know whether
+	// the statement returns a result set, then use query_raw to get both rows and affected count
+	let result = tokio::select! {
+		result = async {
+			let prepared = ctx.client.prepare(statement).await?;
+			let stream = ctx.client.query_raw(&prepared, &[] as &[i32; 0]).await?;
+			Ok::<_, tokio_postgres::Error>((prepared, stream))
+		} => {
 			// Clear progress indicator if it was shown
 			if progress_shown {
 				eprint!("{}", colors::CLEAR_LINE);
@@ -262,8 +293,8 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		}
 	};
 
-	let row_stream = match row_stream {
-		Ok(stream) => stream,
+	let (prepared, row_stream) = match result {
+		Ok(result) => result,
 		Err(e) => {
 			// Convert to our custom error type with query context
 			if let Some(db_error) = e.as_db_error() {
@@ -298,39 +329,13 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	// Get the affected rows count from the stream (only available after exhausting the stream)
 	let rows_affected = row_stream.rows_affected();
 
-	// Handle DML/DDL commands (no rows returned)
-	if rows.is_empty()
-		&& let Some(count) = rows_affected
-	{
-		let command = statement.split_whitespace().next().unwrap_or("QUERY");
-		let verb = command_to_verb(command);
-		let status_text = if should_hide_row_count(command) {
-			format!("({}, took {:.3} ms)", verb, duration.as_secs_f64() * 1000.0)
-		} else {
-			format!(
-				"({} {} row{}, took {:.3} ms)",
-				verb,
-				count,
-				if count == 1 { "" } else { "s" },
-				duration.as_secs_f64() * 1000.0
-			)
-		};
-
-		let status_msg = format!("{}\n", colors::style_status(&status_text, ctx.use_colours));
-
-		// Status message goes to stderr like psql
-		eprint!("{status_msg}");
-
-		ctx.writer
-			.flush()
-			.await
-			.map_err(|e| miette::miette!("Failed to flush output: {}", e))?;
-		return Ok(());
-	}
-
-	// Handle SELECT queries with no results
 	if rows.is_empty() {
-		let status_text = format!("(0 rows, took {:.3} ms)", duration.as_secs_f64() * 1000.0);
+		let status_text = empty_result_status(
+			statement,
+			!prepared.columns().is_empty(),
+			rows_affected,
+			duration,
+		);
 
 		let status_msg = format!("{}\n", colors::style_status(&status_text, ctx.use_colours));
 
@@ -813,6 +818,35 @@ mod tests {
 		assert_eq!(command_to_verb("VACUUM"), "vacuumed");
 		assert_eq!(command_to_verb("ANALYZE"), "analyzed");
 		assert_eq!(command_to_verb("UNKNOWN"), "affected");
+	}
+
+	#[test]
+	fn test_empty_result_status() {
+		let d = std::time::Duration::from_micros(3771);
+		assert_eq!(
+			empty_result_status("select 1 where false", true, Some(0), d),
+			"(0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("WITH x AS (SELECT 1) SELECT * FROM x", true, Some(0), d),
+			"(0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("DELETE FROM t RETURNING id", true, Some(0), d),
+			"(0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("delete from t", false, Some(1), d),
+			"(deleted 1 row, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("UPDATE t SET x = 1", false, Some(3), d),
+			"(updated 3 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("COMMIT", false, Some(0), d),
+			"(committed, took 3.771 ms)"
+		);
 	}
 
 	#[test]
