@@ -162,12 +162,17 @@ fn command_to_verb(command: &str) -> &str {
 		"REINDEX" => "reindexed",
 		"COMMENT" => "commented",
 		"EXPLAIN" => "explained",
+		"DO" => "done",
+		"CALL" => "called",
+		"REFRESH" => "refreshed",
+		"CHECKPOINT" => "checkpoint",
+		"CLOSE" => "closed",
 		_ => "affected",
 	}
 }
 
 /// Determine if a command should hide the row count in the output.
-/// Commands like COMMIT, ROLLBACK, TRUNCATE, etc. don't have meaningful row counts.
+/// Commands like COMMIT, ROLLBACK, TRUNCATE, etc. complete with a tag that carries no row count.
 fn should_hide_row_count(command: &str) -> bool {
 	matches!(
 		command.to_uppercase().as_str(),
@@ -189,7 +194,49 @@ fn should_hide_row_count(command: &str) -> bool {
 			| "CLUSTER"
 			| "REINDEX"
 			| "COMMENT"
+			| "DROP" | "ALTER"
+			| "GRANT" | "REVOKE"
+			| "DO" | "CALL"
+			| "REFRESH"
+			| "CHECKPOINT"
+			| "CLOSE"
 	)
+}
+
+/// Status line for a statement that produced no rows.
+///
+/// Postgres reports a row count for SELECT as well as DML, so whether the statement
+/// is a query decides between "N rows" and the command's affected count.
+/// DML with RETURNING returns a result set but still reports what it changed, like psql.
+fn empty_result_status(
+	statement: &str,
+	returns_rows: bool,
+	rows_affected: Option<u64>,
+	duration: std::time::Duration,
+) -> String {
+	let millis = duration.as_secs_f64() * 1000.0;
+	let command = statement.split_whitespace().next().unwrap_or("QUERY");
+	let upper = command.to_uppercase();
+	let is_dml = matches!(upper.as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE");
+	// The select list can be empty, so the leading keyword marks a query too
+	let is_query = returns_rows || matches!(upper.as_str(), "SELECT" | "TABLE" | "VALUES");
+	let count = rows_affected.unwrap_or(0);
+	let plural = if count == 1 { "" } else { "s" };
+
+	if rows_affected.is_none() || (is_query && !is_dml) {
+		// The count is 0 here except for SELECT INTO, which reports the rows it wrote
+		return format!("({count} row{plural}, took {millis:.3} ms)");
+	}
+
+	let verb = command_to_verb(command);
+	// CREATE TABLE AS and CREATE MATERIALIZED VIEW report "SELECT n"; other CREATEs
+	// carry no count, which the driver reads as 0
+	let countless_create = count == 0 && upper == "CREATE";
+	if countless_create || should_hide_row_count(command) {
+		format!("({verb}, took {millis:.3} ms)")
+	} else {
+		format!("({verb} {count} row{plural}, took {millis:.3} ms)")
+	}
 }
 
 /// Execute a single SQL statement and display the results.
@@ -217,9 +264,14 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	let start_time = std::time::Instant::now();
 	let mut progress_shown = false;
 
-	// Use query_raw to get both typed rows and affected count
-	let row_stream = tokio::select! {
-		result = ctx.client.query_raw(statement, &[] as &[i32; 0]) => {
+	// Prepare explicitly (query_raw would otherwise do it internally) so we know whether
+	// the statement returns a result set, then use query_raw to get both rows and affected count
+	let result = tokio::select! {
+		result = async {
+			let prepared = ctx.client.prepare(statement).await?;
+			let stream = ctx.client.query_raw(&prepared, &[] as &[i32; 0]).await?;
+			Ok::<_, tokio_postgres::Error>((prepared, stream))
+		} => {
 			// Clear progress indicator if it was shown
 			if progress_shown {
 				eprint!("{}", colors::CLEAR_LINE);
@@ -262,8 +314,8 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 		}
 	};
 
-	let row_stream = match row_stream {
-		Ok(stream) => stream,
+	let (prepared, row_stream) = match result {
+		Ok(result) => result,
 		Err(e) => {
 			// Convert to our custom error type with query context
 			if let Some(db_error) = e.as_db_error() {
@@ -298,39 +350,13 @@ async fn execute_single_statement<W: AsyncWrite + Unpin>(
 	// Get the affected rows count from the stream (only available after exhausting the stream)
 	let rows_affected = row_stream.rows_affected();
 
-	// Handle DML/DDL commands (no rows returned)
-	if rows.is_empty()
-		&& let Some(count) = rows_affected
-	{
-		let command = statement.split_whitespace().next().unwrap_or("QUERY");
-		let verb = command_to_verb(command);
-		let status_text = if should_hide_row_count(command) {
-			format!("({}, took {:.3} ms)", verb, duration.as_secs_f64() * 1000.0)
-		} else {
-			format!(
-				"({} {} row{}, took {:.3} ms)",
-				verb,
-				count,
-				if count == 1 { "" } else { "s" },
-				duration.as_secs_f64() * 1000.0
-			)
-		};
-
-		let status_msg = format!("{}\n", colors::style_status(&status_text, ctx.use_colours));
-
-		// Status message goes to stderr like psql
-		eprint!("{status_msg}");
-
-		ctx.writer
-			.flush()
-			.await
-			.map_err(|e| miette::miette!("Failed to flush output: {}", e))?;
-		return Ok(());
-	}
-
-	// Handle SELECT queries with no results
 	if rows.is_empty() {
-		let status_text = format!("(0 rows, took {:.3} ms)", duration.as_secs_f64() * 1000.0);
+		let status_text = empty_result_status(
+			statement,
+			!prepared.columns().is_empty(),
+			rows_affected,
+			duration,
+		);
 
 		let status_msg = format!("{}\n", colors::style_status(&status_text, ctx.use_colours));
 
@@ -816,6 +842,64 @@ mod tests {
 	}
 
 	#[test]
+	fn test_empty_result_status() {
+		let d = std::time::Duration::from_micros(3771);
+		assert_eq!(
+			empty_result_status("select 1 where false", true, Some(0), d),
+			"(0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("WITH x AS (SELECT 1) SELECT * FROM x", true, Some(0), d),
+			"(0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("SELECT FROM t WHERE false", false, Some(0), d),
+			"(0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("SELECT * INTO u FROM t", false, Some(5), d),
+			"(5 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("DELETE FROM t RETURNING id", true, Some(0), d),
+			"(deleted 0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status(
+				"WITH d AS (DELETE FROM t RETURNING id) SELECT * FROM d",
+				true,
+				Some(0),
+				d
+			),
+			"(0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("delete from t", false, Some(1), d),
+			"(deleted 1 row, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("UPDATE t SET x = 1", false, Some(3), d),
+			"(updated 3 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("COMMIT", false, Some(0), d),
+			"(committed, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("CREATE TABLE t (x int)", false, Some(0), d),
+			"(created, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("CREATE TABLE t AS SELECT 1", false, Some(1), d),
+			"(created 1 row, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("DROP TABLE t", false, Some(0), d),
+			"(dropped, took 3.771 ms)"
+		);
+	}
+
+	#[test]
 	fn test_should_hide_row_count() {
 		// Commands that should hide row count
 		assert!(should_hide_row_count("COMMIT"));
@@ -839,16 +923,21 @@ mod tests {
 		assert!(should_hide_row_count("CLUSTER"));
 		assert!(should_hide_row_count("REINDEX"));
 		assert!(should_hide_row_count("COMMENT"));
+		assert!(should_hide_row_count("DROP"));
+		assert!(should_hide_row_count("ALTER"));
+		assert!(should_hide_row_count("GRANT"));
+		assert!(should_hide_row_count("REVOKE"));
+		assert!(should_hide_row_count("DO"));
+		assert!(should_hide_row_count("CALL"));
+		assert!(should_hide_row_count("REFRESH"));
+		assert!(should_hide_row_count("CHECKPOINT"));
+		assert!(should_hide_row_count("CLOSE"));
 
 		// Commands that should show row count
 		assert!(!should_hide_row_count("INSERT"));
 		assert!(!should_hide_row_count("UPDATE"));
 		assert!(!should_hide_row_count("DELETE"));
 		assert!(!should_hide_row_count("CREATE"));
-		assert!(!should_hide_row_count("DROP"));
-		assert!(!should_hide_row_count("ALTER"));
-		assert!(!should_hide_row_count("GRANT"));
-		assert!(!should_hide_row_count("REVOKE"));
 		assert!(!should_hide_row_count("COPY"));
 		assert!(!should_hide_row_count("MERGE"));
 	}
