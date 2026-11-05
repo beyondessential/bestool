@@ -206,7 +206,7 @@ fn should_hide_row_count(command: &str) -> bool {
 /// Status line for a statement that produced no rows.
 ///
 /// Postgres reports a row count for SELECT as well as DML, so whether the statement
-/// returns a result set decides between "0 rows" and the command's affected count.
+/// is a query decides between "N rows" and the command's affected count.
 /// DML with RETURNING returns a result set but still reports what it changed, like psql.
 fn empty_result_status(
 	statement: &str,
@@ -216,23 +216,25 @@ fn empty_result_status(
 ) -> String {
 	let millis = duration.as_secs_f64() * 1000.0;
 	let command = statement.split_whitespace().next().unwrap_or("QUERY");
-	let is_dml = matches!(
-		command.to_uppercase().as_str(),
-		"INSERT" | "UPDATE" | "DELETE" | "MERGE"
-	);
-	let count = match rows_affected {
-		Some(count) if is_dml || !returns_rows => count,
-		_ => return format!("(0 rows, took {millis:.3} ms)"),
-	};
+	let upper = command.to_uppercase();
+	let is_dml = matches!(upper.as_str(), "INSERT" | "UPDATE" | "DELETE" | "MERGE");
+	// The select list can be empty, so the leading keyword marks a query too
+	let is_query = returns_rows || matches!(upper.as_str(), "SELECT" | "TABLE" | "VALUES");
+	let count = rows_affected.unwrap_or(0);
+	let plural = if count == 1 { "" } else { "s" };
+
+	if rows_affected.is_none() || (is_query && !is_dml) {
+		// The count is 0 here except for SELECT INTO, which reports the rows it wrote
+		return format!("({count} row{plural}, took {millis:.3} ms)");
+	}
 
 	let verb = command_to_verb(command);
 	// CREATE TABLE AS and CREATE MATERIALIZED VIEW report "SELECT n"; other CREATEs
 	// carry no count, which the driver reads as 0
-	let countless_create = count == 0 && command.eq_ignore_ascii_case("CREATE");
+	let countless_create = count == 0 && upper == "CREATE";
 	if countless_create || should_hide_row_count(command) {
 		format!("({verb}, took {millis:.3} ms)")
 	} else {
-		let plural = if count == 1 { "" } else { "s" };
 		format!("({verb} {count} row{plural}, took {millis:.3} ms)")
 	}
 }
@@ -849,6 +851,14 @@ mod tests {
 		assert_eq!(
 			empty_result_status("WITH x AS (SELECT 1) SELECT * FROM x", true, Some(0), d),
 			"(0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("SELECT FROM t WHERE false", false, Some(0), d),
+			"(0 rows, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("SELECT * INTO u FROM t", false, Some(5), d),
+			"(5 rows, took 3.771 ms)"
 		);
 		assert_eq!(
 			empty_result_status("DELETE FROM t RETURNING id", true, Some(0), d),
