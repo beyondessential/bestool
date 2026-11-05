@@ -459,6 +459,18 @@ mod tests {
 	}
 
 	#[test]
+	fn test_parse_query_modifiers_trailing_text() {
+		for input in [
+			r"SELECT 1 \gq",
+			r"SELECT 1 \gsett",
+			r"SELECT 1 \g out.txt",
+			r"SELECT 1 \gx out.txt",
+		] {
+			assert_eq!(parse_query_modifiers(input).unwrap(), None, "{input}");
+		}
+	}
+
+	#[test]
 	fn test_parse_query_modifiers_no_terminator() {
 		let result = parse_query_modifiers("SELECT * FROM users").unwrap();
 		assert!(result.is_none());
