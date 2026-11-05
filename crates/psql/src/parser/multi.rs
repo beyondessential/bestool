@@ -157,11 +157,12 @@ fn parse_query_statement(
 			}
 
 			// The modifier and its argument run to the end of the line, stopping
-			// early at a comment or a `;`. A `;` here is a redundant terminator:
-			// it is consumed and anything after it is parsed as the next statement.
+			// early at a comment or an unquoted `;`. A `;` here is a redundant
+			// terminator: it is consumed and anything after it is parsed as the
+			// next statement.
 			let line = &input[..input.find('\n').unwrap_or(input.len())];
 			let code = strip_comment(line).unwrap_or_default();
-			let modifier_text = match code.find(';') {
+			let modifier_text = match find_unquoted_semicolon(code) {
 				Some(pos) => {
 					*input = &input[pos + 1..];
 					skip_trailing_comment(input);
@@ -199,6 +200,23 @@ fn parse_query_statement(
 			Ok(execute(sql, mods))
 		}
 	}
+}
+
+fn find_unquoted_semicolon(text: &str) -> Option<usize> {
+	let chars: Vec<char> = text.chars().collect();
+	let mut state = SqlLexState::default();
+	let mut scratch = String::new();
+	let mut byte_pos = 0;
+	let mut i = 0;
+	while i < chars.len() {
+		if chars[i] == ';' && state.in_code() {
+			return Some(byte_pos);
+		}
+		let n = state.step(&chars, i, &mut scratch);
+		byte_pos += chars[i..i + n].iter().map(|c| c.len_utf8()).sum::<usize>();
+		i += n;
+	}
+	None
 }
 
 fn execute(sql: String, modifiers: QueryModifiers) -> Statement {
@@ -1188,5 +1206,26 @@ WHERE id IN (
 		let (actions, remaining) = parse_multi_input(input, &make_state());
 		assert!(actions.is_empty());
 		assert_eq!(remaining, input);
+	}
+
+	#[test]
+	fn test_quoted_semicolon_in_modifier_argument() {
+		for (input, file_path) in [
+			("SELECT 1 \\go \"out;txt\"", "\"out;txt\""),
+			("SELECT 1 \\go 'out;txt';", "'out;txt'"),
+		] {
+			let (executes, remaining) = executes(input);
+			assert_eq!(remaining, "", "{input}");
+			assert_eq!(
+				executes,
+				vec![(
+					"SELECT 1".into(),
+					mods(&[QueryModifier::Output {
+						file_path: file_path.into()
+					}])
+				)],
+				"{input}"
+			);
+		}
 	}
 }
