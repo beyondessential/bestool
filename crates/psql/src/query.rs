@@ -162,12 +162,15 @@ fn command_to_verb(command: &str) -> &str {
 		"REINDEX" => "reindexed",
 		"COMMENT" => "commented",
 		"EXPLAIN" => "explained",
+		"DO" => "done",
+		"CALL" => "called",
+		"REFRESH" => "refreshed",
 		_ => "affected",
 	}
 }
 
 /// Determine if a command should hide the row count in the output.
-/// Commands like COMMIT, ROLLBACK, TRUNCATE, etc. don't have meaningful row counts.
+/// Commands like COMMIT, ROLLBACK, TRUNCATE, etc. complete with a tag that carries no row count.
 fn should_hide_row_count(command: &str) -> bool {
 	matches!(
 		command.to_uppercase().as_str(),
@@ -189,6 +192,10 @@ fn should_hide_row_count(command: &str) -> bool {
 			| "CLUSTER"
 			| "REINDEX"
 			| "COMMENT"
+			| "DROP" | "ALTER"
+			| "GRANT" | "REVOKE"
+			| "DO" | "CALL"
+			| "REFRESH"
 	)
 }
 
@@ -210,7 +217,10 @@ fn empty_result_status(
 
 	let command = statement.split_whitespace().next().unwrap_or("QUERY");
 	let verb = command_to_verb(command);
-	if should_hide_row_count(command) {
+	// CREATE TABLE AS and CREATE MATERIALIZED VIEW report "SELECT n"; other CREATEs
+	// carry no count, which the driver reads as 0
+	let countless_create = count == 0 && command.eq_ignore_ascii_case("CREATE");
+	if countless_create || should_hide_row_count(command) {
 		format!("({verb}, took {millis:.3} ms)")
 	} else {
 		let plural = if count == 1 { "" } else { "s" };
@@ -847,6 +857,18 @@ mod tests {
 			empty_result_status("COMMIT", false, Some(0), d),
 			"(committed, took 3.771 ms)"
 		);
+		assert_eq!(
+			empty_result_status("CREATE TABLE t (x int)", false, Some(0), d),
+			"(created, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("CREATE TABLE t AS SELECT 1", false, Some(1), d),
+			"(created 1 row, took 3.771 ms)"
+		);
+		assert_eq!(
+			empty_result_status("DROP TABLE t", false, Some(0), d),
+			"(dropped, took 3.771 ms)"
+		);
 	}
 
 	#[test]
@@ -873,16 +895,19 @@ mod tests {
 		assert!(should_hide_row_count("CLUSTER"));
 		assert!(should_hide_row_count("REINDEX"));
 		assert!(should_hide_row_count("COMMENT"));
+		assert!(should_hide_row_count("DROP"));
+		assert!(should_hide_row_count("ALTER"));
+		assert!(should_hide_row_count("GRANT"));
+		assert!(should_hide_row_count("REVOKE"));
+		assert!(should_hide_row_count("DO"));
+		assert!(should_hide_row_count("CALL"));
+		assert!(should_hide_row_count("REFRESH"));
 
 		// Commands that should show row count
 		assert!(!should_hide_row_count("INSERT"));
 		assert!(!should_hide_row_count("UPDATE"));
 		assert!(!should_hide_row_count("DELETE"));
 		assert!(!should_hide_row_count("CREATE"));
-		assert!(!should_hide_row_count("DROP"));
-		assert!(!should_hide_row_count("ALTER"));
-		assert!(!should_hide_row_count("GRANT"));
-		assert!(!should_hide_row_count("REVOKE"));
 		assert!(!should_hide_row_count("COPY"));
 		assert!(!should_hide_row_count("MERGE"));
 	}
