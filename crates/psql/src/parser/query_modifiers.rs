@@ -135,9 +135,11 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 				}
 			}
 
-			// Apply set modifier if present
-			// Note: 'set' and 'o' cannot both be present (arg is used for both)
-			if has_set && !has_output {
+			// `set` and `o` would both claim the one argument.
+			if has_set && has_output {
+				return Ok(None);
+			}
+			if has_set {
 				modifiers.insert(QueryModifier::VarSet { prefix: arg });
 			}
 

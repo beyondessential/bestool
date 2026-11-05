@@ -48,15 +48,8 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<Statemen
 
 		// Reset and try to parse a query
 		remaining = start_remaining;
-		if let Ok((sql, modifiers)) = parse_query_statement(&mut remaining, state) {
-			actions.push(Statement {
-				text: sql.clone(),
-				action: ReplAction::Execute {
-					input: sql.clone(),
-					sql,
-					modifiers,
-				},
-			});
+		if let Ok(statement) = parse_query_statement(&mut remaining, state) {
+			actions.push(statement);
 			continue;
 		}
 
@@ -116,7 +109,7 @@ fn parse_metacommand_action(
 fn parse_query_statement(
 	input: &mut &str,
 	state: &ReplState,
-) -> Result<(String, QueryModifiers), ErrMode<ContextError>> {
+) -> Result<Statement, ErrMode<ContextError>> {
 	let start = *input;
 	let sql_result = sql_until_terminator(input)?;
 
@@ -128,7 +121,7 @@ fn parse_query_statement(
 			if state.expanded_mode {
 				mods.insert(super::QueryModifier::Expanded);
 			}
-			Ok((sql, mods))
+			Ok(execute(sql, mods))
 		}
 		SqlResult::BackslashG(sql) => {
 			// We need to parse \g and any modifiers
@@ -165,13 +158,20 @@ fn parse_query_statement(
 				}
 			};
 
-			let mut mods = QueryModifiers::new();
-			if !modifier_text.trim().is_empty() {
-				let full_query = format!("{}\\g{}", sql, modifier_text);
-				if let Ok(Some((_, parsed_mods))) = parse_query_modifiers(&full_query) {
-					mods = parsed_mods;
+			let mut mods = if modifier_text.trim().is_empty() {
+				QueryModifiers::new()
+			} else {
+				match parse_query_modifiers(&format!("{sql}\\g{modifier_text}")) {
+					Ok(Some((_, mods))) => mods,
+					_ => {
+						let modifier = format!("\\{ch2}{}", modifier_text.trim_end());
+						return Ok(Statement {
+							text: format!("{sql} {modifier}"),
+							action: ReplAction::InvalidQueryModifier { modifier },
+						});
+					}
 				}
-			}
+			};
 
 			if state.expanded_mode
 				&& !mods
@@ -180,8 +180,19 @@ fn parse_query_statement(
 			{
 				mods.insert(super::QueryModifier::Expanded);
 			}
-			Ok((sql, mods))
+			Ok(execute(sql, mods))
 		}
+	}
+}
+
+fn execute(sql: String, modifiers: QueryModifiers) -> Statement {
+	Statement {
+		text: sql.clone(),
+		action: ReplAction::Execute {
+			input: sql.clone(),
+			sql,
+			modifiers,
+		},
 	}
 }
 
@@ -1074,5 +1085,41 @@ WHERE id IN (
 		let (executes, remaining) = executes("SELECT 1; SELECT 2");
 		assert_eq!(remaining, "SELECT 2");
 		assert_eq!(executes, vec![("SELECT 1".into(), mods(&[]))]);
+	}
+
+	#[test]
+	fn test_unknown_modifier_is_rejected() {
+		for (input, modifier) in [
+			("SELECT 1 \\gsett", "\\gsett"),
+			("SELECT 1 \\gq;", "\\gq"),
+			("SELECT 1 \\Gq", "\\Gq"),
+			("SELECT 1 \\g out.txt", "\\g out.txt"),
+			("SELECT 1 \\gx out.txt -- c", "\\gx out.txt"),
+			("SELECT 1 \\goset out.txt", "\\goset out.txt"),
+		] {
+			let (actions, remaining) = parse_multi_input(input, &make_state());
+			assert_eq!(remaining, "", "{input}");
+			assert_eq!(actions.len(), 1, "{input}");
+			assert_eq!(actions[0].text, format!("SELECT 1 {modifier}"), "{input}");
+			assert_eq!(
+				actions[0].action,
+				ReplAction::InvalidQueryModifier {
+					modifier: modifier.into()
+				},
+				"{input}"
+			);
+		}
+	}
+
+	#[test]
+	fn test_unknown_modifier_does_not_stop_later_statements() {
+		let (actions, remaining) = parse_multi_input("SELECT 1 \\gq; SELECT 2;", &make_state());
+		assert_eq!(remaining, "");
+		assert_eq!(actions.len(), 2);
+		assert!(matches!(
+			actions[0].action,
+			ReplAction::InvalidQueryModifier { .. }
+		));
+		assert!(matches!(&actions[1].action, ReplAction::Execute { sql, .. } if sql == "SELECT 2"));
 	}
 }

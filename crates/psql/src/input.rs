@@ -85,6 +85,11 @@ pub(crate) enum ReplAction {
 	Result {
 		subcommand: crate::parser::ResultSubcommand,
 	},
+	/// A query ended in a `\g` suffix that is not a known modifier, so it is
+	/// reported rather than run without the modifier the operator asked for.
+	InvalidQueryModifier {
+		modifier: String,
+	},
 }
 
 pub(crate) fn handle_input(
