@@ -85,9 +85,8 @@ pub async fn try_find_tamanu(root: Option<&Path>) -> Result<Option<(Version, Pat
 
 		// Other roots carry their version intrinsically (package.json), so
 		// they remain selectable without a signal.
-		return candidates
-			.into_iter()
-			.find(|(_, root)| !is_config_dir(root))
+		candidates.retain(|(_, root)| !is_config_dir(root));
+		return newest_configured(candidates, has_local_config)
 			.inspect(|(version, root)| debug!(?root, ?version, "found Tamanu root"))
 			.ok_or_else(|| {
 				miette!(
@@ -99,10 +98,37 @@ pub async fn try_find_tamanu(root: Option<&Path>) -> Result<Option<(Version, Pat
 			.map(Some);
 	}
 
-	Ok(candidates
-		.into_iter()
-		.next()
+	Ok(newest_configured(candidates, has_local_config)
 		.inspect(|(version, root)| debug!(?root, ?version, "found Tamanu root")))
+}
+
+/// The newest of `candidates` (sorted newest first) that has been configured,
+/// or the newest outright when none has.
+///
+/// A Windows upgrade unpacks the new release next to the running one and only
+/// later copies the local config into it. Until then the new release reads as
+/// stock defaults: no facility settings and no database credentials, so it
+/// would be taken for an unreachable central server.
+fn newest_configured(
+	candidates: Vec<(Version, PathBuf)>,
+	is_configured: impl Fn(&Path) -> bool,
+) -> Option<(Version, PathBuf)> {
+	match candidates.iter().position(|(_, root)| is_configured(root)) {
+		Some(index) => {
+			if index > 0 {
+				debug!(
+					skipped = ?candidates[..index].iter().map(|(_, root)| root).collect::<Vec<_>>(),
+					"skipping newer Tamanu roots that have no local config"
+				);
+			}
+			candidates.into_iter().nth(index)
+		}
+		None => candidates.into_iter().next(),
+	}
+}
+
+fn has_local_config(root: &Path) -> bool {
+	config::find_config_dir(root, None, "local.json5").is_some()
 }
 
 /// [`try_find_tamanu`], erroring when the host has no Tamanu at all. For
@@ -250,6 +276,56 @@ async fn detect_kind_from_db(client: &tokio_postgres::Client) -> Option<ApiServe
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn newest_configured_skips_unconfigured_newer_release() {
+		let dir = tempfile::tempdir().unwrap();
+		let old = dir.path().join("release-v2.64.6");
+		let new = dir.path().join("release-v2.64.7");
+		for root in [&old, &new] {
+			let config = root.join("packages/facility-server/config");
+			std::fs::create_dir_all(&config).unwrap();
+			std::fs::write(config.join("default.json5"), "{}").unwrap();
+		}
+		std::fs::write(
+			old.join("packages/facility-server/config/local.json5"),
+			"{}",
+		)
+		.unwrap();
+
+		let v = |s: &str| Version::parse(s).unwrap();
+		let candidates = vec![(v("2.64.7"), new.clone()), (v("2.64.6"), old.clone())];
+
+		assert_eq!(
+			newest_configured(candidates.clone(), has_local_config),
+			Some((v("2.64.6"), old)),
+			"an unpacked but unconfigured release is passed over"
+		);
+
+		std::fs::write(
+			new.join("packages/facility-server/config/local.json5"),
+			"{}",
+		)
+		.unwrap();
+		assert_eq!(
+			newest_configured(candidates, has_local_config),
+			Some((v("2.64.7"), new)),
+			"once configured, the newer release is taken"
+		);
+	}
+
+	#[test]
+	fn newest_configured_falls_back_to_newest() {
+		let v = |s: &str| Version::parse(s).unwrap();
+		let candidates = vec![
+			(v("2.64.7"), PathBuf::from("/Tamanu/release-v2.64.7")),
+			(v("2.64.6"), PathBuf::from("/Tamanu/release-v2.64.6")),
+		];
+		assert_eq!(
+			newest_configured(candidates, |_| false),
+			Some((v("2.64.7"), PathBuf::from("/Tamanu/release-v2.64.7")))
+		);
+	}
 
 	#[test]
 	#[cfg(target_os = "linux")]
