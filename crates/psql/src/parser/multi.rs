@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use winnow::{
 	Parser,
 	ascii::multispace0,
@@ -27,7 +29,8 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<Statemen
 		return (vec![], String::new());
 	}
 
-	let mut text = input.to_string();
+	// Borrowed until a metacommand line has to be cut out of the middle.
+	let mut text = Cow::Borrowed(input);
 	let mut pos = 0;
 	let mut actions = Vec::new();
 
@@ -70,7 +73,7 @@ pub(crate) fn parse_multi_input(input: &str, state: &ReplState) -> (Vec<Statemen
 			}
 			if let Ok((line, action)) = parse_metacommand_action(&mut after) {
 				actions.push(Statement { text: line, action });
-				text = format!("{sql_part}{after}");
+				text = Cow::Owned(format!("{sql_part}{after}"));
 				pos = 0;
 				continue;
 			}
