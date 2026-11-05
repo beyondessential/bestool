@@ -165,6 +165,8 @@ fn command_to_verb(command: &str) -> &str {
 		"DO" => "done",
 		"CALL" => "called",
 		"REFRESH" => "refreshed",
+		"CHECKPOINT" => "checkpoint",
+		"CLOSE" => "closed",
 		_ => "affected",
 	}
 }
@@ -196,6 +198,8 @@ fn should_hide_row_count(command: &str) -> bool {
 			| "GRANT" | "REVOKE"
 			| "DO" | "CALL"
 			| "REFRESH"
+			| "CHECKPOINT"
+			| "CLOSE"
 	)
 }
 
@@ -902,6 +906,8 @@ mod tests {
 		assert!(should_hide_row_count("DO"));
 		assert!(should_hide_row_count("CALL"));
 		assert!(should_hide_row_count("REFRESH"));
+		assert!(should_hide_row_count("CHECKPOINT"));
+		assert!(should_hide_row_count("CLOSE"));
 
 		// Commands that should show row count
 		assert!(!should_hide_row_count("INSERT"));
