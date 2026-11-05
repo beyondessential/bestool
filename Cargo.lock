@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "bestool"
-version = "2.5.13"
+version = "2.5.14"
 dependencies = [
  "age",
  "algae-cli",
@@ -817,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "bestool-psql"
-version = "1.7.20"
+version = "1.7.21"
 dependencies = [
  "aegis",
  "bestool-postgres",
