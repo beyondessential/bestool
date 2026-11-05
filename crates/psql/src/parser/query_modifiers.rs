@@ -92,7 +92,7 @@ pub(crate) fn parse_query_modifiers(input: &str) -> Result<Option<(String, Query
 	>;
 
 	fn parse_line<'a>(input: &mut &'a str) -> ParseLineResult<'a> {
-		let sql = take_till(1.., |c| c == '\\').parse_next(input)?;
+		let sql = take_till(0.., |c| c == '\\').parse_next(input)?;
 		let cmd_and_arg = opt((space0, modifier)).parse_next(input)?;
 		Ok((sql, cmd_and_arg.map(|(_, cmd)| cmd)))
 	}

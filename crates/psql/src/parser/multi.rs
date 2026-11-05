@@ -1228,4 +1228,22 @@ WHERE id IN (
 			);
 		}
 	}
+
+	#[test]
+	fn test_modifier_with_empty_query() {
+		let (executes, remaining) = executes("\\gx");
+		assert_eq!(remaining, "");
+		assert_eq!(
+			executes,
+			vec![(String::new(), mods(&[QueryModifier::Expanded]))]
+		);
+
+		let (actions, _) = parse_multi_input("\\gq", &make_state());
+		assert_eq!(
+			actions[0].action,
+			ReplAction::InvalidQueryModifier {
+				modifier: "\\gq".into()
+			}
+		);
+	}
 }
