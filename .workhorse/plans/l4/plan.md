@@ -15,6 +15,8 @@ Exploration card: how Linux hosts could get continuous, point-in-time-recoverabl
 | IRSA | IAM Roles for Service Accounts: a k8s pod gets AWS credentials by assuming an IAM role tied to its service account |
 | k8s | Kubernetes |
 | LVM | Linux Logical Volume Manager; thin-LVM is its thinly provisioned volumes, which can take cheap snapshots |
+| pgro | postgres-restore-operator, BES's k8s operator that restores kopia snapshots of Linux-host clusters into short-lived postgres pods |
+| PVC | PersistentVolumeClaim, a k8s volume |
 | PGDATA | a postgres cluster's data directory |
 | PGDG | the PostgreSQL Global Development Group's apt repository |
 | PITR | point-in-time recovery: restoring a database to any chosen moment, by replaying WAL on top of a base backup up to that moment |
@@ -102,6 +104,17 @@ Postgres's `archive_command` invokes bestool with the segment path, which hands 
 - When the daemon is unreachable, the command falls back to uploading the segment itself with per-invocation credentials, so a stopped daemon delays nothing beyond credential cost.
 - The daemon never depends on postgres to start; postgres depends on the daemon only for archiving, which degrades to the fallback rather than blocking.
 
+### Exporting a backup as a dump, Canopy-side through pgro
+
+Backups are physical (volume snapshots, base backups, WAL), so none is directly usable as a logical export. The blessed path replaces "stand up a server, restore it from Canopy, `pg_dump` by hand" with a Canopy action that pgro carries out.
+
+- An operator asks Canopy to export a given backup (type and snapshot id, and once a WAL archive exists, an optional target time). Canopy queues it as a request; pgro picks it up the way it already picks up restore-verification work.
+- pgro restores into a PVC exactly as it does for a `PostgresPhysicalRestore`, starts a throwaway postgres with archiving and replication settings stripped, dumps, uploads, and tears everything down. Most of this exists in pgro; the dump and upload are the new steps, plus WAL replay to a target time once the archive exists.
+- The postgres always runs in a container whose image matches the backup's major version: the official `postgres:<major>` image for Linux-host backups, as pgro does now, and the CNPG image for CNPG backups so their extensions are present. Nothing has to be installed on any host.
+- The export holds every database in the cluster: the globals (roles, tablespaces) as SQL, plus one custom-format dump per database, so a single database can be restored selectively with `pg_restore`.
+- Reading barman-layout objects (WAL for PITR, CNPG base backups) is needed by both bestool and pgro, so that code lives in a crate both depend on, as the Canopy client already does.
+- This does not cover the CNPG-to-Linux restore stretch goal, which still needs bestool to restore a barman base backup onto a host.
+
 ## Open design questions
 
 - `archive_timeout` value (sets the RPO on quiet servers) and whether bestool sets it or the definition does.
@@ -109,3 +122,10 @@ Postgres's `archive_command` invokes bestool with the segment path, which hands 
 - WAL retention: devices cannot delete, so Canopy maintenance prunes WAL older than the recovery window, keeping whatever the oldest in-window base backup needs.
 - How Canopy represents a continuous archive: staleness of the newest WAL, recoverable window, gaps.
 - How CNPG archives get into Canopy at all, given Canopy has no Kubernetes-hosted server and the buckets are per k8s cluster with IRSA.
+- Exports:
+  - Where the dump is written: an exports prefix in the group bucket, or a separate exports bucket. Either way it needs write access pgro's read-only restore credentials don't grant, and an expiry lifecycle.
+  - How the operator gets it: an expiring presigned download link from Canopy, with every request and download in the audit log.
+  - Whether the export is encrypted beyond S3's own at-rest encryption, given it is patient data leaving the backup system.
+  - Whether the globals include role password hashes or are dumped with them stripped.
+  - Packaging: one archive object, or a prefix of objects with a manifest.
+  - Who may request an export, and whether it rides the existing 24-hour restore window or has its own gate.
