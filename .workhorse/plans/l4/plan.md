@@ -9,6 +9,10 @@ Exploration card: how Linux hosts could get continuous, point-in-time-recoverabl
 | BAK | bestool's Canopy backups spec (`.workhorse/specs/canopy/backup.md`) |
 | barman | Backup and Recovery Manager, EnterpriseDB's postgres backup tool; barman-cloud is its set of CLIs that back up straight to object storage |
 | CNPG | CloudNativePG, the Kubernetes operator that runs BES's postgres clusters on k8s |
+| CNPG-I | CNPG's plugin interface: gRPC services a plugin implements to take over WAL archiving, backups and restores |
+| EKS OIDC | the OpenID Connect issuer an EKS cluster exposes, which lets outside services verify the cluster's service account tokens |
+| LSN | Log Sequence Number, a position in the WAL |
+| RBAC | Kubernetes role-based access control |
 | GPL | GNU General Public License |
 | IAM | AWS Identity and Access Management |
 | ICU | International Components for Unicode, a collation library postgres can use |
@@ -126,6 +130,36 @@ Backups are physical (volume snapshots, base backups, WAL), so none is directly 
 - The export holds every database in the cluster: the globals (roles, tablespaces) as SQL, plus one custom-format dump per database, so a single database can be restored selectively with `pg_restore`.
 - Reading barman-layout objects (WAL for PITR, CNPG base backups) is needed by both bestool and pgro, so that code lives in a crate both depend on, as the Canopy client already does.
 - This does not cover the CNPG-to-Linux restore stretch goal, which still needs bestool to restore a barman base backup onto a host.
+
+## Option: a Canopy CNPG-I plugin in place of the Barman Cloud Plugin
+
+A plugin implementing the same CNPG-I services could write the Linux hosts' format instead: kopia base backups plus a barman-layout WAL archive, with credentials issued by Canopy.
+
+What it would give:
+
+- **WAL archiving** that matches the Linux design: CNPG's `archive_command` already hands each segment to a sidecar over a socket, which is the shape chosen for Linux hosts.
+- **Base backups with dedup.** `Backup` would run `pg_backup_start`, snapshot PGDATA with kopia (adding `backup_label` and `tablespace_map`), then `pg_backup_stop`. This is a standard online backup made valid by its label plus WAL, and kopia's dedup replaces barman-cloud's nightly full upload.
+- **One restore path.** Base backups from CNPG and from Linux hosts would be the same kopia snapshot plus barman-layout WAL. pgro exports, the restore job hook and bestool would all restore the same way.
+- **CNPG-to-Linux restore** reduces to the ordinary bestool restore plus the CNPG config rewrite and ownership fixes listed under the known hazards.
+- **Retention** moves from the sidecar to Canopy maintenance, which fits Canopy's rule that writers never delete.
+
+What it costs:
+
+- **Identity.** Canopy has no notion of a Kubernetes-hosted server, so each CNPG cluster needs a Canopy identity. That could be a per-cluster registration held in a Secret, or Canopy accepting the cluster's k8s service account tokens (EKS OIDC) and mapping them to a server. Either way it depends on the Kubernetes work in Canopy.
+- **Availability coupling.** Today archiving needs only IRSA. Through Canopy, a Canopy outage longer than a credential lifetime stops archiving, WAL piles up on the PVC, and a full PVC takes the cluster down. Canopy's own `meta-db` runs on CNPG, so it can't archive through Canopy at all. Either it stays on the Barman Cloud Plugin, or the plugin falls back to IRSA when Canopy is unreachable.
+- **CNPG-I surface.** Parity is needed for the parts BES clusters use or may use:
+  - sidecar and job injection, and RBAC
+  - parallel WAL prefetch on restore
+  - the end-of-WAL-stream flag that hands replicas over to streaming
+  - `pg_rewind` mode
+  - the empty-archive check at bootstrap
+  - replica clusters restoring from another cluster's archive
+  - backup status fields and metrics
+
+  The machinery libraries are Go. A Rust plugin means implementing the protos with tonic plus the pod-mutation hooks; a Go plugin could start as a fork of the Barman Cloud Plugin with its barman calls swapped out.
+- **Sidecar weight.** kopia plus its cache in every instance pod needs more than the current 10m CPU and 128Mi memory, and ephemeral storage for the cache.
+
+The cheaper alternative is to keep the Barman Cloud Plugin as it is and have Canopy read its archives without writing them. That would cover inspection, staleness and alerting, and pgro exports from barman tar bases. The cost is that CNPG base backups stay full uploads, and restore keeps two base formats.
 
 ## Open design questions
 
