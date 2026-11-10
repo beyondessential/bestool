@@ -123,6 +123,15 @@ When the WAL archive is enabled, base backups default to weekly, set through Can
 - A lost or corrupt WAL segment makes everything after it unrecoverable. The kopia base backups restore without WAL, so a gap falls back to the last base backup, which can be up to a week old. Alerting on archive failures and gaps in the archive therefore carries more weight than it would with daily bases.
 - WAL is retained from the oldest base backup still inside the recovery window, so up to a week more WAL than the window itself.
 
+#### Backstop when archiving stalls
+
+Canopy controls the cadence, so it narrows the week-old fallback itself. When a server's WAL archive has stalled for more than 12 hours, Canopy asks for a base backup at once and then daily, until archiving resumes.
+
+- **Stalled is not the same as quiet.** An idle server writes no WAL, and has nothing to lose. So no new segment arriving is not enough on its own. The device reports, with its heartbeat, how far postgres has written WAL and the last segment postgres archived (from `pg_stat_archiver`). The archive has stalled when written WAL is ahead of what has reached the archive and has stayed that way for the threshold.
+- **When archiving resumes,** the archive has a hole. Point-in-time recovery can't cross it, so Canopy asks for one more base backup straight away to start a recoverable chain again, then returns to weekly.
+- **A new timeline** gets an immediate base backup for the same reason. That means a host that was restored or promoted.
+- **A device that has stopped heartbeating** can't be told to back up. That case belongs to the existing staleness alerts, not to this backstop.
+
 ### WAL transport: `archive_command` hands off to the daemon
 
 Postgres's `archive_command` invokes bestool with the segment path, which hands it to the alertd daemon over its control socket; the daemon holds Canopy credentials and uploads it.
