@@ -2,6 +2,29 @@
 
 Exploration card: how Linux hosts could get continuous, point-in-time-recoverable postgres backups using barman's model, how that fits Canopy, whether CNPG's barman backups can be brought under Canopy, and whether bestool can restore a CNPG backup onto a plain Linux install.
 
+## Abbreviations and terms
+
+| Term | Meaning |
+| --- | --- |
+| BAK | bestool's Canopy backups spec (`.workhorse/specs/canopy/backup.md`) |
+| barman | Backup and Recovery Manager, EnterpriseDB's postgres backup tool; barman-cloud is its set of CLIs that back up straight to object storage |
+| CNPG | CloudNativePG, the Kubernetes operator that runs BES's postgres clusters on k8s |
+| GPL | GNU General Public License |
+| IAM | AWS Identity and Access Management |
+| ICU | International Components for Unicode, a collation library postgres can use |
+| IRSA | IAM Roles for Service Accounts: a k8s pod gets AWS credentials by assuming an IAM role tied to its service account |
+| k8s | Kubernetes |
+| LVM | Linux Logical Volume Manager; thin-LVM is its thinly provisioned volumes, which can take cheap snapshots |
+| PGDATA | a postgres cluster's data directory |
+| PGDG | the PostgreSQL Global Development Group's apt repository |
+| PITR | point-in-time recovery: restoring a database to any chosen moment, by replaying WAL on top of a base backup up to that moment |
+| RPO | recovery point objective: the most recent data a restore can bring back, so how much can be lost |
+| S3 | AWS Simple Storage Service, the object store |
+| SigV4 | AWS Signature Version 4, how S3 requests are signed |
+| STS | AWS Security Token Service, which issues short-lived credentials |
+| TLS | Transport Layer Security |
+| WAL | write-ahead log: postgres's journal of every change, written in 16 MiB segment files; archiving them is what makes PITR possible |
+
 ## What exists today
 
 ### bestool on Linux hosts (BAK)
