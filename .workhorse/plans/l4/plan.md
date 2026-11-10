@@ -2,7 +2,7 @@
 
 Exploration card: how Linux hosts could get continuous, point-in-time-recoverable postgres backups using barman's model, how that fits Canopy, whether CNPG's barman backups can be brought under Canopy, and whether bestool can restore a CNPG backup onto a plain Linux install.
 
-Bringing CNPG's backups under Canopy is set aside from this card and tracked on card M4; the analysis is kept below for it.
+Bringing CNPG's backups under Canopy, and restoring CNPG backups onto Linux hosts, are set aside from this card and tracked on card M4; the analysis is kept below for it.
 
 ## Abbreviations and terms
 
@@ -131,7 +131,6 @@ Backups are physical (volume snapshots, base backups, WAL), so none is directly 
 - The postgres always runs in a container whose image matches the backup's major version: the official `postgres:<major>` image for Linux-host backups, as pgro does now. If card M4 brings CNPG backups under Canopy, those would use the CNPG image so their extensions are present. Nothing has to be installed on any host.
 - The export holds every database in the cluster: the globals (roles, tablespaces) as SQL, plus one custom-format dump per database, so a single database can be restored selectively with `pg_restore`.
 - Reading barman-layout objects (WAL for PITR, CNPG base backups) is needed by both bestool and pgro, so that code lives in a crate both depend on, as the Canopy client already does.
-- This does not cover the CNPG-to-Linux restore stretch goal, which still needs bestool to restore a barman base backup onto a host.
 
 ## Set aside: a Canopy CNPG-I plugin in place of the Barman Cloud Plugin
 
