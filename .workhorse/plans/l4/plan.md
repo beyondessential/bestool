@@ -72,6 +72,18 @@ Exploration card: how Linux hosts could get continuous, point-in-time-recoverabl
 - If the cluster used a separate WAL volume, `pg_wal` is likely absent from the tar and must be recreated.
 - A promoted restore starts a new timeline; it must never archive into the source's path.
 
+### How the Barman Cloud Plugin plugs into CNPG
+
+The plugin implements CNPG-I, CNPG's gRPC plugin interface, in two parts:
+
+- **Operator side.** Lifecycle hooks inject a sidecar into every instance pod and every recovery job pod, and a reconciler hook manages the RBAC it needs.
+- **Instance side (the sidecar).**
+  - WAL `Archive` and `Restore`. CNPG's `archive_command` and `restore_command` call these with the segment path.
+  - `Backup`, which runs in the sidecar with PGDATA mounted and returns the backup's begin and end WAL and LSN, timeline and timestamps.
+  - Metrics, and a restore job hook that lays down the base backup when a cluster bootstraps from recovery.
+
+Each of these shells out to the barman-cloud CLIs. The plugin sidecar also applies retention and records the recovery window on the `ObjectStore` status. `Status` and `SetFirstRequired` on the WAL service are unimplemented, so CNPG doesn't need them. The plugin is Go and licensed Apache-2.0.
+
 ## Decisions
 
 ### Goals
