@@ -101,7 +101,7 @@ All three: point-in-time recovery with a short RPO, base backups that stay dedup
 Linux hosts keep the existing `postgresql` method (volume snapshot or base backup, uploaded by kopia) as their base backups, and gain continuous WAL archiving written in barman's `wals/` layout beside the kopia repository.
 
 - Base backups keep kopia's dedup, which barman-cloud cannot offer: every barman-cloud base backup is a full upload.
-- With WAL covering the gaps, base backups can run less often without widening the RPO, which is the other half of making them lighter.
+- With WAL covering the gaps, base backups can run less often without widening the RPO (see the base backup interval below).
 - The shared format is the WAL archive and the restore tooling, not the base backups. A Linux restore is a kopia base plus barman-layout WAL; a CNPG restore is a barman tar base plus barman-layout WAL; both replay WAL through the same fetcher and the same recovery configuration.
 - Premise to verify before building: postgres performs archive recovery correctly from an atomic volume snapshot that carries no `backup_label`, replaying from the snapshot's checkpoint through the archive to a target time. The `pg_basebackup` fallback writes a `backup_label` and is already a valid PITR base.
 
@@ -113,6 +113,15 @@ bestool reads and writes the barman object layout itself rather than driving the
 - The surface is small: WAL push is a single PUT of `wals/<dir>/<segment>.gz`, WAL fetch a GET, and a CNPG base backup is `backup.info` plus streamed gzip tars.
 - S3 requests are signed with the SigV4 signer bestool already carries for the kopia re-signing proxy, so no AWS SDK is added.
 - Format drift is guarded by tests against fixtures produced by real barman-cloud.
+
+### Base backup interval: weekly by default
+
+When the WAL archive is enabled, base backups default to weekly, set through Canopy's existing per-type interval so a server can be tuned without new mechanism.
+
+- The saving is snapshot I/O. kopia already uploads only what changed, but each run takes a snapshot and re-reads every changed 1 GiB segment file.
+- Worst-case restore replays up to seven days of WAL on top of downloading the base backup. Replay is single-threaded, so on a busy server this is long. Where that matters, a server's interval is shortened, judged from its WAL volume (`pg_stat_wal`) and a timed replay.
+- A lost or corrupt WAL segment makes everything after it unrecoverable. The kopia base backups restore without WAL, so a gap falls back to the last base backup, which can be up to a week old. Alerting on archive failures and gaps in the archive therefore carries more weight than it would with daily bases.
+- WAL is retained from the oldest base backup still inside the recovery window, so up to a week more WAL than the window itself.
 
 ### WAL transport: `archive_command` hands off to the daemon
 
