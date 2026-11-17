@@ -10,11 +10,6 @@ use url::Url;
 /// database connection (alertd, doctor, logs, lifecycle, psql, db_url, backup,
 /// greenmask). When set, the command does not need the config's `db` block —
 /// and alertd does not need a Tamanu install at all.
-///
-/// alertd's reporting schema apply is the one exception: on a server with an
-/// install it connects as the config's own role (see
-/// [`TamanuConfig::own_database_url`]), since the override may name a
-/// read-only monitoring role that cannot replace the schema.
 pub const DATABASE_URL_ENV: &str = "TAMANU_DATABASE_URL";
 
 /// The [`DATABASE_URL_ENV`] override, if set to a non-empty value.
@@ -165,13 +160,6 @@ impl TamanuConfig {
 		if let Some(url) = database_url_override() {
 			return url;
 		}
-		self.own_database_url()
-	}
-
-	/// The URL for the role the local Tamanu install itself connects as,
-	/// whatever [`DATABASE_URL_ENV`] names. That override may be a read-only
-	/// monitoring role, which cannot do what Tamanu's own role can.
-	pub fn own_database_url(&self) -> String {
 		crate::connection_url::ConnectionUrlBuilder {
 			username: self.db.username.clone(),
 			password: Some(self.db.password.clone()),

@@ -559,19 +559,18 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 		return HealOutcome::Failed;
 	}
 
-	// The sweep's own URL may name a read-only monitoring role. The schema is
-	// the install's, so it is replaced as the role the install connects as.
-	let apply_url = ctx
-		.installed_config()
-		.map(|config| config.own_database_url())
-		.unwrap_or_else(|| ctx.database_url.clone());
-	let apply = match apply_connection(&apply_url).await {
+	let apply = match apply_connection(&ctx.database_url).await {
 		Ok(apply) => apply,
 		Err(err) => {
 			tracing::warn!("opening a connection to apply the reporting schema failed: {err}");
 			return HealOutcome::Failed;
 		}
 	};
+
+	if let Err(err) = become_owner(&apply).await {
+		tracing::warn!("taking the role that owns the reporting schema failed: {err}");
+		return HealOutcome::Failed;
+	}
 
 	if let Err(err) = apply.batch_execute(&stamped(sql, &offered)).await {
 		tracing::warn!(version = %offered.version, "applying the reporting schema failed: {err}");
@@ -692,6 +691,30 @@ fn note_unstamped(artifact: &str) {
 		.lock()
 		.expect("unstamped registry poisoned")
 		.insert(artifact.to_owned());
+}
+
+/// The sweep may connect as a read-only monitoring role, which owns no schema
+/// and can replace none. Where that role may act as the one owning the schema,
+/// or the database where there is no schema yet, the apply runs as the owner.
+// spec: CHK-RSC
+async fn become_owner(db: &tokio_postgres::Client) -> Result<(), tokio_postgres::Error> {
+	let owner = db
+		.query_opt(
+			"SELECT quote_ident(owner) FROM (
+				SELECT pg_get_userbyid(coalesce(
+					(SELECT nspowner FROM pg_namespace WHERE nspname = 'reporting'),
+					(SELECT datdba FROM pg_database WHERE datname = current_database())
+				)) AS owner
+			) AS owned
+			WHERE owner <> current_user AND pg_has_role(current_user, owner, 'MEMBER')",
+			&[],
+		)
+		.await?;
+	if let Some(owner) = owner {
+		let owner: String = owner.get(0);
+		db.batch_execute(&format!("SET ROLE {owner}")).await?;
+	}
+	Ok(())
 }
 
 /// Its own connection, so a long DDL batch doesn't hold one of the sweep's
@@ -1779,7 +1802,6 @@ mod tests {
 
 		Some(TamanuCx {
 			database_url,
-			install_root: None,
 			pool: Some(pool),
 			runtime: Arc::new(api(true)),
 			..borrowed
@@ -1840,19 +1862,38 @@ mod tests {
 		);
 	}
 
-	/// The sweep may be handed a read-only monitoring role, which owns no
-	/// schema. The apply connects as the install's own role instead, so it
-	/// succeeds where the sweep's connection string reaches nothing at all.
+	/// A sweep connected as a monitoring role owns no schema. Granted the owning
+	/// role without inheriting it, the apply still replaces the schema, and the
+	/// owner keeps it.
 	// spec: CHK-RSC
 	#[tokio::test]
-	async fn an_apply_connects_as_the_install_s_own_role() {
-		const DATABASE: &str = "bestool-alertd-rsc-own-role";
+	async fn an_apply_runs_as_the_role_owning_the_schema() {
+		const DATABASE: &str = "bestool-alertd-rsc-owner";
+		const OWNER: &str = "bestool-alertd-rsc-owner";
+		const MONITOR: &str = "bestool-alertd-rsc-monitor";
 		const SQL: &str = "DROP SCHEMA IF EXISTS reporting CASCADE;\nCREATE SCHEMA reporting;\n";
 
 		let _turn = one_at_a_time().await;
 		let Some(ctx) = probe_ctx(DATABASE, "9.62.0").await else {
 			return;
 		};
+		let admin = admin_connection().await.expect("the probe database exists");
+		let roles = format!(
+			"DROP ROLE IF EXISTS \"{MONITOR}\"; DROP ROLE IF EXISTS \"{OWNER}\"; \
+			 CREATE ROLE \"{OWNER}\"; \
+			 CREATE ROLE \"{MONITOR}\" LOGIN NOINHERIT PASSWORD 'monitor'; \
+			 GRANT \"{OWNER}\" TO \"{MONITOR}\"; \
+			 ALTER DATABASE \"{DATABASE}\" OWNER TO \"{OWNER}\""
+		);
+		admin.batch_execute(&roles).await.expect("create the roles");
+		ctx.db()
+			.await
+			.expect("the probe database")
+			.batch_execute(&format!(
+				"CREATE SCHEMA reporting AUTHORIZATION \"{OWNER}\""
+			))
+			.await
+			.expect("a schema the monitor does not own");
 
 		let version = v("9.62.0");
 		let (base, _asked) = serve(|_| vec![answer("application/sql", SQL)]);
@@ -1867,23 +1908,33 @@ mod tests {
 		let ctx = TamanuCx {
 			version,
 			canopy: Some(canopy_at(&base).await),
-			config: Arc::new(bestool_tamanu::config::TamanuConfig::from_database(
-				bestool_tamanu::config::Database {
-					username: std::env::var("USER").unwrap_or_default(),
-					..bestool_tamanu::config::Database::from_url(&ctx.database_url)
-						.expect("the probe URL parses")
-				},
-			)),
-			install_root: Some(std::env::temp_dir()),
-			database_url: "postgresql://nobody@127.0.0.1:1/nowhere".into(),
+			database_url: format!("postgresql://{MONITOR}:monitor@localhost/{DATABASE}"),
 			..ctx
 		};
 		let outcome = apply_offered(ctx.clone()).await;
+		let owner: Option<String> = ctx
+			.db()
+			.await
+			.expect("the probe database")
+			.query_one(
+				"SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'reporting'",
+				&[],
+			)
+			.await
+			.ok()
+			.map(|row| row.get(0));
 
 		drop(ctx);
 		drop_probe(DATABASE).await;
+		admin
+			.batch_execute(&format!(
+				"DROP ROLE IF EXISTS \"{MONITOR}\"; DROP ROLE IF EXISTS \"{OWNER}\""
+			))
+			.await
+			.expect("drop the roles");
 
 		assert_eq!(outcome, HealOutcome::Healed);
+		assert_eq!(owner.as_deref(), Some(OWNER));
 	}
 
 	/// Mid-upgrade the database is still on the version it is leaving, or the
