@@ -567,6 +567,11 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 		}
 	};
 
+	if let Err(err) = become_owner(&apply).await {
+		tracing::warn!("taking the role that owns the reporting schema failed: {err}");
+		return HealOutcome::Failed;
+	}
+
 	if let Err(err) = apply.batch_execute(&stamped(sql, &offered)).await {
 		tracing::warn!(version = %offered.version, "applying the reporting schema failed: {err}");
 		return HealOutcome::Failed;
@@ -686,6 +691,30 @@ fn note_unstamped(artifact: &str) {
 		.lock()
 		.expect("unstamped registry poisoned")
 		.insert(artifact.to_owned());
+}
+
+/// The sweep may connect as a read-only monitoring role, which owns no schema
+/// and can replace none. Where that role may act as the one owning the schema,
+/// or the database where there is no schema yet, the apply runs as the owner.
+// spec: CHK-RSC
+async fn become_owner(db: &tokio_postgres::Client) -> Result<(), tokio_postgres::Error> {
+	let owner = db
+		.query_opt(
+			"SELECT quote_ident(owner) FROM (
+				SELECT pg_get_userbyid(coalesce(
+					(SELECT nspowner FROM pg_namespace WHERE nspname = 'reporting'),
+					(SELECT datdba FROM pg_database WHERE datname = current_database())
+				)) AS owner
+			) AS owned
+			WHERE owner <> current_user AND pg_has_role(current_user, owner, 'MEMBER')",
+			&[],
+		)
+		.await?;
+	if let Some(owner) = owner {
+		let owner: String = owner.get(0);
+		db.batch_execute(&format!("SET ROLE {owner}")).await?;
+	}
+	Ok(())
 }
 
 /// Its own connection, so a long DDL batch doesn't hold one of the sweep's
@@ -1831,6 +1860,109 @@ mod tests {
 				build: Some(offered.digest),
 			}
 		);
+	}
+
+	/// A sweep connected as a monitoring role owns no schema. Granted the owning
+	/// role without inheriting it, the apply still replaces the schema, and the
+	/// owner keeps it.
+	// spec: CHK-RSC
+	#[tokio::test]
+	async fn an_apply_runs_as_the_role_owning_the_schema() {
+		let Some((outcome, owner)) = apply_as_monitor("bestool-alertd-rsc-owner", true).await
+		else {
+			return;
+		};
+		assert_eq!(outcome, HealOutcome::Healed);
+		assert_eq!(owner.as_deref(), Some(RSC_OWNER));
+	}
+
+	/// With no schema to own yet, the role owning the database creates it.
+	// spec: CHK-RSC
+	#[tokio::test]
+	async fn an_apply_with_no_schema_runs_as_the_role_owning_the_database() {
+		let Some((outcome, owner)) = apply_as_monitor("bestool-alertd-rsc-dbowner", false).await
+		else {
+			return;
+		};
+		assert_eq!(outcome, HealOutcome::Healed);
+		assert_eq!(owner.as_deref(), Some(RSC_OWNER));
+	}
+
+	const RSC_OWNER: &str = "bestool-alertd-rsc-owner";
+
+	/// Applies as a monitoring role granted the database's owner without
+	/// inheriting it, and returns the outcome with the schema's owner afterwards.
+	async fn apply_as_monitor(
+		database: &str,
+		schema_exists: bool,
+	) -> Option<(HealOutcome, Option<String>)> {
+		const OWNER: &str = RSC_OWNER;
+		const MONITOR: &str = "bestool-alertd-rsc-monitor";
+		const SQL: &str = "DROP SCHEMA IF EXISTS reporting CASCADE;\nCREATE SCHEMA reporting;\n";
+
+		let _turn = one_at_a_time().await;
+		let Some(ctx) = probe_ctx(database, "9.62.0").await else {
+			return None;
+		};
+		let admin = admin_connection().await.expect("the probe database exists");
+		let roles = format!(
+			"DROP ROLE IF EXISTS \"{MONITOR}\"; DROP ROLE IF EXISTS \"{OWNER}\"; \
+			 CREATE ROLE \"{OWNER}\"; \
+			 CREATE ROLE \"{MONITOR}\" LOGIN NOINHERIT PASSWORD 'monitor'; \
+			 GRANT \"{OWNER}\" TO \"{MONITOR}\"; \
+			 ALTER DATABASE \"{database}\" OWNER TO \"{OWNER}\""
+		);
+		admin.batch_execute(&roles).await.expect("create the roles");
+		if schema_exists {
+			ctx.db()
+				.await
+				.expect("the probe database")
+				.batch_execute(&format!(
+					"CREATE SCHEMA reporting AUTHORIZATION \"{OWNER}\""
+				))
+				.await
+				.expect("a schema the monitor does not own");
+		}
+
+		let version = v("9.62.0");
+		let (base, _asked) = serve(|_| vec![answer("application/sql", SQL)]);
+		let offered = Offered {
+			version: version.clone(),
+			id: "5c1d9a70-3b42-4e18-a6f7-2e9b0c4d8a11".to_owned(),
+			download_url: format!("{base}/artifacts/schema/download"),
+			digest: sri(SQL.as_bytes()),
+		};
+		cache_offer(&version, &Some(offered.clone()));
+
+		let ctx = TamanuCx {
+			version,
+			canopy: Some(canopy_at(&base).await),
+			database_url: format!("postgresql://{MONITOR}:monitor@localhost/{database}"),
+			..ctx
+		};
+		let outcome = apply_offered(ctx.clone()).await;
+		let owner: Option<String> = ctx
+			.db()
+			.await
+			.expect("the probe database")
+			.query_one(
+				"SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'reporting'",
+				&[],
+			)
+			.await
+			.ok()
+			.map(|row| row.get(0));
+
+		drop(ctx);
+		drop_probe(database).await;
+		admin
+			.batch_execute(&format!(
+				"DROP ROLE IF EXISTS \"{MONITOR}\"; DROP ROLE IF EXISTS \"{OWNER}\""
+			))
+			.await
+			.expect("drop the roles");
+
+		Some((outcome, owner))
 	}
 
 	/// Mid-upgrade the database is still on the version it is leaving, or the
