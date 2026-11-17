@@ -1868,14 +1868,41 @@ mod tests {
 	// spec: CHK-RSC
 	#[tokio::test]
 	async fn an_apply_runs_as_the_role_owning_the_schema() {
-		const DATABASE: &str = "bestool-alertd-rsc-owner";
-		const OWNER: &str = "bestool-alertd-rsc-owner";
+		let Some((outcome, owner)) = apply_as_monitor("bestool-alertd-rsc-owner", true).await
+		else {
+			return;
+		};
+		assert_eq!(outcome, HealOutcome::Healed);
+		assert_eq!(owner.as_deref(), Some(RSC_OWNER));
+	}
+
+	/// With no schema to own yet, the role owning the database creates it.
+	// spec: CHK-RSC
+	#[tokio::test]
+	async fn an_apply_with_no_schema_runs_as_the_role_owning_the_database() {
+		let Some((outcome, owner)) = apply_as_monitor("bestool-alertd-rsc-dbowner", false).await
+		else {
+			return;
+		};
+		assert_eq!(outcome, HealOutcome::Healed);
+		assert_eq!(owner.as_deref(), Some(RSC_OWNER));
+	}
+
+	const RSC_OWNER: &str = "bestool-alertd-rsc-owner";
+
+	/// Applies as a monitoring role granted the database's owner without
+	/// inheriting it, and returns the outcome with the schema's owner afterwards.
+	async fn apply_as_monitor(
+		database: &str,
+		schema_exists: bool,
+	) -> Option<(HealOutcome, Option<String>)> {
+		const OWNER: &str = RSC_OWNER;
 		const MONITOR: &str = "bestool-alertd-rsc-monitor";
 		const SQL: &str = "DROP SCHEMA IF EXISTS reporting CASCADE;\nCREATE SCHEMA reporting;\n";
 
 		let _turn = one_at_a_time().await;
-		let Some(ctx) = probe_ctx(DATABASE, "9.62.0").await else {
-			return;
+		let Some(ctx) = probe_ctx(database, "9.62.0").await else {
+			return None;
 		};
 		let admin = admin_connection().await.expect("the probe database exists");
 		let roles = format!(
@@ -1883,17 +1910,19 @@ mod tests {
 			 CREATE ROLE \"{OWNER}\"; \
 			 CREATE ROLE \"{MONITOR}\" LOGIN NOINHERIT PASSWORD 'monitor'; \
 			 GRANT \"{OWNER}\" TO \"{MONITOR}\"; \
-			 ALTER DATABASE \"{DATABASE}\" OWNER TO \"{OWNER}\""
+			 ALTER DATABASE \"{database}\" OWNER TO \"{OWNER}\""
 		);
 		admin.batch_execute(&roles).await.expect("create the roles");
-		ctx.db()
-			.await
-			.expect("the probe database")
-			.batch_execute(&format!(
-				"CREATE SCHEMA reporting AUTHORIZATION \"{OWNER}\""
-			))
-			.await
-			.expect("a schema the monitor does not own");
+		if schema_exists {
+			ctx.db()
+				.await
+				.expect("the probe database")
+				.batch_execute(&format!(
+					"CREATE SCHEMA reporting AUTHORIZATION \"{OWNER}\""
+				))
+				.await
+				.expect("a schema the monitor does not own");
+		}
 
 		let version = v("9.62.0");
 		let (base, _asked) = serve(|_| vec![answer("application/sql", SQL)]);
@@ -1908,7 +1937,7 @@ mod tests {
 		let ctx = TamanuCx {
 			version,
 			canopy: Some(canopy_at(&base).await),
-			database_url: format!("postgresql://{MONITOR}:monitor@localhost/{DATABASE}"),
+			database_url: format!("postgresql://{MONITOR}:monitor@localhost/{database}"),
 			..ctx
 		};
 		let outcome = apply_offered(ctx.clone()).await;
@@ -1925,7 +1954,7 @@ mod tests {
 			.map(|row| row.get(0));
 
 		drop(ctx);
-		drop_probe(DATABASE).await;
+		drop_probe(database).await;
 		admin
 			.batch_execute(&format!(
 				"DROP ROLE IF EXISTS \"{MONITOR}\"; DROP ROLE IF EXISTS \"{OWNER}\""
@@ -1933,8 +1962,7 @@ mod tests {
 			.await
 			.expect("drop the roles");
 
-		assert_eq!(outcome, HealOutcome::Healed);
-		assert_eq!(owner.as_deref(), Some(OWNER));
+		Some((outcome, owner))
 	}
 
 	/// Mid-upgrade the database is still on the version it is leaving, or the
