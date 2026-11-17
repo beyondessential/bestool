@@ -559,7 +559,13 @@ async fn apply_offered(ctx: TamanuCx) -> HealOutcome {
 		return HealOutcome::Failed;
 	}
 
-	let apply = match apply_connection(&ctx.database_url).await {
+	// The sweep's own URL may name a read-only monitoring role. The schema is
+	// the install's, so it is replaced as the role the install connects as.
+	let apply_url = ctx
+		.installed_config()
+		.map(|config| config.own_database_url())
+		.unwrap_or_else(|| ctx.database_url.clone());
+	let apply = match apply_connection(&apply_url).await {
 		Ok(apply) => apply,
 		Err(err) => {
 			tracing::warn!("opening a connection to apply the reporting schema failed: {err}");
@@ -1773,6 +1779,7 @@ mod tests {
 
 		Some(TamanuCx {
 			database_url,
+			install_root: None,
 			pool: Some(pool),
 			runtime: Arc::new(api(true)),
 			..borrowed
@@ -1831,6 +1838,52 @@ mod tests {
 				build: Some(offered.digest),
 			}
 		);
+	}
+
+	/// The sweep may be handed a read-only monitoring role, which owns no
+	/// schema. The apply connects as the install's own role instead, so it
+	/// succeeds where the sweep's connection string reaches nothing at all.
+	// spec: CHK-RSC
+	#[tokio::test]
+	async fn an_apply_connects_as_the_install_s_own_role() {
+		const DATABASE: &str = "bestool-alertd-rsc-own-role";
+		const SQL: &str = "DROP SCHEMA IF EXISTS reporting CASCADE;\nCREATE SCHEMA reporting;\n";
+
+		let _turn = one_at_a_time().await;
+		let Some(ctx) = probe_ctx(DATABASE, "9.62.0").await else {
+			return;
+		};
+
+		let version = v("9.62.0");
+		let (base, _asked) = serve(|_| vec![answer("application/sql", SQL)]);
+		let offered = Offered {
+			version: version.clone(),
+			id: "5c1d9a70-3b42-4e18-a6f7-2e9b0c4d8a11".to_owned(),
+			download_url: format!("{base}/artifacts/schema/download"),
+			digest: sri(SQL.as_bytes()),
+		};
+		cache_offer(&version, &Some(offered.clone()));
+
+		let ctx = TamanuCx {
+			version,
+			canopy: Some(canopy_at(&base).await),
+			config: Arc::new(bestool_tamanu::config::TamanuConfig::from_database(
+				bestool_tamanu::config::Database {
+					username: std::env::var("USER").unwrap_or_default(),
+					..bestool_tamanu::config::Database::from_url(&ctx.database_url)
+						.expect("the probe URL parses")
+				},
+			)),
+			install_root: Some(std::env::temp_dir()),
+			database_url: "postgresql://nobody@127.0.0.1:1/nowhere".into(),
+			..ctx
+		};
+		let outcome = apply_offered(ctx.clone()).await;
+
+		drop(ctx);
+		drop_probe(DATABASE).await;
+
+		assert_eq!(outcome, HealOutcome::Healed);
 	}
 
 	/// Mid-upgrade the database is still on the version it is leaving, or the

@@ -160,6 +160,13 @@ impl TamanuConfig {
 		if let Some(url) = database_url_override() {
 			return url;
 		}
+		self.own_database_url()
+	}
+
+	/// The URL for the role the local Tamanu install itself connects as,
+	/// whatever [`DATABASE_URL_ENV`] names. That override may be a read-only
+	/// monitoring role, which cannot do what Tamanu's own role can.
+	pub fn own_database_url(&self) -> String {
 		crate::connection_url::ConnectionUrlBuilder {
 			username: self.db.username.clone(),
 			password: Some(self.db.password.clone()),

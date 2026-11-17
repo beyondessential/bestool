@@ -57,5 +57,8 @@ A schema artifact therefore carries no `BEGIN`, `COMMIT` or `ROLLBACK`, nor the 
 
 The bytes fetched are checked against the digest Canopy offered before any of them reach the database, and a schema that is not the one Canopy named is refused.
 
+The schema is the install's own, so it is applied as the database role the install itself connects as.
+The daemon may be given a read-only monitoring role for its checks, which owns no schema and could replace none, so the apply does not use that connection where the server has an install to read the role from.
+
 A failed apply is logged and retried under the heal backoff.
 An artifact that applied without stamping the offered version is not applied again, since retrying it would rebuild the schema on every backoff step for as long as the offer stands.
