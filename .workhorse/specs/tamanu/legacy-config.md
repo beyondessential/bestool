@@ -37,7 +37,9 @@ These config values have no home an upgrade can write, only an environment varia
 | `log.timeless` | `LOG_TIMELESS` |
 | `log.path` | `LOG_PATH` |
 
-Each one set by config is a warning at any server version, naming the environment variable to set.
+Tamanu reads these environment variables from 2.62.
+Each one set by config is a warning on a server at 2.62 or later, or of unknown version, naming the environment variable to set.
+On an older server, which reads only config, it is passed.
 
 ## Values an upgrade moves into the database
 

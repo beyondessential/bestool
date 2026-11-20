@@ -68,6 +68,9 @@ const ENV_ONLY: &[EnvOnly] = &[
 	},
 ];
 
+/// The first release that reads the environment variables.
+const ENV_SINCE: (u64, u64) = (2, 62);
+
 /// Where an upgrade step puts a config value.
 #[derive(Clone, Copy)]
 enum Home {
@@ -261,7 +264,18 @@ fn evaluate(
 	let mut instances = Vec::new();
 
 	for key in ENV_ONLY {
-		if lookup(config, key.path).is_some() {
+		if lookup(config, key.path).is_none() {
+			continue;
+		}
+		if version.is_some_and(|version| !reached(version, ENV_SINCE)) {
+			instances.push(Instance::pass(key.path).with_detail(
+				"note",
+				format!(
+					"this version reads only config: set {} when upgrading to {}.{}",
+					key.env, ENV_SINCE.0, ENV_SINCE.1
+				),
+			));
+		} else {
 			instances.push(
 				Instance::warning(
 					key.path,
@@ -509,9 +523,24 @@ mod tests {
 	}
 
 	#[test]
-	fn env_only_keys_warn_at_any_version() {
+	fn env_only_keys_pass_before_the_env_vars_exist() {
+		let config = json!({ "proxy": { "trusted": "loopback" } });
+		let check = evaluate(
+			&config,
+			ApplicationKind::TamanuCentral,
+			Some(&v("2.61.9")),
+			Some(&Recorded::default()),
+		);
+		assert!(matches!(
+			status_of(&check, "proxy.trusted"),
+			CheckStatus::Pass
+		));
+	}
+
+	#[test]
+	fn env_only_keys_warn_once_the_env_vars_exist() {
 		let config = json!({ "proxy": { "trusted": "loopback" }, "disk": { "diskPath": "/var" } });
-		for version in ["2.55.0", "2.70.0"] {
+		for version in ["2.62.0", "2.70.0"] {
 			let check = evaluate(
 				&config,
 				ApplicationKind::TamanuCentral,
