@@ -8,8 +8,8 @@
 //! lacks it, which means the migration left it behind; an older server passes,
 //! since its upgrade will move the value.
 //!
-//! Only the deployment's own config files are read, never the defaults Tamanu
-//! ships, and a server with none passes.
+//! Only the deployment's own config files are graded, and a server with none
+//! passes. The defaults Tamanu ships are read solely to compare a value against.
 //!
 //! spec: CHK-LCF
 
@@ -67,6 +67,9 @@ const ENV_ONLY: &[EnvOnly] = &[
 		env: "LOG_PATH",
 	},
 ];
+
+const FACILITY_MIGRATED_FACT: &str = "facilityConfigMigratedToSettings";
+const FACILITY_LATE_MIGRATED_FACT: &str = "facilityLateConfigMigratedToSettings";
 
 /// The first release that reads the environment variables.
 const ENV_SINCE: (u64, u64) = (2, 62);
@@ -131,7 +134,7 @@ const MIGRATED: &[Migrated] = &[
 		home: Home::Secret("settingsPsk"),
 		since: (2, 62),
 		role: Role::Facility,
-		arrives_after: Some("facilityConfigMigratedToSettings"),
+		arrives_after: Some(FACILITY_MIGRATED_FACT),
 	},
 	Migrated {
 		path: "integrations.dhis2.password",
@@ -191,7 +194,7 @@ const fn late_facility_sync(path: &'static str) -> Migrated {
 		home: Home::Setting(path),
 		since: (2, 70),
 		role: Role::Facility,
-		arrives_after: Some("facilityLateConfigMigratedToSettings"),
+		arrives_after: Some(FACILITY_LATE_MIGRATED_FACT),
 	}
 }
 
@@ -210,7 +213,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
 		role: Role::Central,
 	},
 	SettingsMigration {
-		fact: "facilityConfigMigratedToSettings",
+		fact: FACILITY_MIGRATED_FACT,
 		since: (2, 62),
 		role: Role::Facility,
 	},
@@ -220,7 +223,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
 		role: Role::Central,
 	},
 	SettingsMigration {
-		fact: "facilityLateConfigMigratedToSettings",
+		fact: FACILITY_LATE_MIGRATED_FACT,
 		since: (2, 70),
 		role: Role::Facility,
 	},
@@ -257,9 +260,9 @@ fn lookup<'a>(config: &'a Value, path: &str) -> Option<&'a Value> {
 /// Whether every leaf of `value` equals the default at the same place.
 fn covered_by(value: &Value, default: &Value) -> bool {
 	match (value, default) {
-		(Value::Object(value), Value::Object(default)) => value
-			.iter()
-			.all(|(key, leaf)| default.get(key).is_some_and(|d| covered_by(leaf, d))),
+		(Value::Object(value), Value::Object(default)) => value.iter().all(|(key, leaf)| {
+			leaf.is_null() || default.get(key).is_some_and(|d| covered_by(leaf, d))
+		}),
 		_ => value == default,
 	}
 }
@@ -344,9 +347,9 @@ fn evaluate(
 			}
 			Some(_)
 				if matches!(key.home, Home::Setting(_))
-					&& lookup(defaults, key.path).is_some_and(|default| {
-						covered_by(lookup(config, key.path).unwrap(), default)
-					}) =>
+					&& lookup(defaults, key.path)
+						.zip(lookup(config, key.path))
+						.is_some_and(|(default, value)| covered_by(value, default)) =>
 			{
 				Instance::pass(key.path).with_detail(
 					"note",
@@ -418,10 +421,16 @@ fn deployment_config(ctx: &TamanuCx) -> Option<miette::Result<(Value, Value)>> {
 			None => {}
 		}
 	}
-	let defaults = match read("default.json5") {
-		Some(Ok(defaults)) => defaults,
-		_ => Value::Null,
-	};
+	// Comparison only, so the copy inside a container image will do.
+	let defaults =
+		match bestool_tamanu::config::package_config(root, Some(package), "default.json5") {
+			Some(Ok(defaults)) => defaults,
+			Some(Err(err)) => {
+				warn!(?err, "legacy_config: could not read default.json5");
+				Value::Null
+			}
+			None => Value::Null,
+		};
 	Some(Ok((config, defaults)))
 }
 
@@ -877,6 +886,18 @@ mod tests {
 		);
 		assert!(matches!(
 			status_of(&partial_default, "sync.backoff"),
+			CheckStatus::Pass
+		));
+
+		let null_leaf = evaluate(
+			&json!({ "sync": { "backoff": { "maxAttempts": 15, "maxWaitMs": null } } }),
+			&defaults,
+			ApplicationKind::TamanuFacility,
+			Some(&v("2.70.0")),
+			Some(&synced),
+		);
+		assert!(matches!(
+			status_of(&null_leaf, "sync.backoff"),
 			CheckStatus::Pass
 		));
 
