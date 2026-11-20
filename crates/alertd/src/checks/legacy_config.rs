@@ -393,7 +393,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 			return Check::broken(
 				NAME,
 				"could not read the config files",
-				format!("could not read {file}; see the alertd log on this host"),
+				format!("could not read {file}: check it exists, is readable and parses as JSON5"),
 			);
 		}
 	};

@@ -61,7 +61,7 @@ A value set by config on the server it applies to is one instance, graded:
 
 - passed when the server is older than the release, since its upgrade will move the value.
 - passed when the database already holds the value, the config value being unused.
-- passed when the value only arrives from central and the server has not yet completed a sync.
+- passed when the value only arrives from central and the server has not yet completed a sync, that is, has no local fact `lastSuccessfulSyncPull`.
 - warning when the server has run the release and the database still lacks the value.
 - skipped when the server's version is unknown, or its database cannot be reached.
 
