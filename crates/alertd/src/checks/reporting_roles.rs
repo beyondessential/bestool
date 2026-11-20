@@ -13,7 +13,7 @@
 
 use node_semver::Version;
 
-use super::{TamanuCx, query_error_check};
+use super::{TamanuCx, is_unknown_version, query_error_check};
 use crate::check::Check;
 
 const NAME: &str = "reporting_roles";
@@ -142,10 +142,6 @@ fn verdict(state: &RoleState) -> Check {
 	}
 
 	Check::pass(NAME, "reporting roles manageable")
-}
-
-fn is_unknown_version(version: &Version) -> bool {
-	version.major == 0 && version.minor == 0 && version.patch == 0
 }
 
 fn owns_reporting_roles(version: &Version) -> bool {

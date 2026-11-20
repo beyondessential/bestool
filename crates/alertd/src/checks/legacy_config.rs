@@ -21,7 +21,7 @@ use tracing::warn;
 
 use bestool_postgres::pool::PgConnection;
 
-use super::{TamanuCx, query_error_check};
+use super::{TamanuCx, is_unknown_version};
 use crate::check::{Check, CheckStatus, Instance};
 use crate::subject::ApplicationKind;
 
@@ -353,10 +353,7 @@ fn evaluate(
 /// database and there are no files to read.
 fn deployment_config(ctx: &TamanuCx) -> Option<miette::Result<Value>> {
 	let root = ctx.install_root.as_deref()?;
-	let package = match ctx.app.kind {
-		ApplicationKind::TamanuCentral => "central-server",
-		_ => "facility-server",
-	};
+	let package = ctx.server_kind().package_name();
 	let mut config = Value::Object(Default::default());
 	for file in ["production.json5", "local.json5"] {
 		match bestool_tamanu::config::package_config_on_disk(root, Some(package), file) {
@@ -394,15 +391,15 @@ pub async fn run(ctx: TamanuCx) -> Check {
 			return Check::broken(
 				NAME,
 				"could not read the config files",
-				format!("could not parse {file}; see the alertd log on this host"),
+				format!("could not read {file}; see the alertd log on this host"),
 			);
 		}
 	};
 
-	let version = (ctx.version != Version::new(0, 0, 0)).then_some(&ctx.version);
+	let version = (!is_unknown_version(&ctx.version)).then_some(&ctx.version);
 	let has_config = config.as_object().is_some_and(|object| !object.is_empty());
 	if !has_config {
-		return evaluate(&config, ctx.app.kind, version, Some(&Recorded::default()));
+		return evaluate(&config, ctx.app.kind, version, None);
 	}
 
 	let Some(client) = ctx.db().await else {
@@ -410,7 +407,10 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	};
 	match read_recorded(&client).await {
 		Ok(recorded) => evaluate(&config, ctx.app.kind, version, Some(&recorded)),
-		Err(err) => query_error_check(NAME, &err),
+		Err(err) => {
+			warn!(?err, "legacy_config: could not read the database");
+			evaluate(&config, ctx.app.kind, version, None)
+		}
 	}
 }
 

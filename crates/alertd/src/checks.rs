@@ -434,6 +434,11 @@ pub fn fmt_db_error(err: &tokio_postgres::Error) -> String {
 /// longer matches the schema — a fault in the healthcheck, not the deployment
 /// — so it reports as BROKEN rather than flagging the server as failing.
 /// Everything else stays FAIL.
+/// The version a sweep reports when it could not resolve the deployment's.
+pub fn is_unknown_version(version: &Version) -> bool {
+	version.major == 0 && version.minor == 0 && version.patch == 0
+}
+
 pub fn query_error_check(name: &'static str, err: &tokio_postgres::Error) -> Check {
 	let reason = fmt_db_error(err);
 	if err
