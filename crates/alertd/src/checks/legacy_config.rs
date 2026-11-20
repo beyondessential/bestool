@@ -31,48 +31,110 @@ const NAME: &str = "legacy_config";
 struct EnvOnly {
 	path: &'static str,
 	env: &'static str,
+	/// The first release that reads the environment variable.
+	since: (u64, u64),
 }
 
 const ENV_ONLY: &[EnvOnly] = &[
 	EnvOnly {
 		path: "proxy.trusted",
 		env: "PROXY_TRUSTED",
+		since: (2, 62),
 	},
 	EnvOnly {
 		path: "disk.diskPath",
 		env: "DISK_PATH",
+		since: (2, 62),
 	},
 	EnvOnly {
 		path: "auth.saltRounds",
 		env: "SALT_ROUNDS",
+		since: (2, 62),
 	},
 	EnvOnly {
 		path: "db.migrateOnStartup",
 		env: "MIGRATE_ON_STARTUP",
+		since: (2, 62),
 	},
 	EnvOnly {
 		path: "db.skipVersionCompatibilityCheck",
 		env: "DB_SKIP_VERSION_COMPATIBILITY_CHECK",
+		since: (2, 62),
 	},
 	EnvOnly {
 		path: "log.consoleLevel",
 		env: "LOG_CONSOLE_LEVEL",
+		since: (2, 62),
 	},
 	EnvOnly {
 		path: "log.timeless",
 		env: "LOG_TIMELESS",
+		since: (2, 62),
 	},
 	EnvOnly {
 		path: "log.path",
 		env: "LOG_PATH",
+		since: (2, 62),
+	},
+	EnvOnly {
+		path: "primaryTimeZone",
+		env: "TZ",
+		since: (2, 62),
+	},
+	EnvOnly {
+		path: "countryTimeZone",
+		env: "TZ",
+		since: (2, 62),
+	},
+	EnvOnly {
+		path: "auth.secret",
+		env: "AUTH_SECRET",
+		since: (2, 62),
+	},
+	EnvOnly {
+		path: "auth.refreshToken.secret",
+		env: "AUTH_REFRESH_TOKEN_SECRET",
+		since: (2, 62),
+	},
+	EnvOnly {
+		path: "canonicalHostName",
+		env: "CANONICAL_HOST_NAME",
+		since: (2, 62),
+	},
+	EnvOnly {
+		path: "s3.accessKeyId",
+		env: "AWS_ACCESS_KEY_ID",
+		since: (2, 62),
+	},
+	EnvOnly {
+		path: "s3.secretAccessKey",
+		env: "AWS_SECRET_ACCESS_KEY",
+		since: (2, 62),
+	},
+	EnvOnly {
+		path: "sync.enabled",
+		env: "SYNC_ENABLED",
+		since: (2, 70),
+	},
+	EnvOnly {
+		path: "sync.syncApiConnection.host",
+		env: "SYNC_API_HOST",
+		since: (2, 70),
+	},
+	EnvOnly {
+		path: "sync.syncApiConnection.port",
+		env: "SYNC_API_PORT",
+		since: (2, 70),
+	},
+	EnvOnly {
+		path: "integrations.fhir.worker.enabled",
+		env: "TAMANU_FHIR_WORKER_ENABLED",
+		since: (2, 70),
 	},
 ];
 
 const FACILITY_MIGRATED_FACT: &str = "facilityConfigMigratedToSettings";
 const FACILITY_LATE_MIGRATED_FACT: &str = "facilityLateConfigMigratedToSettings";
-
-/// The first release that reads the environment variables.
-const ENV_SINCE: (u64, u64) = (2, 62);
 
 /// Where an upgrade step puts a config value.
 #[derive(Clone, Copy)]
@@ -291,12 +353,12 @@ fn evaluate(
 		if lookup(config, key.path).is_none() {
 			continue;
 		}
-		if version.is_some_and(|version| !reached(version, ENV_SINCE)) {
+		if version.is_some_and(|version| !reached(version, key.since)) {
 			instances.push(Instance::pass(key.path).with_detail(
 				"note",
 				format!(
 					"this version reads only config: set {} when upgrading to {}.{}",
-					key.env, ENV_SINCE.0, ENV_SINCE.1
+					key.env, key.since.0, key.since.1
 				),
 			));
 		} else {
@@ -937,5 +999,43 @@ mod tests {
 			status_of(&moved, "mail.transport.auth.pass"),
 			CheckStatus::Pass
 		));
+	}
+
+	#[test]
+	fn high_stakes_env_keys_warn_from_their_release() {
+		let config = json!({
+			"primaryTimeZone": "Pacific/Fiji",
+			"auth": { "secret": "s", "refreshToken": { "secret": "r" } },
+			"canonicalHostName": "https://central.example",
+			"sync": { "syncApiConnection": { "host": "http://sync" } },
+		});
+		let check = evaluate(
+			&config,
+			&Value::Null,
+			ApplicationKind::TamanuFacility,
+			Some(&v("2.66.0")),
+			Some(&Recorded::default()),
+		);
+		for key in [
+			"primaryTimeZone",
+			"auth.secret",
+			"auth.refreshToken.secret",
+			"canonicalHostName",
+		] {
+			assert!(warns(status_of(&check, key)), "{key}");
+		}
+		assert!(matches!(
+			status_of(&check, "sync.syncApiConnection.host"),
+			CheckStatus::Pass
+		));
+
+		let later = evaluate(
+			&config,
+			&Value::Null,
+			ApplicationKind::TamanuFacility,
+			Some(&v("2.70.0")),
+			Some(&Recorded::default()),
+		);
+		assert!(warns(status_of(&later, "sync.syncApiConnection.host")));
 	}
 }

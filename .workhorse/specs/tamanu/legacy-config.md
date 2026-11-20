@@ -27,19 +27,28 @@ A value set to null counts as unset.
 
 These config values have no home an upgrade can write, only an environment variable:
 
-| Config value | Environment variable |
-| --- | --- |
-| `proxy.trusted` | `PROXY_TRUSTED` |
-| `disk.diskPath` | `DISK_PATH` |
-| `auth.saltRounds` | `SALT_ROUNDS` |
-| `db.migrateOnStartup` | `MIGRATE_ON_STARTUP` |
-| `db.skipVersionCompatibilityCheck` | `DB_SKIP_VERSION_COMPATIBILITY_CHECK` |
-| `log.consoleLevel` | `LOG_CONSOLE_LEVEL` |
-| `log.timeless` | `LOG_TIMELESS` |
-| `log.path` | `LOG_PATH` |
+| Config value | Environment variable | Read from |
+| --- | --- | --- |
+| `proxy.trusted` | `PROXY_TRUSTED` | 2.62 |
+| `disk.diskPath` | `DISK_PATH` | 2.62 |
+| `auth.saltRounds` | `SALT_ROUNDS` | 2.62 |
+| `db.migrateOnStartup` | `MIGRATE_ON_STARTUP` | 2.62 |
+| `db.skipVersionCompatibilityCheck` | `DB_SKIP_VERSION_COMPATIBILITY_CHECK` | 2.62 |
+| `log.consoleLevel` | `LOG_CONSOLE_LEVEL` | 2.62 |
+| `log.timeless` | `LOG_TIMELESS` | 2.62 |
+| `log.path` | `LOG_PATH` | 2.62 |
+| `primaryTimeZone`, `countryTimeZone` | `TZ` | 2.62 |
+| `auth.secret` | `AUTH_SECRET` | 2.62 |
+| `auth.refreshToken.secret` | `AUTH_REFRESH_TOKEN_SECRET` | 2.62 |
+| `canonicalHostName` | `CANONICAL_HOST_NAME` | 2.62 |
+| `s3.accessKeyId` | `AWS_ACCESS_KEY_ID` | 2.62 |
+| `s3.secretAccessKey` | `AWS_SECRET_ACCESS_KEY` | 2.62 |
+| `sync.enabled` | `SYNC_ENABLED` | 2.70 |
+| `sync.syncApiConnection.host` | `SYNC_API_HOST` | 2.70 |
+| `sync.syncApiConnection.port` | `SYNC_API_PORT` | 2.70 |
+| `integrations.fhir.worker.enabled` | `TAMANU_FHIR_WORKER_ENABLED` | 2.70 |
 
-Tamanu reads these environment variables from 2.62.
-Each one set by config is a warning on a server at 2.62 or later, or of unknown version, naming the environment variable to set.
+Each one set by config is a warning on a server at or past the release that reads its environment variable, or of unknown version, naming the variable to set.
 On an older server, which reads only config, it is passed.
 
 ## Values an upgrade moves into the database
