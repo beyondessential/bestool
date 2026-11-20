@@ -18,6 +18,8 @@ use std::collections::BTreeSet;
 use node_semver::Version;
 use serde_json::Value;
 
+use bestool_postgres::pool::PgConnection;
+
 use super::{TamanuCx, query_error_check};
 use crate::check::{Check, CheckStatus, Instance};
 use crate::subject::ApplicationKind;
@@ -253,7 +255,7 @@ fn evaluate(
 	config: &Value,
 	kind: ApplicationKind,
 	version: Option<&Version>,
-	recorded: &Recorded,
+	recorded: Option<&Recorded>,
 ) -> Check {
 	let mut instances = Vec::new();
 
@@ -272,11 +274,15 @@ fn evaluate(
 		}
 	}
 
-	let synced = recorded.facts.contains(LAST_SYNC_FACT);
+	let synced = recorded.is_some_and(|recorded| recorded.facts.contains(LAST_SYNC_FACT));
 	for key in MIGRATED.iter().filter(|key| applies(key.role, kind)) {
 		if lookup(config, key.path).is_none() {
 			continue;
 		}
+		let Some(recorded) = recorded else {
+			instances.push(Instance::skip(key.path, "no DB connection"));
+			continue;
+		};
 		let instance = match version {
 			None => Instance::skip(key.path, "server version unknown"),
 			Some(version) if !reached(version, key.since) => Instance::pass(key.path).with_detail(
@@ -307,6 +313,10 @@ fn evaluate(
 		.iter()
 		.filter(|step| has_config && applies(step.role, kind))
 	{
+		let Some(recorded) = recorded else {
+			instances.push(Instance::skip(step.fact, "no DB connection"));
+			continue;
+		};
 		let instance = match version {
 			None => Instance::skip(step.fact, "server version unknown"),
 			Some(version) if !reached(version, step.since) => Instance::pass(step.fact)
@@ -338,17 +348,23 @@ fn evaluate(
 	Check::instanced(NAME, summary, instances)
 }
 
-fn deployment_config(ctx: &TamanuCx) -> miette::Result<Value> {
-	let Some(root) = ctx.install_root.as_deref() else {
-		return Ok(Value::Object(Default::default()));
+/// The deployment's own config, or `None` where it is known only through its
+/// database and there are no files to read.
+fn deployment_config(ctx: &TamanuCx) -> Option<miette::Result<Value>> {
+	let root = ctx.install_root.as_deref()?;
+	let package = match ctx.app.kind {
+		ApplicationKind::TamanuCentral => "central-server",
+		_ => "facility-server",
 	};
 	let mut config = Value::Object(Default::default());
 	for file in ["production.json5", "local.json5"] {
-		if let Some(layer) = bestool_tamanu::config::package_config(root, None, file).transpose()? {
-			config = bestool_tamanu::config::merge_json(config, layer);
+		match bestool_tamanu::config::package_config_on_disk(root, Some(package), file) {
+			Some(Ok(layer)) => config = bestool_tamanu::config::merge_json(config, layer),
+			Some(Err(err)) => return Some(Err(err)),
+			None => {}
 		}
 	}
-	Ok(config)
+	Some(Ok(config))
 }
 
 const FACTS_SQL: &str = "SELECT key FROM local_system_facts WHERE key = ANY($1)";
@@ -362,65 +378,84 @@ const SETTINGS_SQL: &str = "SELECT path FROM unnest($1::text[]) AS path WHERE EX
 
 pub async fn run(ctx: TamanuCx) -> Check {
 	let config = match deployment_config(&ctx) {
-		Ok(config) => config,
-		Err(err) => {
+		None => {
+			return Check::skip(
+				NAME,
+				"no install files",
+				"this deployment is known only through its database, so there is no config to read",
+			);
+		}
+		Some(Ok(config)) => config,
+		Some(Err(err)) => {
 			return Check::broken(NAME, "could not read the config files", format!("{err:?}"));
 		}
 	};
 
 	let version = (ctx.version != Version::new(0, 0, 0)).then_some(&ctx.version);
-	let mut recorded = Recorded::default();
-
-	let wanted = |pick: fn(Home) -> Option<&'static str>| -> Vec<String> {
-		MIGRATED
-			.iter()
-			.filter_map(|key| pick(key.home))
-			.map(str::to_string)
-			.collect()
-	};
-
-	if config.as_object().is_some_and(|object| !object.is_empty()) {
-		let Some(client) = ctx.db().await else {
-			return Check::skip(NAME, "no DB connection", "db unavailable");
-		};
-
-		let mut facts = wanted(|home| match home {
-			Home::Fact(key) => Some(key),
-			_ => None,
-		});
-		facts.push(LAST_SYNC_FACT.to_string());
-		facts.extend(SETTINGS_MIGRATIONS.iter().map(|step| step.fact.to_string()));
-		match client.query(FACTS_SQL, &[&facts]).await {
-			Ok(rows) => recorded.facts = rows.iter().map(|row| row.get(0)).collect(),
-			Err(err) => return query_error_check(NAME, &err),
-		}
-
-		let has_secrets_table = match client.query_one(SECRETS_TABLE_SQL, &[]).await {
-			Ok(row) => row.get::<_, bool>(0),
-			Err(err) => return query_error_check(NAME, &err),
-		};
-		if has_secrets_table {
-			let secrets = wanted(|home| match home {
-				Home::Secret(key) => Some(key),
-				_ => None,
-			});
-			match client.query(SECRETS_SQL, &[&secrets]).await {
-				Ok(rows) => recorded.secrets = rows.iter().map(|row| row.get(0)).collect(),
-				Err(err) => return query_error_check(NAME, &err),
-			}
-		}
-
-		let settings = wanted(|home| match home {
-			Home::Setting(key) => Some(key),
-			_ => None,
-		});
-		match client.query(SETTINGS_SQL, &[&settings]).await {
-			Ok(rows) => recorded.settings = rows.iter().map(|row| row.get(0)).collect(),
-			Err(err) => return query_error_check(NAME, &err),
-		}
+	let has_config = config.as_object().is_some_and(|object| !object.is_empty());
+	if !has_config {
+		return evaluate(&config, ctx.app.kind, version, Some(&Recorded::default()));
 	}
 
-	evaluate(&config, ctx.app.kind, version, &recorded)
+	let Some(client) = ctx.db().await else {
+		return evaluate(&config, ctx.app.kind, version, None);
+	};
+	match read_recorded(&client).await {
+		Ok(recorded) => evaluate(&config, ctx.app.kind, version, Some(&recorded)),
+		Err(err) => query_error_check(NAME, &err),
+	}
+}
+
+fn wanted(pick: fn(Home) -> Option<&'static str>) -> Vec<String> {
+	MIGRATED
+		.iter()
+		.filter_map(|key| pick(key.home))
+		.map(str::to_string)
+		.collect()
+}
+
+async fn read_recorded(client: &PgConnection) -> Result<Recorded, tokio_postgres::Error> {
+	let mut recorded = Recorded::default();
+
+	let mut facts = wanted(|home| match home {
+		Home::Fact(key) => Some(key),
+		_ => None,
+	});
+	facts.push(LAST_SYNC_FACT.to_string());
+	facts.extend(SETTINGS_MIGRATIONS.iter().map(|step| step.fact.to_string()));
+	recorded.facts = client
+		.query(FACTS_SQL, &[&facts])
+		.await?
+		.iter()
+		.map(|row| row.get(0))
+		.collect();
+
+	let has_secrets_table: bool = client.query_one(SECRETS_TABLE_SQL, &[]).await?.get(0);
+	if has_secrets_table {
+		let secrets = wanted(|home| match home {
+			Home::Secret(key) => Some(key),
+			_ => None,
+		});
+		recorded.secrets = client
+			.query(SECRETS_SQL, &[&secrets])
+			.await?
+			.iter()
+			.map(|row| row.get(0))
+			.collect();
+	}
+
+	let settings = wanted(|home| match home {
+		Home::Setting(key) => Some(key),
+		_ => None,
+	});
+	recorded.settings = client
+		.query(SETTINGS_SQL, &[&settings])
+		.await?
+		.iter()
+		.map(|row| row.get(0))
+		.collect();
+
+	Ok(recorded)
 }
 
 #[cfg(test)]
@@ -454,7 +489,7 @@ mod tests {
 			&json!({}),
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.69.0")),
-			&Recorded::default(),
+			Some(&Recorded::default()),
 		);
 		assert!(matches!(check.status, CheckStatus::Pass));
 		assert!(check.instances.unwrap().is_empty());
@@ -468,7 +503,7 @@ mod tests {
 				&config,
 				ApplicationKind::TamanuCentral,
 				Some(&v(version)),
-				&Recorded::default(),
+				Some(&Recorded::default()),
 			);
 			assert!(warns(status_of(&check, "proxy.trusted")));
 			assert!(warns(status_of(&check, "disk.diskPath")));
@@ -482,7 +517,7 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.60.3")),
-			&Recorded::default(),
+			Some(&Recorded::default()),
 		);
 		assert!(matches!(
 			status_of(&check, "sync.password"),
@@ -501,7 +536,7 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.63.0")),
-			&recorded,
+			Some(&recorded),
 		);
 		assert!(warns(status_of(&check, "sync.password")));
 		assert!(matches!(status_of(&check, "sync.email"), CheckStatus::Pass));
@@ -514,7 +549,7 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.65.0")),
-			&Recorded::default(),
+			Some(&Recorded::default()),
 		);
 		assert!(matches!(
 			status_of(&unsynced, "crypto.settingsPsk"),
@@ -525,10 +560,10 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.65.0")),
-			&Recorded {
+			Some(&Recorded {
 				facts: [LAST_SYNC_FACT.to_string()].into(),
 				..Default::default()
-			},
+			}),
 		);
 		assert!(warns(status_of(&synced, "crypto.settingsPsk")));
 	}
@@ -540,7 +575,7 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuCentral,
 			Some(&v("2.65.0")),
-			&Recorded::default(),
+			Some(&Recorded::default()),
 		);
 		let keys: Vec<_> = check
 			.instances
@@ -560,7 +595,7 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuCentral,
 			None,
-			&Recorded::default(),
+			Some(&Recorded::default()),
 		);
 		assert!(status_of(&check, "mailgun.apiKey").is_skip());
 	}
@@ -572,7 +607,7 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuCentral,
 			Some(&v("2.70.0")),
-			&Recorded::default(),
+			Some(&Recorded::default()),
 		);
 		assert!(
 			!check
@@ -590,10 +625,10 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.70.1")),
-			&Recorded {
+			Some(&Recorded {
 				facts: ["facilityConfigMigratedToSettings".to_string()].into(),
 				..Default::default()
-			},
+			}),
 		);
 		assert!(matches!(
 			status_of(&due, "facilityConfigMigratedToSettings"),
@@ -608,7 +643,7 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.66.0")),
-			&Recorded::default(),
+			Some(&Recorded::default()),
 		);
 		assert!(warns(status_of(&older, "facilityConfigMigratedToSettings")));
 		assert!(matches!(
@@ -624,7 +659,7 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.70.0")),
-			&Recorded::default(),
+			Some(&Recorded::default()),
 		);
 		assert!(matches!(
 			status_of(&unsynced, "sync.backoff"),
@@ -635,10 +670,10 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.70.0")),
-			&Recorded {
+			Some(&Recorded {
 				facts: [LAST_SYNC_FACT.to_string()].into(),
 				..Default::default()
-			},
+			}),
 		);
 		assert!(warns(status_of(&left_behind, "sync.backoff")));
 	}
