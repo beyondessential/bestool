@@ -21,7 +21,7 @@ use tracing::warn;
 
 use bestool_postgres::pool::PgConnection;
 
-use super::{TamanuCx, is_unknown_version};
+use super::{TamanuCx, is_unknown_version, query_error_check};
 use crate::check::{Check, CheckStatus, Instance};
 use crate::subject::ApplicationKind;
 
@@ -326,6 +326,8 @@ fn evaluate(
 					format!("runs on upgrade to {}.{}", step.since.0, step.since.1),
 				),
 			Some(_) if recorded.facts.contains(step.fact) => Instance::pass(step.fact),
+			Some(_) if step.role == Role::Facility && !synced => Instance::pass(step.fact)
+				.with_detail("note", "runs once the facility has synced its records down"),
 			Some(_) => Instance::warning(
 				step.fact,
 				"config values not yet moved into settings: the upgrade step retries on the next upgrade",
@@ -386,8 +388,8 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		Some(Ok(config)) => config,
 		Some(Err(err)) => {
 			// The parse error quotes the offending line, which can hold a credential.
-			warn!(?err, "legacy_config: could not read the config files");
 			let file = err.to_string();
+			warn!(%file, "legacy_config: could not read the config files");
 			return Check::broken(
 				NAME,
 				"could not read the config files",
@@ -407,6 +409,9 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	};
 	match read_recorded(&client).await {
 		Ok(recorded) => evaluate(&config, ctx.app.kind, version, Some(&recorded)),
+		Err(err) if err.code().is_some_and(|code| code.code().starts_with("42")) => {
+			query_error_check(NAME, &err)
+		}
 		Err(err) => {
 			warn!(?err, "legacy_config: could not read the database");
 			evaluate(&config, ctx.app.kind, version, None)
@@ -634,7 +639,11 @@ mod tests {
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.70.1")),
 			Some(&Recorded {
-				facts: ["facilityConfigMigratedToSettings".to_string()].into(),
+				facts: [
+					"facilityConfigMigratedToSettings".to_string(),
+					LAST_SYNC_FACT.to_string(),
+				]
+				.into(),
 				..Default::default()
 			}),
 		);
@@ -651,7 +660,10 @@ mod tests {
 			&config,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.66.0")),
-			Some(&Recorded::default()),
+			Some(&Recorded {
+				facts: [LAST_SYNC_FACT.to_string()].into(),
+				..Default::default()
+			}),
 		);
 		assert!(warns(status_of(&older, "facilityConfigMigratedToSettings")));
 		assert!(matches!(
@@ -704,5 +716,23 @@ mod tests {
 		let reported = err.to_string();
 		assert!(reported.ends_with("local.json5"));
 		assert!(!reported.contains("hunter2"));
+	}
+
+	#[test]
+	fn facility_settings_migration_waits_for_the_first_sync() {
+		let check = evaluate(
+			&json!({ "db": { "name": "app" } }),
+			ApplicationKind::TamanuFacility,
+			Some(&v("2.70.1")),
+			Some(&Recorded::default()),
+		);
+		assert!(matches!(
+			status_of(&check, "facilityConfigMigratedToSettings"),
+			CheckStatus::Pass
+		));
+		assert!(matches!(
+			status_of(&check, "facilityLateConfigMigratedToSettings"),
+			CheckStatus::Pass
+		));
 	}
 }
