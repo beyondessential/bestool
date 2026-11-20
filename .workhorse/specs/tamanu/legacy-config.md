@@ -17,7 +17,9 @@ The check runs for central and facility servers.
 
 Only the deployment's own config files are read: `production.json5` and `local.json5`.
 The defaults Tamanu ships are never read, since a server cannot rely on what it does not set.
+Only files on the server's own disk are read, never ones inside a container image.
 A server with neither file reports no instances and passes.
+A deployment known only through its database, with no install files on the machine, is skipped.
 A value set to null counts as unset.
 
 ## Values with no home but the environment
@@ -61,7 +63,7 @@ A value set by config on the server it applies to is one instance, graded:
 - passed when the database already holds the value, the config value being unused.
 - passed when the value only arrives from central and the server has not yet completed a sync.
 - warning when the server has run the release and the database still lacks the value.
-- skipped when the server's version is unknown.
+- skipped when the server's version is unknown, or its database cannot be reached.
 
 A setting counts as held when any setting row sits at its path or beneath it, whatever its scope.
 
@@ -76,7 +78,7 @@ Upgrade steps record a local fact once they have moved a server's config values 
 | `centralLateConfigMigratedToSettings` | central | 2.70 |
 | `facilityLateConfigMigratedToSettings` | facility | 2.70 |
 
-On a server that has a config file, each fact for its role is one instance, graded passed before the release, passed when the fact is set, warning when the server has run the release and the fact is unset, and skipped when the server's version is unknown.
+On a server that has a config file, each fact for its role is one instance, graded passed before the release, passed when the fact is set, warning when the server has run the release and the fact is unset, and skipped when the server's version is unknown or its database cannot be reached.
 
 > [!NOTE]
 > A facility step leaves its fact unset while a facility it serves has not yet synced down, and retries on the next upgrade.
