@@ -77,41 +77,6 @@ const ENV_ONLY: &[EnvOnly] = &[
 		since: (2, 62),
 	},
 	EnvOnly {
-		path: "primaryTimeZone",
-		env: "TZ",
-		since: (2, 62),
-	},
-	EnvOnly {
-		path: "countryTimeZone",
-		env: "TZ",
-		since: (2, 62),
-	},
-	EnvOnly {
-		path: "auth.secret",
-		env: "AUTH_SECRET",
-		since: (2, 62),
-	},
-	EnvOnly {
-		path: "auth.refreshToken.secret",
-		env: "AUTH_REFRESH_TOKEN_SECRET",
-		since: (2, 62),
-	},
-	EnvOnly {
-		path: "canonicalHostName",
-		env: "CANONICAL_HOST_NAME",
-		since: (2, 62),
-	},
-	EnvOnly {
-		path: "s3.accessKeyId",
-		env: "AWS_ACCESS_KEY_ID",
-		since: (2, 62),
-	},
-	EnvOnly {
-		path: "s3.secretAccessKey",
-		env: "AWS_SECRET_ACCESS_KEY",
-		since: (2, 62),
-	},
-	EnvOnly {
 		path: "sync.enabled",
 		env: "SYNC_ENABLED",
 		since: (2, 70),
@@ -1002,40 +967,27 @@ mod tests {
 	}
 
 	#[test]
-	fn high_stakes_env_keys_warn_from_their_release() {
-		let config = json!({
-			"primaryTimeZone": "Pacific/Fiji",
-			"auth": { "secret": "s", "refreshToken": { "secret": "r" } },
-			"canonicalHostName": "https://central.example",
-			"sync": { "syncApiConnection": { "host": "http://sync" } },
-		});
-		let check = evaluate(
+	fn later_env_keys_warn_from_their_release() {
+		let config = json!({ "sync": { "syncApiConnection": { "host": "http://sync" } } });
+		let before = evaluate(
 			&config,
 			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.66.0")),
 			Some(&Recorded::default()),
 		);
-		for key in [
-			"primaryTimeZone",
-			"auth.secret",
-			"auth.refreshToken.secret",
-			"canonicalHostName",
-		] {
-			assert!(warns(status_of(&check, key)), "{key}");
-		}
 		assert!(matches!(
-			status_of(&check, "sync.syncApiConnection.host"),
+			status_of(&before, "sync.syncApiConnection.host"),
 			CheckStatus::Pass
 		));
 
-		let later = evaluate(
+		let after = evaluate(
 			&config,
 			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.70.0")),
 			Some(&Recorded::default()),
 		);
-		assert!(warns(status_of(&later, "sync.syncApiConnection.host")));
+		assert!(warns(status_of(&after, "sync.syncApiConnection.host")));
 	}
 }

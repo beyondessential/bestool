@@ -37,12 +37,6 @@ These config values have no home an upgrade can write, only an environment varia
 | `log.consoleLevel` | `LOG_CONSOLE_LEVEL` | 2.62 |
 | `log.timeless` | `LOG_TIMELESS` | 2.62 |
 | `log.path` | `LOG_PATH` | 2.62 |
-| `primaryTimeZone`, `countryTimeZone` | `TZ` | 2.62 |
-| `auth.secret` | `AUTH_SECRET` | 2.62 |
-| `auth.refreshToken.secret` | `AUTH_REFRESH_TOKEN_SECRET` | 2.62 |
-| `canonicalHostName` | `CANONICAL_HOST_NAME` | 2.62 |
-| `s3.accessKeyId` | `AWS_ACCESS_KEY_ID` | 2.62 |
-| `s3.secretAccessKey` | `AWS_SECRET_ACCESS_KEY` | 2.62 |
 | `sync.enabled` | `SYNC_ENABLED` | 2.70 |
 | `sync.syncApiConnection.host` | `SYNC_API_HOST` | 2.70 |
 | `sync.syncApiConnection.port` | `SYNC_API_PORT` | 2.70 |
