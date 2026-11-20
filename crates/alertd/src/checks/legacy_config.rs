@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 
 use node_semver::Version;
 use serde_json::Value;
+use tracing::warn;
 
 use bestool_postgres::pool::PgConnection;
 
@@ -387,7 +388,14 @@ pub async fn run(ctx: TamanuCx) -> Check {
 		}
 		Some(Ok(config)) => config,
 		Some(Err(err)) => {
-			return Check::broken(NAME, "could not read the config files", format!("{err:?}"));
+			// The parse error quotes the offending line, which can hold a credential.
+			warn!(?err, "legacy_config: could not read the config files");
+			let file = err.to_string();
+			return Check::broken(
+				NAME,
+				"could not read the config files",
+				format!("could not parse {file}; see the alertd log on this host"),
+			);
 		}
 	};
 
@@ -676,5 +684,25 @@ mod tests {
 			}),
 		);
 		assert!(warns(status_of(&left_behind, "sync.backoff")));
+	}
+
+	#[test]
+	fn parse_error_names_the_file_without_its_contents() {
+		let root = tempfile::tempdir().unwrap();
+		std::fs::write(
+			root.path().join("local.json5"),
+			"{ db: { password: \"hunter2\" ",
+		)
+		.unwrap();
+		let err = bestool_tamanu::config::package_config_on_disk(
+			root.path(),
+			Some("central-server"),
+			"local.json5",
+		)
+		.unwrap()
+		.unwrap_err();
+		let reported = err.to_string();
+		assert!(reported.ends_with("local.json5"));
+		assert!(!reported.contains("hunter2"));
 	}
 }
