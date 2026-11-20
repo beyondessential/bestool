@@ -52,6 +52,7 @@ pub mod http_errors;
 pub mod inodes;
 pub mod ips;
 pub mod ips_errors;
+pub mod legacy_config;
 pub mod load;
 pub mod memory;
 pub mod migrations;
@@ -426,6 +427,11 @@ pub fn fmt_db_error(err: &tokio_postgres::Error) -> String {
 	fmt_chain(err)
 }
 
+/// The version a sweep reports when it could not resolve the deployment's.
+pub fn is_unknown_version(version: &Version) -> bool {
+	version.major == 0 && version.minor == 0 && version.patch == 0
+}
+
 /// Build the Check for a query that errored, classified by SQLSTATE.
 ///
 /// Class 42 ("syntax error or access rule violation": dropped or renamed
@@ -713,6 +719,7 @@ pub fn all() -> Vec<CheckEntry> {
 		entry!("sync_sessions", sync_sessions::run, tamanu_app),
 		// Config-derived: the FHIR API and worker toggles must agree.
 		entry!("fhir_config", fhir_config::run, tamanu_app),
+		entry!("legacy_config", legacy_config::run, tamanu_app),
 		// Restart the FHIR workers when the backlog check fails, capped at one
 		// attempt an hour so a queue that drains slowly isn't repeatedly kicked.
 		// The heal is central-only even though the check itself is not.

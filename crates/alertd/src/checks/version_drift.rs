@@ -12,7 +12,7 @@ use bestool_tamanu::{
 	versions::{self, ExpectedVersions},
 };
 
-use super::TamanuCx;
+use super::{TamanuCx, is_unknown_version};
 use crate::Stat;
 use crate::check::Check;
 use crate::runtime::{Duty, ServiceId, facts_for};
@@ -33,7 +33,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	// else the DB's recorded `currentVersion`. If neither resolved, the version
 	// is the 0.0.0 sentinel and there's nothing to compare against — skip rather
 	// than flag every running service as drifted.
-	if ctx.version.major == 0 && ctx.version.minor == 0 && ctx.version.patch == 0 {
+	if is_unknown_version(&ctx.version) {
 		return Check::skip(
 			"version_drift",
 			"Tamanu version unknown",
