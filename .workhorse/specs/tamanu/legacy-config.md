@@ -16,7 +16,8 @@ It is one of the doctor's healthchecks; see [CHK](healthchecks.md) for the frame
 The check runs for central and facility servers.
 
 Only the deployment's own config files are read: `production.json5` and `local.json5`.
-The defaults Tamanu ships are never read, since a server cannot rely on what it does not set.
+The defaults Tamanu ships are never graded, since a server cannot rely on what it does not set.
+They are read only to compare a deployment's value against.
 Only files on the server's own disk are read, never ones inside a container image.
 A server with neither file reports no instances and passes.
 A deployment known only through its database, with no install files on the machine, is skipped.
@@ -56,6 +57,7 @@ These config values are moved into the database by an upgrade step, first shippe
 | `telegramBot.apiToken` | central | setting `integrations.telegram.apiToken` | 2.62 |
 | `telegramBot.webhook.secret` | central | setting `integrations.telegram.webhook.secret` | 2.62 |
 | `mailgun.apiKey` | central | setting `mail.mailgun.apiKey` | 2.62 |
+| `mail.transport.auth.pass` | central | setting `mail.transportPassword` | 2.62 |
 | `sync.numberConcurrentPullSnapshots` | central | setting `sync.numberConcurrentPullSnapshots` | 2.70 |
 | `sync.schedule`, `sync.jitterTime`, `sync.timeout`, `sync.backoff`, `sync.dynamicLimiter`, `sync.assertIfPulledRecordsUpdatedAfterPushSnapshot` | facility | facility setting of the same path, by way of central | 2.70 |
 
@@ -63,7 +65,8 @@ A value set by config on the server it applies to is one instance, graded:
 
 - passed when the server is older than the release, since its upgrade will move the value.
 - passed when the database already holds the value, the config value being unused.
-- passed when the value only arrives from central and the server has not yet completed a sync, that is, has no local fact `lastSuccessfulSyncPull`.
+- passed when the value only arrives from central and the server has not completed a sync since the migration that sends it: the local fact `lastSuccessfulSyncPull` is absent, or was last written before that migration's fact.
+- passed when the value is headed for a setting and every part of it equals the default Tamanu ships, since the migration moves nothing that matches the default.
 - warning when the server has run the release and the database still lacks the value.
 - skipped when the server's version is unknown, or its database cannot be reached.
 
