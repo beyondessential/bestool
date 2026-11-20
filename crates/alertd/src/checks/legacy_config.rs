@@ -86,8 +86,9 @@ struct Migrated {
 	/// The first release carrying the step.
 	since: (u64, u64),
 	role: Role,
-	/// The value only arrives once the server has synced with central.
-	after_first_sync: bool,
+	/// The value only arrives with a sync completed after this migration fact
+	/// was set.
+	arrives_after: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -102,70 +103,77 @@ const MIGRATED: &[Migrated] = &[
 		home: Home::Fact("syncHost"),
 		since: (2, 61),
 		role: Role::Facility,
-		after_first_sync: false,
+		arrives_after: None,
 	},
 	Migrated {
 		path: "sync.email",
 		home: Home::Fact("syncEmail"),
 		since: (2, 61),
 		role: Role::Facility,
-		after_first_sync: false,
+		arrives_after: None,
 	},
 	Migrated {
 		path: "sync.password",
 		home: Home::Secret("syncPassword"),
 		since: (2, 61),
 		role: Role::Facility,
-		after_first_sync: false,
+		arrives_after: None,
 	},
 	Migrated {
 		path: "crypto.settingsPsk",
 		home: Home::Secret("settingsPsk"),
 		since: (2, 62),
 		role: Role::Central,
-		after_first_sync: false,
+		arrives_after: None,
 	},
 	Migrated {
 		path: "crypto.settingsPsk",
 		home: Home::Secret("settingsPsk"),
 		since: (2, 62),
 		role: Role::Facility,
-		after_first_sync: true,
+		arrives_after: Some("facilityConfigMigratedToSettings"),
 	},
 	Migrated {
 		path: "integrations.dhis2.password",
 		home: Home::Setting("integrations.dhis2.password"),
 		since: (2, 62),
 		role: Role::Central,
-		after_first_sync: false,
+		arrives_after: None,
 	},
 	Migrated {
 		path: "telegramBot.apiToken",
 		home: Home::Setting("integrations.telegram.apiToken"),
 		since: (2, 62),
 		role: Role::Central,
-		after_first_sync: false,
+		arrives_after: None,
 	},
 	Migrated {
 		path: "telegramBot.webhook.secret",
 		home: Home::Setting("integrations.telegram.webhook.secret"),
 		since: (2, 62),
 		role: Role::Central,
-		after_first_sync: false,
+		arrives_after: None,
 	},
 	Migrated {
 		path: "mailgun.apiKey",
 		home: Home::Setting("mail.mailgun.apiKey"),
 		since: (2, 62),
 		role: Role::Central,
-		after_first_sync: false,
+		arrives_after: None,
+	},
+	Migrated {
+		path: "mail.transport.auth.pass",
+		home: Home::Setting("mail.transportPassword"),
+		since: (2, 62),
+		role: Role::Central,
+		arrives_after: None,
 	},
 	Migrated {
 		path: "sync.numberConcurrentPullSnapshots",
 		home: Home::Setting("sync.numberConcurrentPullSnapshots"),
 		since: (2, 70),
 		role: Role::Central,
-		after_first_sync: false,
+		arrives_after: None,
 	},
 	late_facility_sync("sync.schedule"),
 	late_facility_sync("sync.jitterTime"),
@@ -183,7 +191,7 @@ const fn late_facility_sync(path: &'static str) -> Migrated {
 		home: Home::Setting(path),
 		since: (2, 70),
 		role: Role::Facility,
-		after_first_sync: true,
+		arrives_after: Some("facilityLateConfigMigratedToSettings"),
 	}
 }
 
@@ -226,6 +234,8 @@ struct Recorded {
 	facts: BTreeSet<String>,
 	secrets: BTreeSet<String>,
 	settings: BTreeSet<String>,
+	/// Migration facts set before the last successful sync.
+	synced_since: BTreeSet<String>,
 }
 
 impl Recorded {
@@ -244,6 +254,16 @@ fn lookup<'a>(config: &'a Value, path: &str) -> Option<&'a Value> {
 		.filter(|value| !value.is_null())
 }
 
+/// Whether every leaf of `value` equals the default at the same place.
+fn covered_by(value: &Value, default: &Value) -> bool {
+	match (value, default) {
+		(Value::Object(value), Value::Object(default)) => value
+			.iter()
+			.all(|(key, leaf)| default.get(key).is_some_and(|d| covered_by(leaf, d))),
+		_ => value == default,
+	}
+}
+
 fn applies(role: Role, kind: ApplicationKind) -> bool {
 	match role {
 		Role::Central => kind == ApplicationKind::TamanuCentral,
@@ -257,6 +277,7 @@ fn reached(version: &Version, (major, minor): (u64, u64)) -> bool {
 
 fn evaluate(
 	config: &Value,
+	defaults: &Value,
 	kind: ApplicationKind,
 	version: Option<&Version>,
 	recorded: Option<&Recorded>,
@@ -311,10 +332,27 @@ fn evaluate(
 				"note",
 				"already in the database; the config value is unused",
 			),
-			Some(_) if key.after_first_sync && !synced => Instance::pass(key.path).with_detail(
-				"note",
-				"arrives from central with the first successful sync",
-			),
+			Some(_)
+				if key
+					.arrives_after
+					.is_some_and(|fact| !recorded.synced_since.contains(fact)) =>
+			{
+				Instance::pass(key.path).with_detail(
+					"note",
+					"arrives from central with the first sync after the upgrade",
+				)
+			}
+			Some(_)
+				if matches!(key.home, Home::Setting(_))
+					&& lookup(defaults, key.path).is_some_and(|default| {
+						covered_by(lookup(config, key.path).unwrap(), default)
+					}) =>
+			{
+				Instance::pass(key.path).with_detail(
+					"note",
+					"equal to Tamanu's default, so there is nothing to move",
+				)
+			}
 			Some(_) => Instance::warning(
 				key.path,
 				"still read from config: its upgrade migration left the database without it",
@@ -365,23 +403,32 @@ fn evaluate(
 	Check::instanced(NAME, summary, instances)
 }
 
-/// The deployment's own config, or `None` where it is known only through its
-/// database and there are no files to read.
-fn deployment_config(ctx: &TamanuCx) -> Option<miette::Result<Value>> {
+/// The deployment's own config and the defaults Tamanu ships beside it, or
+/// `None` where it is known only through its database and there are no files to
+/// read. The defaults are only ever compared against, never graded.
+fn deployment_config(ctx: &TamanuCx) -> Option<miette::Result<(Value, Value)>> {
 	let root = ctx.install_root.as_deref()?;
 	let package = ctx.server_kind().package_name();
+	let read = |file| bestool_tamanu::config::package_config_on_disk(root, Some(package), file);
 	let mut config = Value::Object(Default::default());
 	for file in ["production.json5", "local.json5"] {
-		match bestool_tamanu::config::package_config_on_disk(root, Some(package), file) {
+		match read(file) {
 			Some(Ok(layer)) => config = bestool_tamanu::config::merge_json(config, layer),
 			Some(Err(err)) => return Some(Err(err)),
 			None => {}
 		}
 	}
-	Some(Ok(config))
+	let defaults = match read("default.json5") {
+		Some(Ok(defaults)) => defaults,
+		_ => Value::Null,
+	};
+	Some(Ok((config, defaults)))
 }
 
 const FACTS_SQL: &str = "SELECT key FROM local_system_facts WHERE key = ANY($1)";
+const SYNCED_SINCE_SQL: &str = "SELECT f.key FROM local_system_facts f \
+	JOIN local_system_facts s ON s.key = $2 \
+	WHERE f.key = ANY($1) AND s.updated_at > f.updated_at";
 const SECRETS_SQL: &str = "SELECT key FROM local_system_secrets WHERE key = ANY($1)";
 const SECRETS_TABLE_SQL: &str = "SELECT to_regclass('local_system_secrets') IS NOT NULL";
 // An object setting is stored as one row per leaf, so a path counts as set
@@ -391,7 +438,7 @@ const SETTINGS_SQL: &str = "SELECT path FROM unnest($1::text[]) AS path WHERE EX
 			AND (s.key = path OR s.key LIKE path || '.%'))";
 
 pub async fn run(ctx: TamanuCx) -> Check {
-	let config = match deployment_config(&ctx) {
+	let (config, defaults) = match deployment_config(&ctx) {
 		None => {
 			return Check::skip(
 				NAME,
@@ -399,7 +446,7 @@ pub async fn run(ctx: TamanuCx) -> Check {
 				"this deployment is known only through its database, so there is no config to read",
 			);
 		}
-		Some(Ok(config)) => config,
+		Some(Ok(pair)) => pair,
 		Some(Err(err)) => {
 			// The parse error quotes the offending line, which can hold a credential.
 			let file = err.to_string();
@@ -415,20 +462,20 @@ pub async fn run(ctx: TamanuCx) -> Check {
 	let version = (!is_unknown_version(&ctx.version)).then_some(&ctx.version);
 	let has_config = config.as_object().is_some_and(|object| !object.is_empty());
 	if !has_config {
-		return evaluate(&config, ctx.app.kind, version, None);
+		return evaluate(&config, &defaults, ctx.app.kind, version, None);
 	}
 
 	let Some(client) = ctx.db().await else {
-		return evaluate(&config, ctx.app.kind, version, None);
+		return evaluate(&config, &defaults, ctx.app.kind, version, None);
 	};
 	match read_recorded(&client).await {
-		Ok(recorded) => evaluate(&config, ctx.app.kind, version, Some(&recorded)),
+		Ok(recorded) => evaluate(&config, &defaults, ctx.app.kind, version, Some(&recorded)),
 		Err(err) if err.code().is_some_and(|code| code.code().starts_with("42")) => {
 			query_error_check(NAME, &err)
 		}
 		Err(err) => {
 			warn!(?err, "legacy_config: could not read the database");
-			evaluate(&config, ctx.app.kind, version, None)
+			evaluate(&config, &defaults, ctx.app.kind, version, None)
 		}
 	}
 }
@@ -452,6 +499,17 @@ async fn read_recorded(client: &PgConnection) -> Result<Recorded, tokio_postgres
 	facts.extend(SETTINGS_MIGRATIONS.iter().map(|step| step.fact.to_string()));
 	recorded.facts = client
 		.query(FACTS_SQL, &[&facts])
+		.await?
+		.iter()
+		.map(|row| row.get(0))
+		.collect();
+
+	let migration_facts: Vec<String> = SETTINGS_MIGRATIONS
+		.iter()
+		.map(|step| step.fact.to_string())
+		.collect();
+	recorded.synced_since = client
+		.query(SYNCED_SINCE_SQL, &[&migration_facts, &LAST_SYNC_FACT])
 		.await?
 		.iter()
 		.map(|row| row.get(0))
@@ -514,6 +572,7 @@ mod tests {
 	fn no_config_passes_with_no_instances() {
 		let check = evaluate(
 			&json!({}),
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.69.0")),
 			Some(&Recorded::default()),
@@ -527,6 +586,7 @@ mod tests {
 		let config = json!({ "proxy": { "trusted": "loopback" } });
 		let check = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuCentral,
 			Some(&v("2.61.9")),
 			Some(&Recorded::default()),
@@ -543,6 +603,7 @@ mod tests {
 		for version in ["2.62.0", "2.70.0"] {
 			let check = evaluate(
 				&config,
+				&Value::Null,
 				ApplicationKind::TamanuCentral,
 				Some(&v(version)),
 				Some(&Recorded::default()),
@@ -557,6 +618,7 @@ mod tests {
 		let config = json!({ "sync": { "password": "pw" } });
 		let check = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.60.3")),
 			Some(&Recorded::default()),
@@ -576,6 +638,7 @@ mod tests {
 		};
 		let check = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.63.0")),
 			Some(&recorded),
@@ -589,9 +652,13 @@ mod tests {
 		let config = json!({ "crypto": { "settingsPsk": "abc" } });
 		let unsynced = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.65.0")),
-			Some(&Recorded::default()),
+			Some(&Recorded {
+				facts: [LAST_SYNC_FACT.to_string()].into(),
+				..Default::default()
+			}),
 		);
 		assert!(matches!(
 			status_of(&unsynced, "crypto.settingsPsk"),
@@ -600,10 +667,12 @@ mod tests {
 
 		let synced = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.65.0")),
 			Some(&Recorded {
 				facts: [LAST_SYNC_FACT.to_string()].into(),
+				synced_since: ["facilityConfigMigratedToSettings".to_string()].into(),
 				..Default::default()
 			}),
 		);
@@ -615,6 +684,7 @@ mod tests {
 		let config = json!({ "sync": { "host": "https://central" }, "mailgun": { "apiKey": "k" } });
 		let check = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuCentral,
 			Some(&v("2.65.0")),
 			Some(&Recorded::default()),
@@ -635,6 +705,7 @@ mod tests {
 		let config = json!({ "mailgun": { "apiKey": "k" } });
 		let check = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuCentral,
 			None,
 			Some(&Recorded::default()),
@@ -647,6 +718,7 @@ mod tests {
 		let config = json!({ "proxy": { "trusted": null } });
 		let check = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuCentral,
 			Some(&v("2.70.0")),
 			Some(&Recorded::default()),
@@ -665,6 +737,7 @@ mod tests {
 		let config = json!({ "db": { "name": "app" } });
 		let due = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.70.1")),
 			Some(&Recorded {
@@ -687,6 +760,7 @@ mod tests {
 
 		let older = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.66.0")),
 			Some(&Recorded {
@@ -706,9 +780,13 @@ mod tests {
 		let config = json!({ "sync": { "backoff": { "maxAttempts": 20 } } });
 		let unsynced = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.70.0")),
-			Some(&Recorded::default()),
+			Some(&Recorded {
+				facts: [LAST_SYNC_FACT.to_string()].into(),
+				..Default::default()
+			}),
 		);
 		assert!(matches!(
 			status_of(&unsynced, "sync.backoff"),
@@ -717,10 +795,12 @@ mod tests {
 
 		let left_behind = evaluate(
 			&config,
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.70.0")),
 			Some(&Recorded {
 				facts: [LAST_SYNC_FACT.to_string()].into(),
+				synced_since: ["facilityLateConfigMigratedToSettings".to_string()].into(),
 				..Default::default()
 			}),
 		);
@@ -751,6 +831,7 @@ mod tests {
 	fn facility_settings_migration_waits_for_the_first_sync() {
 		let check = evaluate(
 			&json!({ "db": { "name": "app" } }),
+			&Value::Null,
 			ApplicationKind::TamanuFacility,
 			Some(&v("2.70.1")),
 			Some(&Recorded::default()),
@@ -761,6 +842,78 @@ mod tests {
 		));
 		assert!(matches!(
 			status_of(&check, "facilityLateConfigMigratedToSettings"),
+			CheckStatus::Pass
+		));
+	}
+
+	#[test]
+	fn value_equal_to_the_default_passes() {
+		let defaults = json!({ "sync": {
+			"numberConcurrentPullSnapshots": 4,
+			"backoff": { "maxAttempts": 15, "multiplierMs": 300 },
+		} });
+		let central = evaluate(
+			&json!({ "sync": { "numberConcurrentPullSnapshots": 4 } }),
+			&defaults,
+			ApplicationKind::TamanuCentral,
+			Some(&v("2.70.0")),
+			Some(&Recorded::default()),
+		);
+		assert!(matches!(
+			status_of(&central, "sync.numberConcurrentPullSnapshots"),
+			CheckStatus::Pass
+		));
+
+		let synced = Recorded {
+			synced_since: ["facilityLateConfigMigratedToSettings".to_string()].into(),
+			..Default::default()
+		};
+		let partial_default = evaluate(
+			&json!({ "sync": { "backoff": { "maxAttempts": 15 } } }),
+			&defaults,
+			ApplicationKind::TamanuFacility,
+			Some(&v("2.70.0")),
+			Some(&synced),
+		);
+		assert!(matches!(
+			status_of(&partial_default, "sync.backoff"),
+			CheckStatus::Pass
+		));
+
+		let changed = evaluate(
+			&json!({ "sync": { "backoff": { "maxAttempts": 20 } } }),
+			&defaults,
+			ApplicationKind::TamanuFacility,
+			Some(&v("2.70.0")),
+			Some(&synced),
+		);
+		assert!(warns(status_of(&changed, "sync.backoff")));
+	}
+
+	#[test]
+	fn embedded_smtp_password_is_graded() {
+		let config = json!({ "mail": { "transport": { "auth": { "pass": "pw" } } } });
+		let left = evaluate(
+			&config,
+			&Value::Null,
+			ApplicationKind::TamanuCentral,
+			Some(&v("2.66.0")),
+			Some(&Recorded::default()),
+		);
+		assert!(warns(status_of(&left, "mail.transport.auth.pass")));
+
+		let moved = evaluate(
+			&config,
+			&Value::Null,
+			ApplicationKind::TamanuCentral,
+			Some(&v("2.66.0")),
+			Some(&Recorded {
+				settings: ["mail.transportPassword".to_string()].into(),
+				..Default::default()
+			}),
+		);
+		assert!(matches!(
+			status_of(&moved, "mail.transport.auth.pass"),
 			CheckStatus::Pass
 		));
 	}
