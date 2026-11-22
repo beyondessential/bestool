@@ -18,15 +18,7 @@ pub fn load_config_as_object(root: &Path, package: Option<&str>) -> Result<serde
 		.transpose()?
 		.unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 
-	if let Ok(env_name) = std::env::var("NODE_ENV") {
-		if let Some(env_config) =
-			package_config(root, package, &format!("{env_name}.json5")).transpose()?
-		{
-			config = merge_json(config, env_config);
-		}
-	} else if let Some(env_config) =
-		package_config(root, package, "production.json5").transpose()?
-	{
+	if let Some(env_config) = package_config(root, package, &env_config_file()).transpose()? {
 		config = merge_json(config, env_config);
 	}
 
@@ -35,6 +27,11 @@ pub fn load_config_as_object(root: &Path, package: Option<&str>) -> Result<serde
 	}
 
 	Ok(config)
+}
+
+pub fn env_config_file() -> String {
+	let env_name = std::env::var("NODE_ENV").unwrap_or_else(|_| "production".into());
+	format!("{env_name}.json5")
 }
 
 #[instrument(level = "debug")]
@@ -71,26 +68,38 @@ pub fn find_config_dir(root: &Path, package: Option<&str>, file: &str) -> Option
 	None
 }
 
+fn read_config_file(path: &Path) -> Result<serde_json::Value> {
+	debug!(?path, "opening config file");
+	let mut file = File::open(path).into_diagnostic()?;
+
+	let mut contents = String::new();
+	let bytes = file.read_to_string(&mut contents).into_diagnostic()?;
+	debug!(%bytes, "read config file");
+
+	let config: serde_json::Value = json5::from_str(&contents).into_diagnostic()?;
+	Ok(config)
+}
+
+/// A config file as it sits on this host's disk, never one bundled in a container
+/// image.
+#[instrument(level = "debug")]
+pub fn package_config_on_disk(
+	root: &Path,
+	package: Option<&str>,
+	file: &str,
+) -> Option<Result<serde_json::Value>> {
+	find_config_dir(root, package, file)
+		.map(|path| read_config_file(&path).wrap_err(path.to_string_lossy().into_owned()))
+}
+
 #[instrument(level = "debug")]
 pub fn package_config(
 	root: &Path,
 	package: Option<&str>,
 	file: &str,
 ) -> Option<Result<serde_json::Value>> {
-	fn inner(path: &Path) -> Result<serde_json::Value> {
-		debug!(?path, "opening config file");
-		let mut file = File::open(path).into_diagnostic()?;
-
-		let mut contents = String::new();
-		let bytes = file.read_to_string(&mut contents).into_diagnostic()?;
-		debug!(%bytes, "read config file");
-
-		let config: serde_json::Value = json5::from_str(&contents).into_diagnostic()?;
-		Ok(config)
-	}
-
-	if let Some(path) = find_config_dir(root, package, file) {
-		return Some(inner(&path).wrap_err(path.to_string_lossy().into_owned()));
+	if let Some(result) = package_config_on_disk(root, package, file) {
+		return Some(result);
 	}
 
 	// Linux container deployments only ship operator overrides on disk; the
