@@ -411,7 +411,8 @@ fn deployment_config(ctx: &TamanuCx) -> Option<miette::Result<(Value, Value)>> {
 	let package = ctx.server_kind().package_name();
 	let read = |file| bestool_tamanu::config::package_config_on_disk(root, Some(package), file);
 	let mut config = Value::Object(Default::default());
-	for file in ["production.json5", "local.json5"] {
+	let env_file = bestool_tamanu::config::env_config_file();
+	for file in [env_file.as_str(), "local.json5"] {
 		match read(file) {
 			Some(Ok(layer)) => config = bestool_tamanu::config::merge_json(config, layer),
 			Some(Err(err)) => return Some(Err(err)),

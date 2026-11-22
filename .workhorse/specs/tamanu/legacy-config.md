@@ -15,7 +15,7 @@ It is one of the doctor's healthchecks; see [CHK](healthchecks.md) for the frame
 
 The check runs for central and facility servers.
 
-Only the deployment's own config files are read: `production.json5` and `local.json5`.
+Only the deployment's own config files are read: `production.json5` (or `$NODE_ENV.json5` when `NODE_ENV` is set) and `local.json5`.
 The defaults Tamanu ships are never graded, since a server cannot rely on what it does not set.
 They are read only to compare a deployment's value against.
 Only files on the server's own disk are read, never ones inside a container image.

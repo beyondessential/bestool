@@ -18,15 +18,7 @@ pub fn load_config_as_object(root: &Path, package: Option<&str>) -> Result<serde
 		.transpose()?
 		.unwrap_or_else(|| serde_json::Value::Object(Default::default()));
 
-	if let Ok(env_name) = std::env::var("NODE_ENV") {
-		if let Some(env_config) =
-			package_config(root, package, &format!("{env_name}.json5")).transpose()?
-		{
-			config = merge_json(config, env_config);
-		}
-	} else if let Some(env_config) =
-		package_config(root, package, "production.json5").transpose()?
-	{
+	if let Some(env_config) = package_config(root, package, &env_config_file()).transpose()? {
 		config = merge_json(config, env_config);
 	}
 
@@ -35,6 +27,11 @@ pub fn load_config_as_object(root: &Path, package: Option<&str>) -> Result<serde
 	}
 
 	Ok(config)
+}
+
+pub fn env_config_file() -> String {
+	let env_name = std::env::var("NODE_ENV").unwrap_or_else(|_| "production".into());
+	format!("{env_name}.json5")
 }
 
 #[instrument(level = "debug")]
