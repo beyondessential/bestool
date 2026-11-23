@@ -133,7 +133,7 @@ pub async fn changed_since(
 	since: Position,
 	root: &Path,
 ) -> Option<BTreeSet<PathBuf>> {
-	use usn_journal_rs::{Usn, journal::JournalIterOptions, volume::Volume};
+	use usn_journal_rs::{Usn, UsnReason, journal::JournalIterOptions, volume::Volume};
 
 	let volume = volume.to_path_buf();
 	let root = root.to_path_buf();
@@ -169,6 +169,7 @@ pub async fn changed_since(
 		// every reason means it might. An extra path costs one comparison.
 		let options = JournalIterOptions::builder()
 			.start_usn(Usn::new(since.usn))
+			.reason_mask(UsnReason::ALL)
 			.build()
 			.ok()?;
 		let entries = journal.iter_with_options(options).ok()?;
