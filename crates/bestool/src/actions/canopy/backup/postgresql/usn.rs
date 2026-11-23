@@ -106,12 +106,12 @@ pub async fn position(volume: &Path) -> Option<Position> {
 			.ok()?;
 		let data = handle
 			.journal()
-			.query(false)
+			.query()
 			.inspect_err(|err| debug!("no change journal on {letter}: {err}"))
 			.ok()?;
 		let position = Position {
 			journal_id: data.journal_id,
-			usn: data.next_usn,
+			usn: data.next_usn.get(),
 		};
 		debug!(?position, "read {letter}'s change journal position");
 		Some(position)
@@ -133,7 +133,7 @@ pub async fn changed_since(
 	since: Position,
 	root: &Path,
 ) -> Option<BTreeSet<PathBuf>> {
-	use usn_journal_rs::{journal::EnumOptions, volume::Volume};
+	use usn_journal_rs::{Usn, UsnReason, journal::JournalIterOptions, volume::Volume};
 
 	let volume = volume.to_path_buf();
 	let root = root.to_path_buf();
@@ -145,8 +145,8 @@ pub async fn changed_since(
 			})
 			.ok()?;
 
-		let data = handle.journal().query(false).ok()?;
-		match coverage(since, data.journal_id, data.first_usn) {
+		let data = handle.journal().query().ok()?;
+		match coverage(since, data.journal_id, data.first_usn.get()) {
 			Coverage::Covered => {}
 			Coverage::Recreated => {
 				warn!(
@@ -165,16 +165,16 @@ pub async fn changed_since(
 		}
 
 		let journal = handle.journal();
-		let entries = journal
-			.iter_with_options(EnumOptions {
-				start_usn: since.usn,
-				// Every reason: the question is only whether a file might differ, and
-				// every reason means it might. An extra path costs one comparison.
-				..EnumOptions::default()
-			})
+		// Every reason: the question is only whether a file might differ, and
+		// every reason means it might. An extra path costs one comparison.
+		let options = JournalIterOptions::builder()
+			.start_usn(Usn::new(since.usn))
+			.reason_mask(UsnReason::ALL)
+			.build()
 			.ok()?;
+		let entries = journal.iter_with_options(options).ok()?;
 
-		let mut resolver = handle.path_resolver_with_cache();
+		let resolver = handle.path_resolver_with_cache();
 		let mut paths = BTreeSet::new();
 		let mut records = 0usize;
 		for entry in entries {
