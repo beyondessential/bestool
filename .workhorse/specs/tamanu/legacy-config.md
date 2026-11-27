@@ -37,6 +37,13 @@ These config values have no home an upgrade can write, only an environment varia
 | `log.consoleLevel` | `LOG_CONSOLE_LEVEL` |
 | `log.timeless` | `LOG_TIMELESS` |
 | `log.path` | `LOG_PATH` |
+| `auth.secret` | `AUTH_SECRET` |
+| `auth.refreshToken.secret` | `AUTH_REFRESH_TOKEN_SECRET` |
+| `canonicalHostName` | `CANONICAL_HOST_NAME` |
+| `primaryTimeZone` | `TZ` |
+| `countryTimeZone` | `TZ` |
+| `s3.accessKeyId` | `AWS_ACCESS_KEY_ID` |
+| `s3.secretAccessKey` | `AWS_SECRET_ACCESS_KEY` |
 
 Tamanu reads these environment variables from 2.62.
 Each one set by config is a warning on a server at 2.62 or later, or of unknown version, naming the environment variable to set.

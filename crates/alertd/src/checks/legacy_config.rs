@@ -66,6 +66,34 @@ const ENV_ONLY: &[EnvOnly] = &[
 		path: "log.path",
 		env: "LOG_PATH",
 	},
+	EnvOnly {
+		path: "auth.secret",
+		env: "AUTH_SECRET",
+	},
+	EnvOnly {
+		path: "auth.refreshToken.secret",
+		env: "AUTH_REFRESH_TOKEN_SECRET",
+	},
+	EnvOnly {
+		path: "canonicalHostName",
+		env: "CANONICAL_HOST_NAME",
+	},
+	EnvOnly {
+		path: "primaryTimeZone",
+		env: "TZ",
+	},
+	EnvOnly {
+		path: "countryTimeZone",
+		env: "TZ",
+	},
+	EnvOnly {
+		path: "s3.accessKeyId",
+		env: "AWS_ACCESS_KEY_ID",
+	},
+	EnvOnly {
+		path: "s3.secretAccessKey",
+		env: "AWS_SECRET_ACCESS_KEY",
+	},
 ];
 
 /// The first release that reads the environment variables.
@@ -611,6 +639,35 @@ mod tests {
 			);
 			assert!(warns(status_of(&check, "proxy.trusted")));
 			assert!(warns(status_of(&check, "disk.diskPath")));
+		}
+	}
+
+	#[test]
+	fn secrets_host_time_zone_and_s3_keys_warn_once_the_env_vars_exist() {
+		let config = json!({
+			"auth": { "secret": "a", "refreshToken": { "secret": "b" } },
+			"canonicalHostName": "https://central.kamaka.example",
+			"primaryTimeZone": "Pacific/Auckland",
+			"countryTimeZone": "Pacific/Auckland",
+			"s3": { "accessKeyId": "c", "secretAccessKey": "d" },
+		});
+		let check = evaluate(
+			&config,
+			&Value::Null,
+			ApplicationKind::TamanuCentral,
+			Some(&v("2.62.0")),
+			Some(&Recorded::default()),
+		);
+		for path in [
+			"auth.secret",
+			"auth.refreshToken.secret",
+			"canonicalHostName",
+			"primaryTimeZone",
+			"countryTimeZone",
+			"s3.accessKeyId",
+			"s3.secretAccessKey",
+		] {
+			assert!(warns(status_of(&check, path)), "{path}");
 		}
 	}
 
